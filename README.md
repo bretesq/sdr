@@ -336,6 +336,56 @@ cheapest unlock is a coax splitter feeding the good antenna to an RTL-SDR, or a 
 wideband antenna. That one change enables a dedicated control-channel receiver, which would
 recover the ~60% of calls the single radio misses while it is away following a call.
 
+---
+
+## 9. What encryption is LWIN actually using?
+
+Measured, not assumed. The P25 **ESS** (Encryption Sync Sequence) in the LDU2 voice frame
+carries **ALGID**, **KID** and the message indicator *in the clear*, so the cipher can be
+identified without any decryption. op25 prints it at `-v 10` (`p25p1_fdma.cc:279`).
+
+```bash
+# follow the encrypted talkgroups (no -n, no audio recorder) and read ESS headers
+script -q -f -c "cd <op25>/apps && python3 rx.py ... -T lwin_enc.tsv -V -v 10" results/enc_id.log
+python3 scripts/identify_encryption.py
+```
+
+### Result — 4-minute sample, 148 ESS frames, 9 talkgroups
+| ALGID | KID | Count | Algorithm |
+|---|---|---|---|
+| `0x80` | 0x0 | 138 | **CLEAR — unencrypted** |
+| `0xAA` | 0x8 | 9 | **ADP / RC4 (Motorola "Advanced Digital Privacy", 40-bit)** |
+| `0xC4` | 0x9726 | 1 | not a valid P25 ALGID — bit error (marginal 800 MHz SNR) |
+
+| TG | RR flag | Alpha | Observed |
+|---|---|---|---|
+| 17050 | partial | 17-SO DISP N | clear ×39 (+1 corrupt) |
+| 17171 | partial | 17-BRPD DSP4 | clear ×30, **ADP ×2** |
+| 17165 | partial | 17-BRPD DSP1 | clear ×18, **ADP ×6** |
+| 17086 | full | 17 JAIL SEC1 | clear ×23 |
+| 17051 | partial | 17-SO DISP S | clear ×21 |
+| 17133 | partial | 17-BAKER PD HQ | clear ×7 |
+| 17169 | partial | 17-BRPD DSP3 | **ADP ×1** |
+
+**The only encryption algorithm observed is ADP (ALGID 0xAA), key ID 0x8**, and only on
+Baton Rouge PD dispatch talkgroups (17165 / 17169 / 17171) — all sharing one key ID.
+**No AES-256 (0x84), AES-128 (0x85) or DES (0x81/0x83) was seen** on the sampled talkgroups.
+
+Two things worth noting:
+- The "partial" flag in RadioReference is accurate: **93% of frames on these talkgroups
+  were `0x80` clear**. They encrypt selectively, not continuously.
+- **17086 "Prison Security" is flagged `full` in RadioReference but transmitted `0x80`
+  clear in all 23 observations here** — the database flag looks stale, or those particular
+  transmissions were not encrypted.
+
+Caveats: ~4 minutes, only the 9 whitelisted talkgroups, and the 800 MHz voice channels are
+marginal here (the stray `0xC4` is direct evidence of frame corruption). Other agencies on
+LWIN (State Police, DOTD, other parishes) were not sampled and may differ. A longer run
+across more talkgroups would firm this up.
+
+**No decryption was attempted and no key material was recovered** — only the cleartext
+algorithm identifier was read. Encrypted talkgroups remain excluded from recording.
+
 ## Layout
 ```
 scripts/    lwin_listen.sh          <- start listening (one command)
