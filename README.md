@@ -92,7 +92,7 @@ Measured here:
 | 773.05688 | 28.3 dB | 4800 @ 41.4 dB | **control channel** |
 | 769.19434 | 35.7 dB | 4800 @ 19.3 dB | Phase 1 |
 | 772.08081 | 23.9 dB | 6000 | Phase 2 TDMA voice |
-| 774.14282 | 30.0 dB | ~6200 | Phase 2 TDMA voice |
+| 774.14282 | 30.0 dB | ~6200 (unreliable) | not on Site 13's list |
 
 This is what finally located the control channel. Power-and-variance analysis alone was
 misleading: 772.08 is a strong *continuous* carrier but is a Phase 2 voice channel, not
