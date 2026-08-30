@@ -1,0 +1,22 @@
+Found 2 device(s):
+  0:  Realtek, RTL2838UHIDIR, SN: 00000202
+  1:  Realtek, RTL2838UHIDIR, SN: 00000001
+
+Using device 1: Generic RTL2832U OEM
+Edge tuning disabled.
+DC filter enabled.
+RTL AGC disabled.
+Internal AIS decoder enabled.
+Buffer size: 163.84 mS
+Downsample factor: 64
+Low pass: 25000 Hz
+Output: 48000 Hz
+Detached kernel driver
+Found Rafael Micro R820T tuner
+Log NMEA sentences to console ON
+AIS data will be sent to 127.0.0.1 port 10110
+Tuner gain set to automatic.
+Tuned to 162000000 Hz.
+Sampling at 1600000 S/s.
+Allocating 12 zero-copy buffers
+Signal caught, exiting!

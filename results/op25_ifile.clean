@@ -1,0 +1,16 @@
+Traceback (most recent call last):
+  File "/home/besquivel/rtl/src/op25/op25/gr-op25_repeater/apps/rx.py", line 1129, in <module>
+    rx = rx_main()
+  File "/home/besquivel/rtl/src/op25/op25/gr-op25_repeater/apps/rx.py", line 1033, in __init__
+    self.tb = p25_rx_block(self.options)
+              ~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "/home/besquivel/rtl/src/op25/op25/gr-op25_repeater/apps/rx.py", line 242, in __init__
+    self.open_usrp()
+    ~~~~~~~~~~~~~~^^
+  File "/home/besquivel/rtl/src/op25/op25/gr-op25_repeater/apps/rx.py", line 916, in open_usrp
+    self.__set_rx_from_osmosdr()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/besquivel/rtl/src/op25/op25/gr-op25_repeater/apps/rx.py", line 828, in __set_rx_from_osmosdr
+    capture_rate = self.src.set_sample_rate(self.options.sample_rate)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'set_sample_rate'

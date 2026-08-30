@@ -1,0 +1,175 @@
+CPU Features: SSE2+ SSE4.1+ AVX+ FMA+
+Using avx for xtrxdsp_iq16_sc32
+Using avx for xtrxdsp_iq8_ic16
+Using avx for xtrxdsp_iq16_ic16i
+Using avx for xtrxdsp_iq8_ic8i
+Using avx for xtrxdsp_sc32i_iq16
+Using avx for xtrxdsp_iq8_sc32
+Using avx for xtrxdsp_iq8_sc32i
+Using avx for xtrxdsp_iq16_sc32i
+Using avx for xtrxdsp_sc32_iq16
+Using avx for xtrxdsp_ic16i_iq16
+gr-osmosdr 0.2.0.0 (0.2.0) gnuradio 3.10.12.0
+built-in source types: file fcd rtl rtl_tcp miri hackrf bladerf rfspace airspy airspyhf soapy redpitaya freesrp xtrx 
+Using HackRF Pro with firmware 2026.01.3
+gain: name: RF range: start 0 stop 14 step 14
+gain: name: IF range: start 0 stop 40 step 8
+gain: name: BB range: start 0 stop 62 step 2
+setting gain RF to 14
+setting gain IF to 40
+setting gain BB to 44
+supported sample rates 8000000-20000000 step 2000000
+demodulator: xlator if_rate=24000, input_rate=8000000, decim=333, if taps=[1605,49], resampled_rate=24024, sps=5
+fll_band_edge_cc :warning: Using legacy FLL loop filter. Consider updating to the improved loop filter, which requires a change in the bandwidth setting. See https://github.com/gnuradio/gnuradio/pull/7890 for more information.
+p25_frame_assembler_impl: do_imbe[0], do_output[0], do_audio_output[0], do_phase2_tdma[0], do_nocrypt[0]
+08/30/26 14:41:01.822332 [0] p25_frame_assembler_impl::control: cmd(set_slotid), args({"tuner": 0, "cmd": "set_slotid", "slotid": 0})
+==metadata update not enabled
+                                      OP25                                         (f)req (h)old (s)kip (l)ock (W)list (B)list (q)uit (1-6)plot (,.<>)tune    python version detected: 3.14.4 (main, Jun 18 2026, 14:25:02) [GCC 15.2.0]
+Frequency 772.256250(0)(-1Hz)0Hz)08/30/26 14:41:02.822639 [0] p25p1_fdma::check_timeout: expired
+2Hz)4Hz)08/30/26 14:41:03.838422 [0] p25p1_fdma::check_timeout: expired
+5Hz)08/30/26 14:41:04.854141 [0] p25p1_fdma::check_timeout: expired
+-3Hz)4Hz)08/30/26 14:41:05.870068 [0] p25p1_fdma::check_timeout: expired
+8Hz)7Hz)08/30/26 14:41:06.885782 [0] p25p1_fdma::check_timeout: expired
+11Hz)6Hz)08/30/26 14:41:07.901645 [0] p25p1_fdma::check_timeout: expired
+4Hz)3Hz)08/30/26 14:41:08.917505 [0] p25p1_fdma::check_timeout: expired
+0Hz)08/30/26 14:41:09.933219 [0] p25p1_fdma::check_timeout: expired
+-6Hz)9Hz)08/30/26 14:41:10.948997 [0] p25p1_fdma::check_timeout: expired
+5Hz)6Hz)08/30/26 14:41:11.964811 [0] p25p1_fdma::check_timeout: expired
+9Hz)6Hz)08/30/26 14:41:12.980669 [0] p25p1_fdma::check_timeout: expired
+14Hz)8Hz)08/30/26 14:41:13.996503 [0] p25p1_fdma::check_timeout: expired
+4Hz)7Hz)08/30/26 14:41:15.012358 [0] p25p1_fdma::check_timeout: expired
+6Hz)7Hz)08/30/26 14:41:16.028077 [0] p25p1_fdma::check_timeout: expired
+4Hz)24Hz)08/30/26 14:41:17.043956 [0] p25p1_fdma::check_timeout: expired
+31Hz)0Hz)08/30/26 14:41:18.059773 [0] p25p1_fdma::check_timeout: expired
+3Hz)0Hz)08/30/26 14:41:19.075566 [0] p25p1_fdma::check_timeout: expired
+25Hz)4Hz)08/30/26 14:41:20.091396 [0] p25p1_fdma::check_timeout: expired
+7Hz)6Hz)08/30/26 14:41:21.107125 [0] p25p1_fdma::check_timeout: expired
+30Hz)25Hz)08/30/26 14:41:22.123010 [0] p25p1_fdma::check_timeout: expired
+6Hz)35Hz)08/30/26 14:41:23.138726 [0] p25p1_fdma::check_timeout: expired
+8Hz)5Hz)08/30/26 14:41:24.154593 [0] p25p1_fdma::check_timeout: expired
+3Hz)5Hz)08/30/26 14:41:25.170435 [0] p25p1_fdma::check_timeout: expired
+8Hz)41Hz)08/30/26 14:41:26.186271 [0] p25p1_fdma::check_timeout: expired
+38Hz)48Hz)08/30/26 14:41:27.202050 [0] p25p1_fdma::check_timeout: expired
+5Hz)37Hz)08/30/26 14:41:28.217845 [0] p25p1_fdma::check_timeout: expired
+57Hz)144Hz)08/30/26 14:41:29.233579 [0] p25p1_fdma::check_timeout: expired
+219Hz)74Hz)08/30/26 14:41:30.249389 [0] p25p1_fdma::check_timeout: expired
+320Hz)74Hz)08/30/26 14:41:31.265352 [0] p25p1_fdma::check_timeout: expired
+91Hz)6Hz)08/30/26 14:41:32.281106 [0] p25p1_fdma::check_timeout: expired
+5Hz)87Hz)08/30/26 14:41:33.296835 [0] p25p1_fdma::check_timeout: expired
+9Hz)08/30/26 14:41:34.312716 [0] p25p1_fdma::check_timeout: expired
+90Hz)1Hz)08/30/26 14:41:35.328442 [0] p25p1_fdma::check_timeout: expired
+08/30/26 14:41:36.344319 [0] p25p1_fdma::check_timeout: expired
+3Hz)401Hz)08/30/26 14:41:37.360091 [0] p25p1_fdma::check_timeout: expired
+393Hz)1Hz)08/30/26 14:41:38.375857 [0] p25p1_fdma::check_timeout: expired
+88Hz)9Hz)08/30/26 14:41:39.391742 [0] p25p1_fdma::check_timeout: expired
+95Hz)1Hz)08/30/26 14:41:40.407566 [0] p25p1_fdma::check_timeout: expired
+4Hz)5Hz)08/30/26 14:41:41.423264 [0] p25p1_fdma::check_timeout: expired
+1Hz)08/30/26 14:41:42.439208 [0] p25p1_fdma::check_timeout: expired
+4Hz)87Hz)08/30/26 14:41:43.455029 [0] p25p1_fdma::check_timeout: expired
+6Hz)7Hz)08/30/26 14:41:44.470834 [0] p25p1_fdma::check_timeout: expired
+92Hz)89Hz)08/30/26 14:41:45.486604 [0] p25p1_fdma::check_timeout: expired
+7Hz)3Hz)08/30/26 14:41:46.502341 [0] p25p1_fdma::check_timeout: expired
+78Hz)82Hz)08/30/26 14:41:47.518219 [0] p25p1_fdma::check_timeout: expired
+79Hz)80Hz)08/30/26 14:41:48.533921 [0] p25p1_fdma::check_timeout: expired
+1Hz)2Hz)08/30/26 14:41:49.549852 [0] p25p1_fdma::check_timeout: expired
+90Hz)89Hz)08/30/26 14:41:50.565627 [0] p25p1_fdma::check_timeout: expired
+93Hz)0Hz)08/30/26 14:41:51.581468 [0] p25p1_fdma::check_timeout: expired
+89Hz)400Hz)08/30/26 14:41:52.597336 [0] p25p1_fdma::check_timeout: expired
+397Hz)401Hz)2Hz)08/30/26 14:41:53.613067 [0] p25p1_fdma::check_timeout: expired
+4Hz)2Hz)08/30/26 14:41:54.628855 [0] p25p1_fdma::check_timeout: expired
+6Hz)4Hz)08/30/26 14:41:55.644605 [0] p25p1_fdma::check_timeout: expired
+9Hz)18Hz)08/30/26 14:41:56.660397 [0] p25p1_fdma::check_timeout: expired
+7Hz)3Hz)08/30/26 14:41:57.676239 [0] p25p1_fdma::check_timeout: expired
+5Hz)4Hz)08/30/26 14:41:58.692087 [0] p25p1_fdma::check_timeout: expired
+2Hz)0Hz)08/30/26 14:41:59.707884 [0] p25p1_fdma::check_timeout: expired
+05Hz)11Hz)08/30/26 14:42:00.723748 [0] p25p1_fdma::check_timeout: expired
+8Hz)2Hz)08/30/26 14:42:01.739533 [0] p25p1_fdma::check_timeout: expired
+21Hz)0Hz)08/30/26 14:42:02.755268 [0] p25p1_fdma::check_timeout: expired
+18Hz)08/30/26 14:42:03.771149 [0] p25p1_fdma::check_timeout: expired
+20Hz)5Hz)08/30/26 14:42:04.786983 [0] p25p1_fdma::check_timeout: expired
+0Hz)17Hz)08/30/26 14:42:05.802715 [0] p25p1_fdma::check_timeout: expired
+3Hz)08/30/26 14:42:06.818580 [0] p25p1_fdma::check_timeout: expired
+1Hz)09Hz)08/30/26 14:42:07.834394 [0] p25p1_fdma::check_timeout: expired
+5Hz)10Hz)08/30/26 14:42:08.850205 [0] p25p1_fdma::check_timeout: expired
+398Hz)6Hz)08/30/26 14:42:09.865909 [0] p25p1_fdma::check_timeout: expired
+3Hz)1Hz)08/30/26 14:42:10.881795 [0] p25p1_fdma::check_timeout: expired
+85Hz)08/30/26 14:42:11.897623 [0] p25p1_fdma::check_timeout: expired
+406Hz)26Hz)08/30/26 14:42:12.913423 [0] p25p1_fdma::check_timeout: expired
+43Hz)52Hz)08/30/26 14:42:13.929273 [0] p25p1_fdma::check_timeout: expired
+63Hz)4Hz)08/30/26 14:42:14.945005 [0] p25p1_fdma::check_timeout: expired
+6Hz)59Hz)08/30/26 14:42:15.960846 [0] p25p1_fdma::check_timeout: expired
+3Hz)9Hz)08/30/26 14:42:16.976659 [0] p25p1_fdma::check_timeout: expired
+64Hz)58Hz)08/30/26 14:42:17.992529 [0] p25p1_fdma::check_timeout: expired
+65Hz)70Hz)08/30/26 14:42:19.008375 [0] p25p1_fdma::check_timeout: expired
+1Hz)68Hz)08/30/26 14:42:20.024085 [0] p25p1_fdma::check_timeout: expired
+76Hz)08/30/26 14:42:21.039880 [0] p25p1_fdma::check_timeout: expired
+4Hz)69Hz)08/30/26 14:42:22.055690 [0] p25p1_fdma::check_timeout: expired
+74Hz)5Hz)08/30/26 14:42:23.071508 [0] p25p1_fdma::check_timeout: expired
+4Hz)08/30/26 14:42:24.087340 [0] p25p1_fdma::check_timeout: expired
+7Hz)8Hz)08/30/26 14:42:25.103129 [0] p25p1_fdma::check_timeout: expired
+80Hz)71Hz)08/30/26 14:42:26.118966 [0] p25p1_fdma::check_timeout: expired
+67Hz)8Hz)08/30/26 14:42:27.134811 [0] p25p1_fdma::check_timeout: expired
+3Hz)57Hz)08/30/26 14:42:28.150487 [0] p25p1_fdma::check_timeout: expired
+4Hz)2Hz)08/30/26 14:42:29.166426 [0] p25p1_fdma::check_timeout: expired
+60Hz)58Hz)08/30/26 14:42:30.182213 [0] p25p1_fdma::check_timeout: expired
+5Hz)3Hz)08/30/26 14:42:31.198041 [0] p25p1_fdma::check_timeout: expired
+5Hz)47Hz)08/30/26 14:42:32.213716 [0] p25p1_fdma::check_timeout: expired
+52Hz)5Hz)08/30/26 14:42:33.229554 [0] p25p1_fdma::check_timeout: expired
+64Hz)75Hz)08/30/26 14:42:34.245466 [0] p25p1_fdma::check_timeout: expired
+7Hz)82Hz)08/30/26 14:42:35.261247 [0] p25p1_fdma::check_timeout: expired
+76Hz)80Hz)08/30/26 14:42:36.277067 [0] p25p1_fdma::check_timeout: expired
+4Hz)1Hz)08/30/26 14:42:37.292844 [0] p25p1_fdma::check_timeout: expired
+2Hz)08/30/26 14:42:38.308587 [0] p25p1_fdma::check_timeout: expired
+5Hz)9Hz)08/30/26 14:42:39.324462 [0] p25p1_fdma::check_timeout: expired
+91Hz)85Hz)08/30/26 14:42:40.340327 [0] p25p1_fdma::check_timeout: expired
+6Hz)0Hz)08/30/26 14:42:41.356060 [0] p25p1_fdma::check_timeout: expired
+77Hz)87Hz)08/30/26 14:42:42.371894 [0] p25p1_fdma::check_timeout: expired
+2Hz)1Hz)08/30/26 14:42:43.387683 [0] p25p1_fdma::check_timeout: expired
+78Hz)6Hz)08/30/26 14:42:44.403538 [0] p25p1_fdma::check_timeout: expired
+3Hz)0Hz)08/30/26 14:42:45.419249 [0] p25p1_fdma::check_timeout: expired
+67Hz)9Hz)08/30/26 14:42:46.435188 [0] p25p1_fdma::check_timeout: expired
+5Hz)08/30/26 14:42:47.450961 [0] p25p1_fdma::check_timeout: expired
+6Hz)75Hz)08/30/26 14:42:48.466794 [0] p25p1_fdma::check_timeout: expired
+80Hz)74Hz)08/30/26 14:42:49.482498 [0] p25p1_fdma::check_timeout: expired
+81Hz)4Hz)08/30/26 14:42:50.498398 [0] p25p1_fdma::check_timeout: expired
+74Hz)1Hz)08/30/26 14:42:51.514088 [0] p25p1_fdma::check_timeout: expired
+3Hz)67Hz)08/30/26 14:42:52.529980 [0] p25p1_fdma::check_timeout: expired
+5Hz)3Hz)08/30/26 14:42:53.545844 [0] p25p1_fdma::check_timeout: expired
+4Hz)1Hz)08/30/26 14:42:54.561683 [0] p25p1_fdma::check_timeout: expired
+57Hz)3Hz)08/30/26 14:42:55.577416 [0] p25p1_fdma::check_timeout: expired
+45Hz)08/30/26 14:42:56.593185 [0] p25p1_fdma::check_timeout: expired
+51Hz)2Hz)08/30/26 14:42:57.608994 [0] p25p1_fdma::check_timeout: expired
+5Hz)08/30/26 14:42:58.624873 [0] p25p1_fdma::check_timeout: expired
+6Hz)62Hz)08/30/26 14:42:59.640672 [0] p25p1_fdma::check_timeout: expired
+59Hz)62Hz)08/30/26 14:43:00.656460 [0] p25p1_fdma::check_timeout: expired
+1Hz)08/30/26 14:43:01.672283 [0] p25p1_fdma::check_timeout: expired
+52Hz)4Hz)08/30/26 14:43:02.688118 [0] p25p1_fdma::check_timeout: expired
+7Hz)40Hz)08/30/26 14:43:03.703892 [0] p25p1_fdma::check_timeout: expired
+36Hz)1Hz)08/30/26 14:43:04.719711 [0] p25p1_fdma::check_timeout: expired
+0Hz)2Hz)1Hz)08/30/26 14:43:05.735579 [0] p25p1_fdma::check_timeout: expired
+26Hz)30Hz)08/30/26 14:43:06.751225 [0] p25p1_fdma::check_timeout: expired
+1Hz)08/30/26 14:43:07.767050 [0] p25p1_fdma::check_timeout: expired
+3Hz)24Hz)08/30/26 14:43:08.782852 [0] p25p1_fdma::check_timeout: expired
+8Hz)35Hz)08/30/26 14:43:09.798762 [0] p25p1_fdma::check_timeout: expired
+2Hz)26Hz)08/30/26 14:43:10.814578 [0] p25p1_fdma::check_timeout: expired
+1Hz)08/30/26 14:43:11.830367 [0] p25p1_fdma::check_timeout: expired
+0Hz)2Hz)08/30/26 14:43:12.846107 [0] p25p1_fdma::check_timeout: expired
+0Hz)13Hz)08/30/26 14:43:13.861946 [0] p25p1_fdma::check_timeout: expired
+1Hz)2Hz)08/30/26 14:43:14.877790 [0] p25p1_fdma::check_timeout: expired
+0Hz)7Hz)08/30/26 14:43:15.893598 [0] p25p1_fdma::check_timeout: expired
+6Hz)21Hz)08/30/26 14:43:16.909413 [0] p25p1_fdma::check_timeout: expired
+2Hz)9Hz)08/30/26 14:43:17.925299 [0] p25p1_fdma::check_timeout: expired
+5Hz)1Hz)08/30/26 14:43:18.940995 [0] p25p1_fdma::check_timeout: expired
+18Hz)0Hz)08/30/26 14:43:19.956850 [0] p25p1_fdma::check_timeout: expired
+6Hz)8Hz)08/30/26 14:43:20.972537 [0] p25p1_fdma::check_timeout: expired
+5Hz)7Hz)08/30/26 14:43:21.988370 [0] p25p1_fdma::check_timeout: expired
+1Hz)0Hz)08/30/26 14:43:23.004305 [0] p25p1_fdma::check_timeout: expired
+09Hz)12Hz)08/30/26 14:43:24.019974 [0] p25p1_fdma::check_timeout: expired
+4Hz)5Hz)08/30/26 14:43:25.035955 [0] p25p1_fdma::check_timeout: expired
+4Hz)08Hz)08/30/26 14:43:26.051704 [0] p25p1_fdma::check_timeout: expired
+9Hz)398Hz)08/30/26 14:43:27.067521 [0] p25p1_fdma::check_timeout: expired
+401Hz)3Hz)08/30/26 14:43:28.083367 [0] p25p1_fdma::check_timeout: expired
+5Hz)13Hz)08/30/26 14:43:29.099080 [0] p25p1_fdma::check_timeout: expired
+05Hz)08/30/26 14:43:30.114914 [0] p25p1_fdma::check_timeout: expired
+397Hz)89Hz)08/30/26 14:43:31.130663 [0] p25p1_fdma::check_timeout: expired
+92Hz)89Hz)>

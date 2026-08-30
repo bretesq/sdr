@@ -1,0 +1,175 @@
+CPU Features: SSE2+ SSE4.1+ AVX+ FMA+
+Using avx for xtrxdsp_iq16_sc32
+Using avx for xtrxdsp_iq8_ic16
+Using avx for xtrxdsp_iq16_ic16i
+Using avx for xtrxdsp_iq8_ic8i
+Using avx for xtrxdsp_sc32i_iq16
+Using avx for xtrxdsp_iq8_sc32
+Using avx for xtrxdsp_iq8_sc32i
+Using avx for xtrxdsp_iq16_sc32i
+Using avx for xtrxdsp_sc32_iq16
+Using avx for xtrxdsp_ic16i_iq16
+gr-osmosdr 0.2.0.0 (0.2.0) gnuradio 3.10.12.0
+built-in source types: file fcd rtl rtl_tcp miri hackrf bladerf rfspace airspy airspyhf soapy redpitaya freesrp xtrx 
+Using HackRF Pro with firmware 2026.01.3
+gain: name: RF range: start 0 stop 14 step 14
+gain: name: IF range: start 0 stop 40 step 8
+gain: name: BB range: start 0 stop 62 step 2
+setting gain RF to 14
+setting gain IF to 40
+setting gain BB to 44
+supported sample rates 8000000-20000000 step 2000000
+demodulator: xlator if_rate=24000, input_rate=8000000, decim=333, if taps=[1605,49], resampled_rate=24024, sps=5
+fll_band_edge_cc :warning: Using legacy FLL loop filter. Consider updating to the improved loop filter, which requires a change in the bandwidth setting. See https://github.com/gnuradio/gnuradio/pull/7890 for more information.
+p25_frame_assembler_impl: do_imbe[0], do_output[0], do_audio_output[0], do_phase2_tdma[0], do_nocrypt[0]
+08/30/26 14:41:01.822332 [0] p25_frame_assembler_impl::control: cmd(set_slotid), args({"tuner": 0, "cmd": "set_slotid", "slotid": 0})
+[?1049h[22;0;0t[1;24r(B[m[4l[?7h[?1h=[?1h=[H[2Jmetadata update not enabled
+(B[0;7m                                      OP25                                     (B[m[24d(B[0;7m    (f)req (h)old (s)kip (l)ock (W)list (B)list (q)uit (1-6)plot (,.<>)tune    (B[m[2dpython version detected: 3.14.4 (main, Jun 18 2026, 14:25:02) [GCC 15.2.0]
+[22dFrequency 772.256250(0)(-1Hz)[23d[2d[22;25H0Hz)[K[23d[2d08/30/26 14:41:02.822639 [0] p25p1_fdma::check_timeout: expired
+[22;25H2Hz)[23d[2d[22;25H4Hz)[23d[2d08/30/26 14:41:03.838422 [0] p25p1_fdma::check_timeout: expired
+[22;25H5Hz)[23d[2d[22;29H[23d[2d08/30/26 14:41:04.854141 [0] p25p1_fdma::check_timeout: expired
+[22;25H-3Hz)[23d[2d[22;26H4Hz)[23d[2d08/30/26 14:41:05.870068 [0] p25p1_fdma::check_timeout: expired
+[22;26H8Hz)[23d[2d[22;26H7Hz)[23d[2d08/30/26 14:41:06.885782 [0] p25p1_fdma::check_timeout: expired
+[22;26H11Hz)[23d[2d[22;26H6Hz)[K[23d[2d08/30/26 14:41:07.901645 [0] p25p1_fdma::check_timeout: expired
+[22;26H4Hz)[23d[2d[22;26H3Hz)[23d[2d08/30/26 14:41:08.917505 [0] p25p1_fdma::check_timeout: expired
+[22;25H0Hz)[K[23d[2d[22;29H[23d[2d08/30/26 14:41:09.933219 [0] p25p1_fdma::check_timeout: expired
+[22;25H-6Hz)[23d[2d[22;26H9Hz)[23d[2d08/30/26 14:41:10.948997 [0] p25p1_fdma::check_timeout: expired
+[22;26H5Hz)[23d[2d[22;26H6Hz)[23d[2d08/30/26 14:41:11.964811 [0] p25p1_fdma::check_timeout: expired
+[22;26H9Hz)[23d[2d[22;26H6Hz)[23d[2d08/30/26 14:41:12.980669 [0] p25p1_fdma::check_timeout: expired
+[22;26H14Hz)[23d[2d[22;27H8Hz)[23d[2d08/30/26 14:41:13.996503 [0] p25p1_fdma::check_timeout: expired
+[22;27H4Hz)[23d[2d[22;27H7Hz)[23d[2d08/30/26 14:41:15.012358 [0] p25p1_fdma::check_timeout: expired
+[22;27H6Hz)[23d[2d[22;27H7Hz)[23d[2d08/30/26 14:41:16.028077 [0] p25p1_fdma::check_timeout: expired
+[22;27H4Hz)[23d[2d[22;26H24Hz)[23d[2d08/30/26 14:41:17.043956 [0] p25p1_fdma::check_timeout: expired
+[22;26H31Hz)[23d[2d[22;31H[23d[2d[22;27H0Hz)[23d[2d08/30/26 14:41:18.059773 [0] p25p1_fdma::check_timeout: expired
+[22;27H3Hz)[23d[2d[22;27H0Hz)[23d[2d08/30/26 14:41:19.075566 [0] p25p1_fdma::check_timeout: expired
+[22;26H25Hz)[23d[2d[22;27H4Hz)[23d[2d08/30/26 14:41:20.091396 [0] p25p1_fdma::check_timeout: expired
+[22;27H7Hz)[23d[2d[22;27H6Hz)[23d[2d08/30/26 14:41:21.107125 [0] p25p1_fdma::check_timeout: expired
+[22;26H30Hz)[23d[2d[22;26H25Hz)[23d[2d08/30/26 14:41:22.123010 [0] p25p1_fdma::check_timeout: expired
+[22;27H6Hz)[23d[2d[22;26H35Hz)[23d[2d08/30/26 14:41:23.138726 [0] p25p1_fdma::check_timeout: expired
+[22;27H8Hz)[23d[2d[22;27H5Hz)[23d[2d08/30/26 14:41:24.154593 [0] p25p1_fdma::check_timeout: expired
+[22;27H3Hz)[23d[2d[22;27H5Hz)[23d[2d08/30/26 14:41:25.170435 [0] p25p1_fdma::check_timeout: expired
+[22;27H8Hz)[23d[2d[22;26H41Hz)[23d[2d08/30/26 14:41:26.186271 [0] p25p1_fdma::check_timeout: expired
+[22;26H38Hz)[23d[2d[22;26H48Hz)[23d[2d08/30/26 14:41:27.202050 [0] p25p1_fdma::check_timeout: expired
+[22;27H5Hz)[23d[2d[22;26H37Hz)[23d[2d08/30/26 14:41:28.217845 [0] p25p1_fdma::check_timeout: expired
+[22;26H57Hz)[23d[2d[22;26H144Hz)[23d[2d08/30/26 14:41:29.233579 [0] p25p1_fdma::check_timeout: expired
+[22;26H219Hz)[23d[2d[22;27H74Hz)[23d[2d08/30/26 14:41:30.249389 [0] p25p1_fdma::check_timeout: expired
+[22;26H320Hz)[23d[2d[22;27H74Hz)[23d[2d08/30/26 14:41:31.265352 [0] p25p1_fdma::check_timeout: expired
+[22;27H91Hz)[23d[2d[22;28H6Hz)[23d[2d08/30/26 14:41:32.281106 [0] p25p1_fdma::check_timeout: expired
+[22;28H5Hz)[23d[2d[22;27H87Hz)[23d[2d08/30/26 14:41:33.296835 [0] p25p1_fdma::check_timeout: expired
+[22;28H9Hz)[23d[2d[22;32H[23d[2d08/30/26 14:41:34.312716 [0] p25p1_fdma::check_timeout: expired
+[22;27H90Hz)[23d[2d[22;28H1Hz)[23d[2d08/30/26 14:41:35.328442 [0] p25p1_fdma::check_timeout: expired
+[22;32H[23d[2d[22;32H[23d[2d08/30/26 14:41:36.344319 [0] p25p1_fdma::check_timeout: expired
+[22;28H3Hz)[23d[2d[22;26H401Hz)[23d[2d08/30/26 14:41:37.360091 [0] p25p1_fdma::check_timeout: expired
+[22;26H393Hz)[23d[2d[22;28H1Hz)[23d[2d08/30/26 14:41:38.375857 [0] p25p1_fdma::check_timeout: expired
+[22;27H88Hz)[23d[2d[22;28H9Hz)[23d[2d08/30/26 14:41:39.391742 [0] p25p1_fdma::check_timeout: expired
+[22;27H95Hz)[23d[2d[22;28H1Hz)[23d[2d08/30/26 14:41:40.407566 [0] p25p1_fdma::check_timeout: expired
+[22;28H4Hz)[23d[2d[22;28H5Hz)[23d[2d08/30/26 14:41:41.423264 [0] p25p1_fdma::check_timeout: expired
+[22;32H[23d[2d[22;28H1Hz)[23d[2d08/30/26 14:41:42.439208 [0] p25p1_fdma::check_timeout: expired
+[22;28H4Hz)[23d[2d[22;27H87Hz)[23d[2d08/30/26 14:41:43.455029 [0] p25p1_fdma::check_timeout: expired
+[22;28H6Hz)[23d[2d[22;28H7Hz)[23d[2d08/30/26 14:41:44.470834 [0] p25p1_fdma::check_timeout: expired
+[22;27H92Hz)[23d[2d[22;27H89Hz)[23d[2d08/30/26 14:41:45.486604 [0] p25p1_fdma::check_timeout: expired
+[22;28H7Hz)[23d[2d[22;28H3Hz)[23d[2d08/30/26 14:41:46.502341 [0] p25p1_fdma::check_timeout: expired
+[22;27H78Hz)[23d[2d[22;27H82Hz)[23d[2d08/30/26 14:41:47.518219 [0] p25p1_fdma::check_timeout: expired
+[22;27H79Hz)[23d[2d[22;27H80Hz)[23d[2d08/30/26 14:41:48.533921 [0] p25p1_fdma::check_timeout: expired
+[22;28H1Hz)[23d[2d[22;28H2Hz)[23d[2d08/30/26 14:41:49.549852 [0] p25p1_fdma::check_timeout: expired
+[22;27H90Hz)[23d[2d[22;27H89Hz)[23d[2d08/30/26 14:41:50.565627 [0] p25p1_fdma::check_timeout: expired
+[22;27H93Hz)[23d[2d[22;28H0Hz)[23d[2d08/30/26 14:41:51.581468 [0] p25p1_fdma::check_timeout: expired
+[22;27H89Hz)[23d[2d[22;26H400Hz)[23d[2d08/30/26 14:41:52.597336 [0] p25p1_fdma::check_timeout: expired
+[22;26H397Hz)[23d[2d[22;26H401Hz)[23d[2d[22;28H2Hz)[23d[2d08/30/26 14:41:53.613067 [0] p25p1_fdma::check_timeout: expired
+[22;28H4Hz)[23d[2d[22;28H2Hz)[23d[2d08/30/26 14:41:54.628855 [0] p25p1_fdma::check_timeout: expired
+[22;28H6Hz)[23d[2d[22;28H4Hz)[23d[2d08/30/26 14:41:55.644605 [0] p25p1_fdma::check_timeout: expired
+[22;28H9Hz)[23d[2d[22;27H18Hz)[23d[2d08/30/26 14:41:56.660397 [0] p25p1_fdma::check_timeout: expired
+[22;28H7Hz)[23d[2d[22;28H3Hz)[23d[2d08/30/26 14:41:57.676239 [0] p25p1_fdma::check_timeout: expired
+[22;28H5Hz)[23d[2d[22;28H4Hz)[23d[2d08/30/26 14:41:58.692087 [0] p25p1_fdma::check_timeout: expired
+[22;28H2Hz)[23d[2d[22;28H0Hz)[23d[2d08/30/26 14:41:59.707884 [0] p25p1_fdma::check_timeout: expired
+[22;27H05Hz)[23d[2d[22;27H11Hz)[23d[2d08/30/26 14:42:00.723748 [0] p25p1_fdma::check_timeout: expired
+[22;28H8Hz)[23d[2d[22;28H2Hz)[23d[2d08/30/26 14:42:01.739533 [0] p25p1_fdma::check_timeout: expired
+[22;27H21Hz)[23d[2d[22;28H0Hz)[23d[2d08/30/26 14:42:02.755268 [0] p25p1_fdma::check_timeout: expired
+[22;32H[23d[2d[22;27H18Hz)[23d[2d08/30/26 14:42:03.771149 [0] p25p1_fdma::check_timeout: expired
+[22;27H20Hz)[23d[2d[22;28H5Hz)[23d[2d08/30/26 14:42:04.786983 [0] p25p1_fdma::check_timeout: expired
+[22;28H0Hz)[23d[2d[22;27H17Hz)[23d[2d08/30/26 14:42:05.802715 [0] p25p1_fdma::check_timeout: expired
+[22;28H3Hz)[23d[2d[22;32H[23d[2d08/30/26 14:42:06.818580 [0] p25p1_fdma::check_timeout: expired
+[22;28H1Hz)[23d[2d[22;27H09Hz)[23d[2d08/30/26 14:42:07.834394 [0] p25p1_fdma::check_timeout: expired
+[22;28H5Hz)[23d[2d[22;27H10Hz)[23d[2d08/30/26 14:42:08.850205 [0] p25p1_fdma::check_timeout: expired
+[22;26H398Hz)[23d[2d[22;28H6Hz)[23d[2d08/30/26 14:42:09.865909 [0] p25p1_fdma::check_timeout: expired
+[22;28H3Hz)[23d[2d[22;28H1Hz)[23d[2d08/30/26 14:42:10.881795 [0] p25p1_fdma::check_timeout: expired
+[22;32H[23d[2d[22;27H85Hz)[23d[2d08/30/26 14:42:11.897623 [0] p25p1_fdma::check_timeout: expired
+[22;26H406Hz)[23d[2d[22;27H26Hz)[23d[2d08/30/26 14:42:12.913423 [0] p25p1_fdma::check_timeout: expired
+[22;27H43Hz)[23d[2d[22;27H52Hz)[23d[2d08/30/26 14:42:13.929273 [0] p25p1_fdma::check_timeout: expired
+[22;27H63Hz)[23d[2d[22;28H4Hz)[23d[2d08/30/26 14:42:14.945005 [0] p25p1_fdma::check_timeout: expired
+[22;28H6Hz)[23d[2d[22;27H59Hz)[23d[2d08/30/26 14:42:15.960846 [0] p25p1_fdma::check_timeout: expired
+[22;28H3Hz)[23d[2d[22;28H9Hz)[23d[2d08/30/26 14:42:16.976659 [0] p25p1_fdma::check_timeout: expired
+[22;27H64Hz)[23d[2d[22;27H58Hz)[23d[2d08/30/26 14:42:17.992529 [0] p25p1_fdma::check_timeout: expired
+[22;27H65Hz)[23d[2d[22;27H70Hz)[23d[2d08/30/26 14:42:19.008375 [0] p25p1_fdma::check_timeout: expired
+[22;28H1Hz)[23d[2d[22;27H68Hz)[23d[2d08/30/26 14:42:20.024085 [0] p25p1_fdma::check_timeout: expired
+[22;27H76Hz)[23d[2d[22;32H[23d[2d08/30/26 14:42:21.039880 [0] p25p1_fdma::check_timeout: expired
+[22;28H4Hz)[23d[2d[22;27H69Hz)[23d[2d08/30/26 14:42:22.055690 [0] p25p1_fdma::check_timeout: expired
+[22;27H74Hz)[23d[2d[22;28H5Hz)[23d[2d08/30/26 14:42:23.071508 [0] p25p1_fdma::check_timeout: expired
+[22;32H[23d[2d[22;28H4Hz)[23d[2d08/30/26 14:42:24.087340 [0] p25p1_fdma::check_timeout: expired
+[22;28H7Hz)[23d[2d[22;28H8Hz)[23d[2d08/30/26 14:42:25.103129 [0] p25p1_fdma::check_timeout: expired
+[22;27H80Hz)[23d[2d[22;27H71Hz)[23d[2d08/30/26 14:42:26.118966 [0] p25p1_fdma::check_timeout: expired
+[22;27H67Hz)[23d[2d[22;28H8Hz)[23d[2d08/30/26 14:42:27.134811 [0] p25p1_fdma::check_timeout: expired
+[22;28H3Hz)[23d[2d[22;27H57Hz)[23d[2d08/30/26 14:42:28.150487 [0] p25p1_fdma::check_timeout: expired
+[22;28H4Hz)[23d[2d[22;28H2Hz)[23d[2d08/30/26 14:42:29.166426 [0] p25p1_fdma::check_timeout: expired
+[22;27H60Hz)[23d[2d[22;32H[23d[2d[22;27H58Hz)[23d[2d08/30/26 14:42:30.182213 [0] p25p1_fdma::check_timeout: expired
+[22;28H5Hz)[23d[2d[22;28H3Hz)[23d[2d08/30/26 14:42:31.198041 [0] p25p1_fdma::check_timeout: expired
+[22;28H5Hz)[23d[2d[22;27H47Hz)[23d[2d08/30/26 14:42:32.213716 [0] p25p1_fdma::check_timeout: expired
+[22;27H52Hz)[23d[2d[22;28H5Hz)[23d[2d08/30/26 14:42:33.229554 [0] p25p1_fdma::check_timeout: expired
+[22;27H64Hz)[23d[2d[22;27H75Hz)[23d[2d08/30/26 14:42:34.245466 [0] p25p1_fdma::check_timeout: expired
+[22;28H7Hz)[23d[2d[22;27H82Hz)[23d[2d08/30/26 14:42:35.261247 [0] p25p1_fdma::check_timeout: expired
+[22;27H76Hz)[23d[2d[22;27H80Hz)[23d[2d08/30/26 14:42:36.277067 [0] p25p1_fdma::check_timeout: expired
+[22;28H4Hz)[23d[2d[22;28H1Hz)[23d[2d08/30/26 14:42:37.292844 [0] p25p1_fdma::check_timeout: expired
+[22;28H2Hz)[23d[2d[22;32H[23d[2d08/30/26 14:42:38.308587 [0] p25p1_fdma::check_timeout: expired
+[22;28H5Hz)[23d[2d[22;28H9Hz)[23d[2d08/30/26 14:42:39.324462 [0] p25p1_fdma::check_timeout: expired
+[22;27H91Hz)[23d[2d[22;27H85Hz)[23d[2d08/30/26 14:42:40.340327 [0] p25p1_fdma::check_timeout: expired
+[22;28H6Hz)[23d[2d[22;28H0Hz)[23d[2d08/30/26 14:42:41.356060 [0] p25p1_fdma::check_timeout: expired
+[22;27H77Hz)[23d[2d[22;27H87Hz)[23d[2d08/30/26 14:42:42.371894 [0] p25p1_fdma::check_timeout: expired
+[22;28H2Hz)[23d[2d[22;28H1Hz)[23d[2d08/30/26 14:42:43.387683 [0] p25p1_fdma::check_timeout: expired
+[22;27H78Hz)[23d[2d[22;28H6Hz)[23d[2d08/30/26 14:42:44.403538 [0] p25p1_fdma::check_timeout: expired
+[22;28H3Hz)[23d[2d[22;28H0Hz)[23d[2d08/30/26 14:42:45.419249 [0] p25p1_fdma::check_timeout: expired
+[22;27H67Hz)[23d[2d[22;28H9Hz)[23d[2d08/30/26 14:42:46.435188 [0] p25p1_fdma::check_timeout: expired
+[22;32H[23d[2d[22;28H5Hz)[23d[2d08/30/26 14:42:47.450961 [0] p25p1_fdma::check_timeout: expired
+[22;28H6Hz)[23d[2d[22;27H75Hz)[23d[2d08/30/26 14:42:48.466794 [0] p25p1_fdma::check_timeout: expired
+[22;27H80Hz)[23d[2d[22;27H74Hz)[23d[2d08/30/26 14:42:49.482498 [0] p25p1_fdma::check_timeout: expired
+[22;27H81Hz)[23d[2d[22;28H4Hz)[23d[2d08/30/26 14:42:50.498398 [0] p25p1_fdma::check_timeout: expired
+[22;27H74Hz)[23d[2d[22;28H1Hz)[23d[2d08/30/26 14:42:51.514088 [0] p25p1_fdma::check_timeout: expired
+[22;28H3Hz)[23d[2d[22;27H67Hz)[23d[2d08/30/26 14:42:52.529980 [0] p25p1_fdma::check_timeout: expired
+[22;28H5Hz)[23d[2d[22;28H3Hz)[23d[2d08/30/26 14:42:53.545844 [0] p25p1_fdma::check_timeout: expired
+[22;28H4Hz)[23d[2d[22;28H1Hz)[23d[2d08/30/26 14:42:54.561683 [0] p25p1_fdma::check_timeout: expired
+[22;27H57Hz)[23d[2d[22;28H3Hz)[23d[2d08/30/26 14:42:55.577416 [0] p25p1_fdma::check_timeout: expired
+[22;27H45Hz)[23d[2d[22;32H[23d[2d08/30/26 14:42:56.593185 [0] p25p1_fdma::check_timeout: expired
+[22;27H51Hz)[23d[2d[22;28H2Hz)[23d[2d08/30/26 14:42:57.608994 [0] p25p1_fdma::check_timeout: expired
+[22;28H5Hz)[23d[2d[22;32H[23d[2d08/30/26 14:42:58.624873 [0] p25p1_fdma::check_timeout: expired
+[22;28H6Hz)[23d[2d[22;27H62Hz)[23d[2d08/30/26 14:42:59.640672 [0] p25p1_fdma::check_timeout: expired
+[22;27H59Hz)[23d[2d[22;27H62Hz)[23d[2d08/30/26 14:43:00.656460 [0] p25p1_fdma::check_timeout: expired
+[22;28H1Hz)[23d[2d[22;32H[23d[2d08/30/26 14:43:01.672283 [0] p25p1_fdma::check_timeout: expired
+[22;27H52Hz)[23d[2d[22;28H4Hz)[23d[2d08/30/26 14:43:02.688118 [0] p25p1_fdma::check_timeout: expired
+[22;28H7Hz)[23d[2d[22;27H40Hz)[23d[2d08/30/26 14:43:03.703892 [0] p25p1_fdma::check_timeout: expired
+[22;27H36Hz)[23d[2d[22;28H1Hz)[23d[2d08/30/26 14:43:04.719711 [0] p25p1_fdma::check_timeout: expired
+[22;28H0Hz)[23d[2d[22;28H2Hz)[23d[2d[22;28H1Hz)[23d[2d08/30/26 14:43:05.735579 [0] p25p1_fdma::check_timeout: expired
+[22;27H26Hz)[23d[2d[22;27H30Hz)[23d[2d08/30/26 14:43:06.751225 [0] p25p1_fdma::check_timeout: expired
+[22;32H[23d[2d[22;28H1Hz)[23d[2d08/30/26 14:43:07.767050 [0] p25p1_fdma::check_timeout: expired
+[22;28H3Hz)[23d[2d[22;27H24Hz)[23d[2d08/30/26 14:43:08.782852 [0] p25p1_fdma::check_timeout: expired
+[22;28H8Hz)[23d[2d[22;27H35Hz)[23d[2d08/30/26 14:43:09.798762 [0] p25p1_fdma::check_timeout: expired
+[22;28H2Hz)[23d[2d[22;27H26Hz)[23d[2d08/30/26 14:43:10.814578 [0] p25p1_fdma::check_timeout: expired
+[22;32H[23d[2d[22;28H1Hz)[23d[2d08/30/26 14:43:11.830367 [0] p25p1_fdma::check_timeout: expired
+[22;28H0Hz)[23d[2d[22;28H2Hz)[23d[2d08/30/26 14:43:12.846107 [0] p25p1_fdma::check_timeout: expired
+[22;28H0Hz)[23d[2d[22;27H13Hz)[23d[2d08/30/26 14:43:13.861946 [0] p25p1_fdma::check_timeout: expired
+[22;28H1Hz)[23d[2d[22;28H2Hz)[23d[2d08/30/26 14:43:14.877790 [0] p25p1_fdma::check_timeout: expired
+[22;28H0Hz)[23d[2d[22;28H7Hz)[23d[2d08/30/26 14:43:15.893598 [0] p25p1_fdma::check_timeout: expired
+[22;28H6Hz)[23d[2d[22;27H21Hz)[23d[2d08/30/26 14:43:16.909413 [0] p25p1_fdma::check_timeout: expired
+[22;28H2Hz)[23d[2d[22;28H9Hz)[23d[2d08/30/26 14:43:17.925299 [0] p25p1_fdma::check_timeout: expired
+[22;28H5Hz)[23d[2d[22;28H1Hz)[23d[2d08/30/26 14:43:18.940995 [0] p25p1_fdma::check_timeout: expired
+[22;27H18Hz)[23d[2d[22;28H0Hz)[23d[2d08/30/26 14:43:19.956850 [0] p25p1_fdma::check_timeout: expired
+[22;28H6Hz)[23d[2d[22;28H8Hz)[23d[2d08/30/26 14:43:20.972537 [0] p25p1_fdma::check_timeout: expired
+[22;28H5Hz)[23d[2d[22;28H7Hz)[23d[2d08/30/26 14:43:21.988370 [0] p25p1_fdma::check_timeout: expired
+[22;28H1Hz)[23d[2d[22;28H0Hz)[23d[2d08/30/26 14:43:23.004305 [0] p25p1_fdma::check_timeout: expired
+[22;27H09Hz)[23d[2d[22;27H12Hz)[23d[2d08/30/26 14:43:24.019974 [0] p25p1_fdma::check_timeout: expired
+[22;28H4Hz)[23d[2d[22;28H5Hz)[23d[2d08/30/26 14:43:25.035955 [0] p25p1_fdma::check_timeout: expired
+[22;28H4Hz)[23d[2d[22;27H08Hz)[23d[2d08/30/26 14:43:26.051704 [0] p25p1_fdma::check_timeout: expired
+[22;28H9Hz)[23d[2d[22;26H398Hz)[23d[2d08/30/26 14:43:27.067521 [0] p25p1_fdma::check_timeout: expired
+[22;26H401Hz)[23d[2d[22;28H3Hz)[23d[2d08/30/26 14:43:28.083367 [0] p25p1_fdma::check_timeout: expired
+[22;28H5Hz)[23d[2d[22;27H13Hz)[23d[2d08/30/26 14:43:29.099080 [0] p25p1_fdma::check_timeout: expired
+[22;32H[23d[2d[22;27H05Hz)[23d[2d08/30/26 14:43:30.114914 [0] p25p1_fdma::check_timeout: expired
+[22;26H397Hz)[23d[2d[22;27H89Hz)[23d[2d08/30/26 14:43:31.130663 [0] p25p1_fdma::check_timeout: expired
+[22;27H92Hz)[23d[2d[22;27H89Hz)[23d[2d[24;1H[?1049l[23;0;0t[?1l>

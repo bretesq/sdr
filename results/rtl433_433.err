@@ -1,0 +1,2 @@
+rtl_433 version 25.12 (2025-12-12) inputs file rtl_tcp RTL-SDR SoapySDR
+Use "-F log" if you want any messages, warnings, and errors in the console.

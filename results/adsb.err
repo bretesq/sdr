@@ -1,0 +1,17 @@
+Sun Aug 30 13:46:08 2026 CDT  EB_SOURCE EB_VERSION starting up.
+Using sample converter: UC8, integer/table path
+Found 2 device(s):
+  0:  Realtek, RTL2838UHIDIR, SN: 00000202
+  1:  Realtek, RTL2838UHIDIR, SN: 00000001
+
+Using device 0: Generic RTL2832U OEM
+Found 2 device(s):
+0: Realtek, RTL2838UHIDIR, SN: 00000202 (currently selected)
+1: Realtek, RTL2838UHIDIR, SN: 00000001 
+Detached kernel driver
+Found Rafael Micro R820T tuner
+Setting gain to: 49.60 dB
+Gain reported by device: 49.60 dB
+Allocating 15 zero-copy buffers
+Sun Aug 30 13:49:25 2026 CDT  Caught SIGTERM, shutting down..
+

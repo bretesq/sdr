@@ -1,0 +1,2 @@
+Sysname	Control Channel List	Offset	NAC	Modulation	TGID Tags File	Whitelist	Blacklist	Center Frequency
+LWIN-BR-C4FM	772.08125,769.16875,770.33125,770.66875,771.28125,771.53125,771.78125,769.56875	0	0x0	fsk4				

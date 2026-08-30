@@ -1,0 +1,222 @@
+CPU Features: SSE2+ SSE4.1+ AVX+ FMA+
+Using avx for xtrxdsp_iq16_sc32
+Using avx for xtrxdsp_iq8_ic16
+Using avx for xtrxdsp_iq16_ic16i
+Using avx for xtrxdsp_iq8_ic8i
+Using avx for xtrxdsp_sc32i_iq16
+Using avx for xtrxdsp_iq8_sc32
+Using avx for xtrxdsp_iq8_sc32i
+Using avx for xtrxdsp_iq16_sc32i
+Using avx for xtrxdsp_sc32_iq16
+Using avx for xtrxdsp_ic16i_iq16
+gr-osmosdr 0.2.0.0 (0.2.0) gnuradio 3.10.12.0
+built-in source types: file fcd rtl rtl_tcp miri hackrf bladerf rfspace airspy airspyhf soapy redpitaya freesrp xtrx 
+Using HackRF Pro with firmware 2026.01.3
+gain: name: RF range: start 0 stop 14 step 14
+gain: name: IF range: start 0 stop 40 step 8
+gain: name: BB range: start 0 stop 62 step 2
+setting gain RF to 14
+setting gain IF to 40
+setting gain BB to 62
+supported sample rates 8000000-20000000 step 2000000
+demodulator: xlator if_rate=24000, input_rate=8000000, decim=333, if taps=[1605,49], resampled_rate=24024, sps=5
+fll_band_edge_cc :warning: Using legacy FLL loop filter. Consider updating to the improved loop filter, which requires a change in the bandwidth setting. See https://github.com/gnuradio/gnuradio/pull/7890 for more information.
+p25_frame_assembler_impl: do_imbe[0], do_output[0], do_audio_output[0], do_phase2_tdma[1], do_nocrypt[0]
+08/30/26 14:57:16.866123 set control channel=773.056250
+==metadata update not enabled
+                                      OP25                                         (f)req (h)old (s)kip (l)ock (W)list (B)list (q)uit (1-6)plot (,.<>)tune    NAC 0x0 WACN 0x-1 SYSID 0x-1 0.000000/0.000000 tsbks 0python version detected: 3.14.4 (main, Jun 18 2026, 14:25:02) [GCC 15.2.0]
+Frequency 773.056250(0)(0Hz)08/30/26 14:57:17.871943 control channel timeout
+08/30/26 14:57:18.887794 control channel timeout
+1Hz)08/30/26 14:57:19.903701 control channel timeout
+2Hz)08/30/26 14:57:20.919638 control channel timeout
+4Hz)08/30/26 14:57:21.935545 control channel timeout
+5Hz)08/30/26 14:57:22.951624 control channel timeout
+08/30/26 14:57:22.951618 set control channel=769.193750
+6Hz)7Hz)08/30/26 14:57:23.967406 control channel timeout
+69.193708/30/26 14:57:24.985714 control channel timeout
+8Hz)10Hz)08/30/26 14:57:26.001719 control channel timeout
+1Hz)3Hz)08/30/26 14:57:27.017547 control channel timeout
+5Hz)7Hz)08/30/26 14:57:28.033398 control channel timeout
+8Hz)20Hz)08/30/26 14:57:29.049272 control channel timeout
+08/30/26 14:57:29.049264 set control channel=773.056250
+4Hz)7Hz)08/30/26 14:57:30.065321 control channel timeout
+73.05629Hz)08/30/26 14:57:31.073560 control channel timeout
+32Hz)3Hz)08/30/26 14:57:32.089263 control channel timeout
+7Hz)41Hz)08/30/26 14:57:33.105195 control channel timeout
+6Hz)50Hz)08/30/26 14:57:34.121220 control channel timeout
+6Hz)9Hz)08/30/26 14:57:35.137058 control channel timeout
+08/30/26 14:57:35.137052 set control channel=769.193750
+66Hz)74Hz)08/30/26 14:57:36.152837 control channel timeout
+69.193782Hz)91Hz)08/30/26 14:57:37.171342 control channel timeout
+101Hz)12Hz)08/30/26 14:57:38.187544 control channel timeout
+25Hz)39Hz)08/30/26 14:57:39.203393 control channel timeout
+54Hz)73Hz)08/30/26 14:57:40.219466 control channel timeout
+92Hz)212Hz)08/30/26 14:57:41.235461 control channel timeout
+08/30/26 14:57:41.235453 set control channel=773.056250
+9Hz)29Hz)08/30/26 14:57:42.251496 control channel timeout
+73.056231Hz)48Hz)08/30/26 14:57:43.270153 control channel timeout
+67Hz)85Hz)08/30/26 14:57:44.285896 control channel timeout
+308Hz)30Hz)08/30/26 14:57:45.301810 control channel timeout
+58Hz)87Hz)08/30/26 14:57:46.317735 control channel timeout
+412Hz)39Hz)08/30/26 14:57:47.333430 control channel timeout
+08/30/26 14:57:47.333424 set control channel=769.193750
+61Hz)86Hz)08/30/26 14:57:48.349125 control channel timeout
+69.1937516Hz)29Hz)08/30/26 14:57:49.357095 control channel timeout
+45Hz)8Hz)08/30/26 14:57:50.373020 control channel timeout
+52Hz)69Hz)87Hz)08/30/26 14:57:51.389118 control channel timeout
+603Hz)597Hz)08/30/26 14:57:52.405294 control channel timeout
+602Hz)3Hz)08/30/26 14:57:53.421158 control channel timeout
+08/30/26 14:57:53.421154 set control channel=773.056250
+7Hz)18Hz)08/30/26 14:57:54.436958 control channel timeout
+73.056242Hz)72Hz)08/30/26 14:57:55.455013 control channel timeout
+92Hz)714Hz)08/30/26 14:57:56.471063 control channel timeout
+32Hz)46Hz)08/30/26 14:57:57.486894 control channel timeout
+65Hz)82Hz)08/30/26 14:57:58.502725 control channel timeout
+99Hz)809Hz)08/30/26 14:57:59.518737 control channel timeout
+08/30/26 14:57:59.518730 set control channel=769.193750
+20Hz)33Hz)08/30/26 14:58:00.534601 control channel timeout
+69.19371Hz)24Hz)08/30/26 14:58:01.552765 control channel timeout
+6Hz)08/30/26 14:58:02.568629 control channel timeout
+8Hz)08/30/26 14:58:03.584395 control channel timeout
+4Hz)18Hz)08/30/26 14:58:04.600310 control channel timeout
+06Hz)798Hz)08/30/26 14:58:05.616196 control channel timeout
+08/30/26 14:58:05.616190 set control channel=773.056250
+2Hz)0Hz)08/30/26 14:58:06.632076 control channel timeout
+73.05624Hz)806Hz)08/30/26 14:58:07.641256 control channel timeout
+17Hz)25Hz)08/30/26 14:58:08.657212 control channel timeout
+34Hz)9Hz)08/30/26 14:58:09.673063 control channel timeout
+41Hz)4Hz)08/30/26 14:58:10.688904 control channel timeout
+51Hz)7Hz)08/30/26 14:58:11.704734 control channel timeout
+08/30/26 14:58:11.704727 set control channel=769.193750
+8Hz)08/30/26 14:58:12.720718 control channel timeout
+69.193761Hz)55Hz)08/30/26 14:58:13.739989 control channel timeout
+46Hz)37Hz)08/30/26 14:58:14.756388 control channel timeout
+28Hz)2Hz)08/30/26 14:58:15.773329 control channel timeout
+10Hz)796Hz)08/30/26 14:58:16.790007 control channel timeout
+78Hz)9Hz)08/30/26 14:58:17.806268 control channel timeout
+08/30/26 14:58:17.806261 set control channel=773.056250
+8Hz)88Hz)08/30/26 14:58:18.822518 control channel timeout
+73.05620Hz)95Hz)08/30/26 14:58:19.831155 control channel timeout
+805Hz)13Hz)08/30/26 14:58:20.848077 control channel timeout
+8Hz)26Hz)08/30/26 14:58:21.854577 control channel timeout
+34Hz)40Hz)08/30/26 14:58:22.871526 control channel timeout
+8Hz)54Hz)9Hz)08/30/26 14:58:23.877714 control channel timeout
+08/30/26 14:58:23.877708 set control channel=769.193750
+62Hz)08/30/26 14:58:24.893609 control channel timeout
+69.193754Hz)48Hz)08/30/26 14:58:25.912464 control channel timeout
+6Hz)7Hz)08/30/26 14:58:26.928542 control channel timeout
+0Hz)33Hz)08/30/26 14:58:27.944291 control channel timeout
+19Hz)8Hz)08/30/26 14:58:28.960042 control channel timeout
+9Hz)08/30/26 14:58:29.976016 control channel timeout
+08/30/26 14:58:29.976010 set control channel=773.056250
+03Hz)791Hz)08/30/26 14:58:30.991825 control channel timeout
+73.05627Hz)812Hz)08/30/26 14:58:32.010450 control channel timeout
+21Hz)30Hz)08/30/26 14:58:33.026284 control channel timeout
+1Hz)4Hz)08/30/26 14:58:34.042119 control channel timeout
+8Hz)46Hz)08/30/26 14:58:35.058122 control channel timeout
+9Hz)52Hz)08/30/26 14:58:36.074309 control channel timeout
+08/30/26 14:58:36.074304 set control channel=769.193750
+7Hz)62Hz)08/30/26 14:58:37.070137 control channel timeout
+69.193753Hz)47Hz)08/30/26 14:58:38.088238 control channel timeout
+5Hz)37Hz)08/30/26 14:58:39.104066 control channel timeout
+4Hz)19Hz)08/30/26 14:58:40.119900 control channel timeout
+08Hz)7Hz)08/30/26 14:58:41.135834 control channel timeout
+1Hz)12Hz)08/30/26 14:58:42.151551 control channel timeout
+08/30/26 14:58:42.151546 set control channel=773.056250
+08Hz)783Hz)08/30/26 14:58:43.167300 control channel timeout
+73.05624Hz)96Hz)08/30/26 14:58:44.185957 control channel timeout
+808Hz)20Hz)08/30/26 14:58:45.201609 control channel timeout
+9Hz)36Hz)08/30/26 14:58:46.217284 control channel timeout
+41Hz)2Hz)08/30/26 14:58:47.233255 control channel timeout
+9Hz)51Hz)08/30/26 14:58:48.249189 control channel timeout
+08/30/26 14:58:48.249183 set control channel=769.193750
+0Hz)6Hz)08/30/26 14:58:49.265189 control channel timeout
+69.193761Hz)51Hz)08/30/26 14:58:50.276022 control channel timeout
+43Hz)37Hz)08/30/26 14:58:51.291921 control channel timeout
+07Hz)781Hz)08/30/26 14:58:52.307969 control channel timeout
+65Hz)08/30/26 14:58:53.323790 control channel timeout
+8Hz)5Hz)08/30/26 14:58:54.339547 control channel timeout
+08/30/26 14:58:54.339541 set control channel=773.056250
+59Hz)43Hz)08/30/26 14:58:55.355497 control channel timeout
+73.056237Hz)53Hz)68Hz)08/30/26 14:58:56.373829 control channel timeout
+85Hz)98Hz)08/30/26 14:58:57.389784 control channel timeout
+811Hz)9Hz)08/30/26 14:58:58.405903 control channel timeout
+28Hz)35Hz)08/30/26 14:58:59.421939 control channel timeout
+8Hz)43Hz)08/30/26 14:59:00.438123 control channel timeout
+08/30/26 14:59:00.438118 set control channel=769.193750
+9Hz)54Hz)08/30/26 14:59:01.453833 control channel timeout
+69.193748Hz)2Hz)08/30/26 14:59:02.462530 control channel timeout
+26Hz)10Hz)08/30/26 14:59:03.478429 control channel timeout
+781Hz)63Hz)08/30/26 14:59:04.494358 control channel timeout
+55Hz)35Hz)08/30/26 14:59:05.510181 control channel timeout
+28Hz)3Hz)08/30/26 14:59:06.525906 control channel timeout
+08/30/26 14:59:06.525900 set control channel=773.056250
+15Hz)06Hz)08/30/26 14:59:07.541519 control channel timeout
+73.056215Hz)36Hz)08/30/26 14:59:08.559477 control channel timeout
+55Hz)67Hz)08/30/26 14:59:09.575473 control channel timeout
+75Hz)92Hz)08/30/26 14:59:10.591471 control channel timeout
+804Hz)3Hz)08/30/26 14:59:11.607354 control channel timeout
+9Hz)20Hz)08/30/26 14:59:12.623353 control channel timeout
+08/30/26 14:59:12.623348 set control channel=769.193750
+8Hz)36Hz)08/30/26 14:59:13.639449 control channel timeout
+69.193740Hz)32Hz)08/30/26 14:59:14.658482 control channel timeout
+26Hz)11Hz)08/30/26 14:59:15.674489 control channel timeout
+02Hz)791Hz)08/30/26 14:59:16.690432 control channel timeout
+77Hz)5Hz)08/30/26 14:59:17.706061 control channel timeout
+68Hz)71Hz)08/30/26 14:59:18.721716 control channel timeout
+08/30/26 14:59:18.721710 set control channel=773.056250
+68Hz)0Hz)08/30/26 14:59:19.737844 control channel timeout
+73.05625Hz)85Hz)08/30/26 14:59:20.756324 control channel timeout
+801Hz)16Hz)08/30/26 14:59:21.762311 control channel timeout
+29Hz)40Hz)08/30/26 14:59:22.778211 control channel timeout
+51Hz)60Hz)08/30/26 14:59:23.794305 control channel timeout
+4Hz)59Hz)08/30/26 14:59:24.800270 control channel timeout
+08/30/26 14:59:24.800264 set control channel=769.193750
+61Hz)6Hz)08/30/26 14:59:25.816272 control channel timeout
+69.193755Hz)08/30/26 14:59:26.825093 control channel timeout
+42Hz)08/30/26 14:59:27.841077 control channel timeout
+38Hz)2Hz)08/30/26 14:59:28.856858 control channel timeout
+28Hz)4Hz)08/30/26 14:59:29.872907 control channel timeout
+19Hz)3Hz)04Hz)08/30/26 14:59:30.888784 control channel timeout
+08/30/26 14:59:30.888779 set control channel=773.056250
+796Hz)7Hz)08/30/26 14:59:31.904637 control channel timeout
+73.0562809Hz)19Hz)08/30/26 14:59:32.922899 control channel timeout
+29Hz)36Hz)08/30/26 14:59:33.938636 control channel timeout
+41Hz)4Hz)08/30/26 14:59:34.954444 control channel timeout
+8Hz)56Hz)08/30/26 14:59:35.970415 control channel timeout
+9Hz)62Hz)08/30/26 14:59:36.986286 control channel timeout
+08/30/26 14:59:36.986280 set control channel=769.193750
+5Hz)9Hz)08/30/26 14:59:38.002202 control channel timeout
+69.19371Hz)54Hz)08/30/26 14:59:39.020901 control channel timeout
+8Hz)1Hz)08/30/26 14:59:40.036898 control channel timeout
+43Hz)25Hz)08/30/26 14:59:41.052839 control channel timeout
+15Hz)02Hz)08/30/26 14:59:42.068707 control channel timeout
+780Hz)47Hz)08/30/26 14:59:43.084805 control channel timeout
+08/30/26 14:59:43.084799 set control channel=773.056250
+09Hz)665Hz)08/30/26 14:59:44.100672 control channel timeout
+73.056226Hz)9Hz)08/30/26 14:59:45.119131 control channel timeout
+1Hz)08/30/26 14:59:46.114771 control channel timeout
+34Hz)63Hz)08/30/26 14:59:47.130730 control channel timeout
+90Hz)711Hz)08/30/26 14:59:48.149417 control channel timeout
+31Hz)53Hz)08/30/26 14:59:49.165540 control channel timeout
+08/30/26 14:59:49.165535 set control channel=769.193750
+71Hz)90Hz)08/30/26 14:59:50.181606 control channel timeout
+69.1937805Hz)0Hz)08/30/26 14:59:51.189626 control channel timeout
+3Hz)10Hz)08/30/26 14:59:52.206103 control channel timeout
+05Hz)797Hz)08/30/26 14:59:53.222453 control channel timeout
+5Hz)801Hz)08/30/26 14:59:54.238896 control channel timeout
+5Hz)6Hz)08/30/26 14:59:55.254631 control channel timeout
+08/30/26 14:59:55.254624 set control channel=773.056250
+14Hz)3Hz)08/30/26 14:59:56.270511 control channel timeout
+73.056207Hz)20Hz)08/30/26 14:59:57.290727 control channel timeout
+7Hz)08/30/26 14:59:58.306439 control channel timeout
+8Hz)37Hz)08/30/26 14:59:59.322422 control channel timeout
+42Hz)51Hz)08/30/26 15:00:00.338294 control channel timeout
+7Hz)60Hz)08/30/26 15:00:01.354098 control channel timeout
+08/30/26 15:00:01.354091 set control channel=769.193750
+4Hz)7Hz)08/30/26 15:00:02.369908 control channel timeout
+69.19379Hz)54Hz)45Hz)08/30/26 15:00:03.378378 control channel timeout
+31Hz)24Hz)08/30/26 15:00:04.394164 control channel timeout
+10Hz)01Hz)08/30/26 15:00:05.410049 control channel timeout
+783Hz)69Hz)08/30/26 15:00:06.425932 control channel timeout
+>=

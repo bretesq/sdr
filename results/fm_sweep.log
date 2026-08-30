@@ -1,0 +1,11 @@
+call hackrf_sample_rate_set(20.000 MHz)
+call hackrf_baseband_filter_bandwidth_set(15.000 MHz)
+Sweeping from 88 MHz to 108 MHz
+call hackrf_set_amp_enable(0)
+Stop with Ctrl-C
+
+Exiting...
+Total sweeps: 40 in 0.10015 seconds (399.41 sweeps/second)
+hackrf_close() done
+hackrf_exit() done
+exit
