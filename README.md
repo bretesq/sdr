@@ -282,6 +282,60 @@ CDR/audio split above is the best workaround.
 (Incidentally, RTL dongle **1** is well calibrated: its control-channel peak landed
 +2.1 kHz from nominal, versus dongle 0's +24.6 ppm. Use `-p 0` for dongle 1.)
 
+---
+
+## 8. Broadening results & survey methodology fix
+
+### Wideband survey: use a ROLLING baseline, not a global one
+`scripts/find_control.py` compares every bin to one global median. Across an 830 MHz
+sweep that is wrong — the noise floor is not flat, so whole regions with a locally-high
+floor (e.g. 130-137 MHz airband) appeared as ~40 consecutive "signals" at +13 dB.
+
+`scripts/find_signals.py` replaces it with a **rolling-median baseline** (default 2 MHz
+window) plus a local-MAD z-score. Same 130-960 MHz sweep: 8 real carriers instead of dozens
+of phantoms.
+
+| MHz | excess | z | std | Identification |
+|---|---|---|---|---|
+| 769.1667 | 17.4 dB | 18.3 | 1.22 | LWIN control channel (site 50 / 72) |
+| 319.9510 | 13.4 dB | 33.5 | 1.76 | continuous carrier, UHF 225-400 band |
+| 157.6961 | 12.9 dB | 26.3 | 5.39 | VHF marine / business, bursty |
+| 858.2843 | 10.2 dB | 17.6 | 2.67 | LWIN 800 MHz voice |
+| 280.0000 | 10.3 dB | 49.0 | 2.39 | **local RFI — see below** |
+
+### 280.000000 MHz is local interference, not a signal
+A 38 dB, **0.5 kHz wide**, unmodulated constant-envelope carrier at an exactly round
+frequency. Retuning test (the standard discriminator — a real signal keeps its *absolute*
+frequency, an LO artifact keeps its *offset*):
+
+| LO center | peak offset | absolute |
+|---|---|---|
+| 279.850 MHz | +150.0 kHz | 280.00002 MHz |
+| 280.400 MHz | −400.0 kHz | 279.99998 MHz |
+
+Absolute frequency is stable, so it is **not** an SDR/LO artifact — it is a real emitter.
+But sub-kHz bandwidth, no modulation, and a dead-round frequency mark it as a clock or
+oscillator harmonic from nearby electronics. Worth tracking down if it ever lands on a band
+of interest.
+
+### ACARS / APRS: attempted, antenna-limited
+`acarsdec` on 130.025 + 131.550 and `multimon-ng -a AFSK1200` on 144.390 both ran 7 min and
+decoded **nothing**. Measured band energy on the RTL antennas: **+0.9 dB** at 131.550 and
+**+0.3 dB** at 144.390 — no usable signal. Same root cause as ADS-B and AIS.
+
+Two acarsdec gotchas found on the way:
+- All frequencies must fit one tuner window (~2 MHz). `129.125 … 131.725` is rejected with
+  `Frequencies too far apart`.
+- **`-r <device>` must come last**, immediately before the frequency list. Putting `-g 49.6`
+  after `-r` makes acarsdec parse the gain as a frequency: `Invalid frequency 49600000`.
+
+### Where the remaining headroom is
+Everything still blocked (ADS-B, AIS, ACARS, APRS, a dedicated LWIN control-channel
+receiver) is blocked by the **RTL-SDR antennas**, which were never swapped. The single
+cheapest unlock is a coax splitter feeding the good antenna to an RTL-SDR, or a second
+wideband antenna. That one change enables a dedicated control-channel receiver, which would
+recover the ~60% of calls the single radio misses while it is away following a call.
+
 ## Layout
 ```
 scripts/    sweep_peaks.py find_control.py analyze_p25*.py scan_p25band.py

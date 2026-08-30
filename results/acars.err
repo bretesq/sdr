@@ -1,9 +1,4 @@
 Found Rafael Micro R820T tuner
-WARNING: Invalid frequency 0
-WARNING: Invalid frequency 49600000
-WARNING: Invalid frequency 0
-WARNING: Invalid frequency 1000000
-WARNING: Invalid frequency 0
 Setting sample rate: 2.0000 MS/s
 Exact sample rate is: 2000000.052982 Hz
 Allocating 4 zero-copy buffers
