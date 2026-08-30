@@ -1,0 +1,19 @@
+listening 127.0.0.1:23456/23457 for 400s -> /home/besquivel/rtl/recordings/
+  wrote call-1788121693.133.wav  2.7s
+  wrote call-1788121701.194.wav  1.3s
+  wrote call-1788121705.519.wav  1.1s
+  wrote call-1788121715.678.wav  1.4s
+  wrote call-1788121720.069.wav  2.2s
+  wrote call-1788121726.360.wav  1.6s
+  wrote call-1788121832.922.wav  0.7s
+  wrote call-1788121854.352.wav  1.3s
+  wrote call-1788121858.416.wav  2.5s
+  wrote call-1788121924.541.wav  9.5s
+  wrote call-1788121939.352.wav  1.3s
+  wrote call-1788121944.464.wav  1.7s
+  wrote call-1788122012.032.wav  0.9s
+  wrote call-1788122067.606.wav  2.2s
+  wrote call-1788122071.801.wav  3.8s
+
+UDP packets seen: 1839
+15 call(s) captured, 34.1s audio

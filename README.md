@@ -44,11 +44,15 @@ From a 40 s capture: **1599 TSBK messages, 0 discarded frames.**
 ### Site 13 frequencies (RadioReference, verified against decode)
 `24 FREQS · 4 CONTROL` — control: **773.05625**, 774.54375, 851.0375, 851.4875
 
-**Notable:** site 13 advertises two *800 MHz* control channels (851.0375, 851.4875), but a
-dedicated 850–870 MHz sweep here found **zero** carriers above +8 dB, while the 700 MHz leg
-of the same site reads +28 dB. The 800 MHz simulcast leg is not reaching this location at
-all. Anything tuned to the 800 MHz LWIN control channels from here will find dead air —
-use 773.05625.
+**Notable — site 13 is split across two bands.** The control channel is at 700 MHz
+(773.05625, +28 dB here) but **voice traffic is granted onto 800 MHz** (851-853 MHz):
+op25 logged `new freq=852.150000`, `851.837500`, `852.987500`, `852.750000`, `852.562500`.
+
+An early 850-870 MHz sweep with the *old* antenna found nothing, which was misleading on
+two counts: the antenna has since been swapped, and voice channels are **bursty** — a
+time-averaged sweep buries them. Re-sweeping 850-856 with the current antenna shows real
+activity at 852.9 / 854.4 / 855.0 / 858.2 MHz (+8 to +11 dB, high variance = voice).
+The 800 MHz leg is weaker than the 700 MHz control channel but usable.
 
 ### Live talkgroup traffic observed (40 s capture, resolved against local DB)
 | TG | Grants | Alpha | Description | Enc | Category |
@@ -137,8 +141,15 @@ antenna is measurably worse).
 7. **RDS needs >=171 kHz sample rate** (57 kHz subcarrier). Lower rates silently drop RDS.
 8. **DVB driver must be unbound**: blacklist `dvb_usb_rtl28xxu` (done in
    `/etc/modprobe.d/blacklist-rtlsdr.conf`).
-9. **Live op25 on this box never locked, but file-based decode works perfectly.** The
-   capture->decode pipeline in `scripts/lwin_decode.sh` is the reliable path.
+9. **Live op25 works — but only via SoapySDR, not gr-osmosdr.** gr-osmosdr forces an
+   8 Msps floor on the HackRF Pro (`supported sample rates 8000000-20000000`), giving op25
+   a decim=333 chain that never locked. SoapySDR exposes **1-20 MSps** for the same radio;
+   at `-S 2000000` (decim=83) op25 locks immediately:
+   ```
+   --args 'soapy=0,driver=hackrf' -N 'AMP:0,LNA:40,VGA:44' -S 2000000 -o 25000
+   ```
+   This was the single blocker on live trunk-following. The file-based pipeline
+   (`scripts/lwin_decode.sh`) still works and remains useful for offline re-analysis.
 
 ---
 
@@ -155,6 +166,71 @@ software. A dedicated 1090 MHz ADS-B antenna + LNA would unblock ADS-B; AIS need
 proper marine-band antenna (relevant here given Mississippi River port traffic).
 
 ---
+
+---
+
+## 6. Recording clear talkgroups
+
+```bash
+./scripts/lwin_record.sh 400        # ~6.5 min; writes recordings/tgid-<tg>-<time>.wav
+python3 scripts/label_recordings.py # labels each call with talkgroup name + duration
+```
+
+Only **unencrypted** talkgroups are recorded. Two safeguards:
+- `lwin_clear_whitelist.txt` (referenced from `lwin_record.tsv`) limits op25 to talkgroups
+  the reference DB marks `clear`.
+- `-n` (`--nocrypt`) silences any encrypted traffic that slips through.
+
+Encrypted talkgroups observed on this site and deliberately **excluded**: 17086 Prison
+Security (full), 17165 BRPD Dispatch 1 (partial), 17133 Baker PD HQ (partial),
+17050 Sheriff Dispatch North (partial). No decryption was attempted.
+
+### Results from a 6.5-minute run
+15 calls, 34.1 s of decoded voice, all `clear`:
+
+| TG | Calls | Audio | Agency |
+|---|---|---|---|
+| 17345 | 3 | 12.5s | St. George Fire OPS |
+| 17139 | 8 | 11.9s | Baton Rouge Fire Dispatch 1 |
+| 17000 | 2 | 6.0s | LSU Police Dispatch 1 |
+| 6848 | 2 | 3.8s | Acadian EMS Zone 4 |
+
+Audio verified as genuine speech, not noise: 95-97% of energy in the 300-3400 Hz voice
+band with 26-49% syllabic (2-8 Hz) envelope modulation.
+
+### Why `-L` logfile workers do NOT work here (and what does)
+`-L` demodulates all calls from a **single fixed** center frequency — the workers never
+retune (`trunking.py:1743` needs `tsys.center_frequency`). But site 13's control channel is
+773 MHz while voice is granted onto **856-860 MHz**, ~85 MHz apart; no sample rate spans
+that. This box also has **no sound card** (`snd-aloop` unavailable), so `-U`/`-O` are out.
+
+The working approach: normal trunking (op25 retunes the one radio per call) with audio sent
+over UDP, captured by `scripts/udp_audio_record.py`. op25 emits 320-byte UDP packets of
+S16LE PCM @ 8 kHz to `--wireshark-port`; `-w` enables that output **without** requiring a
+sound device. Calls are split on a 2 s gap and labelled by correlating WAV start times
+against op25's timestamped `tg(NNN)` log lines.
+
+### Three fixes required to make recording work
+1. **Run from op25's `apps/` directory.** `rx.py` does `sys.path.append('tdma')` — a
+   *relative* path. Running elsewhere fails with `No module named 'lfsr'`; setting
+   PYTHONPATH instead shifts the failure to `op25_c4fm_mod` (in `apps/tx/`).
+2. **op25 uses the GNU Radio 3.8 `wavfile_sink` API.** `p25_decoder.py:117` called
+   `wavfile_sink(filename, n_channels, sample_rate, bits_per_sample)`; GR 3.10 replaced
+   the trailing int with two enums. Patched to:
+   `wavfile_sink(filename, n_channels, sample_rate, blocks.FORMAT_WAV, blocks.FORMAT_PCM_16, False)`
+   This only fires on the `-L` logfile path, so metadata-only runs never hit it.
+3. **Do not pass `-2`.** LWIN is P25 **Phase I**; `-2` sets `num_ambe=2` (TDMA) and breaks
+   Phase 1 IMBE voice. Voice updates logging `slot(-)` confirm FDMA.
+
+### Site 13 band split (matters for recording)
+Control channel is 700 MHz (**773.05625**) but voice is granted onto **800 MHz**
+(851-853 MHz). A single receiver retunes between the two, so both must be receivable.
+
+## Privacy note
+These are unencrypted public-safety transmissions — legal to receive in the US and
+publicly streamed by services like Broadcastify. Recordings nonetheless contain real
+incident traffic involving real people. They are kept local, are gitignored, and are not
+redistributed here.
 
 ## Layout
 ```
