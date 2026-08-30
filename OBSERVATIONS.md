@@ -234,6 +234,14 @@ material recovered. Only the cleartext algorithm identifier was read.
    observations** — the database flag appears stale, or those transmissions were not
    encrypted.
 
+**Independent confirmation (§4.5 follow-up).** A later 200 s run targeting police dispatch
+with `--include-partial` produced 16 calls, of which 8 were on partially-encrypted
+talkgroups (BRPD Dispatch 2/4, EBR Sheriff Dispatch S/Alternate). **All 8 verified as
+intelligible speech** by the same spectral test used in §4.5 — one BRPD Dispatch 2 call ran
+12.1 s. This is a second, independent data point that "partial" talkgroups here carry
+substantial clear traffic, and that op25's `-n` cleanly suppresses the encrypted bursts
+rather than writing garbage.
+
 ---
 
 ## 6. Other observations

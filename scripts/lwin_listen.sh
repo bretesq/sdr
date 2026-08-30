@@ -1,19 +1,78 @@
 #!/usr/bin/env bash
-# One-command LWIN listener: records CLEAR talkgroups to per-call WAVs named
-# with the talkgroup, e.g. TG17345_17-SGFD-Ops_20260830-160251.wav
+# Listen to LWIN (Baton Rouge Simulcast) and record calls as
+# TG<id>_<Alpha-Tag>_<timestamp>.wav in recordings/
 #
-#   ./scripts/lwin_listen.sh            # run until Ctrl-C
-#   ./scripts/lwin_listen.sh 600        # run for 600 seconds
+# Usage: lwin_listen.sh [options] [seconds]
 #
-# Requires: HackRF (SoapySDR), op25 built, reference/lwin_talkgroups.json
+# Talkgroup selection (default: every clear talkgroup in the Baton Rouge area)
+#   --pd                police / sheriff DISPATCH        (tag "Law Dispatch")
+#   --pd-all            police dispatch + talk + tac
+#   --fire              fire dispatch          --fire-all  fire dispatch + tac + talk
+#   --ems               EMS + hospital         --interop   interop / emergency ops
+#   --preset NAME       any of: pd pd-all fire fire-all ems interop schools
+#                               publicworks all
+#   --tag "TAG[,TAG]"   select by tag, e.g. --tag "Law Dispatch,Law Talk"
+#   --tg 17165,17139    explicit talkgroup IDs
+#   --match REGEX       regex over alpha / description / category
+#   --all-areas         statewide instead of Baton Rouge area
+#
+# Encryption (recording is clear-only by default)
+#   --include-partial   also follow partially-encrypted talkgroups. They carry mostly
+#                       clear traffic (see OBSERVATIONS.md §5); op25 -n still silences
+#                       the encrypted bursts. Needed for BRPD / EBR Sheriff dispatch.
+#   --include-encrypted also follow fully-encrypted talkgroups (records silence).
+#
+# Other
+#   --list              show the selected talkgroups and exit
+#   -h, --help          this help
+#
+# Examples
+#   ./scripts/lwin_listen.sh --pd --list
+#   ./scripts/lwin_listen.sh --pd --include-partial 600
+#   ./scripts/lwin_listen.sh --tg 17165,17167,17169,17171 --include-partial
 set -u
 R=/home/besquivel/rtl
 A=$R/src/op25/op25/gr-op25_repeater/apps
-SECS=${1:-0}                       # 0 = until Ctrl-C
 PORT=23456
-[ "$SECS" -eq 0 ] 2>/dev/null && RUN=99999 || RUN=$SECS
+WL=$R/lwin_active_whitelist.txt
+TSV=$R/lwin_active.tsv
+SECS=0
+GEN=()          # args passed through to make_whitelist.py
+
+usage() { sed -n '2,/^set -u/p' "$0" | sed 's/^# \{0,1\}//; $d'; exit 0; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --pd)                GEN+=(--preset pd) ;;
+    --pd-all)            GEN+=(--preset pd-all) ;;
+    --fire)              GEN+=(--preset fire) ;;
+    --fire-all)          GEN+=(--preset fire-all) ;;
+    --ems)               GEN+=(--preset ems) ;;
+    --interop)           GEN+=(--preset interop) ;;
+    --preset)            GEN+=(--preset "$2"); shift ;;
+    --tag)               GEN+=(--tag "$2"); shift ;;
+    --tg)                GEN+=(--tg "$2"); shift ;;
+    --match)             GEN+=(--match "$2"); shift ;;
+    --all-areas)         GEN+=(--all-areas) ;;
+    --include-partial)   GEN+=(--include-partial) ;;
+    --include-encrypted) GEN+=(--include-encrypted) ;;
+    --list)              GEN+=(--list) ; LIST=1 ;;
+    -h|--help)           usage ;;
+    -*)                  echo "unknown option: $1" >&2; exit 1 ;;
+    *)                   SECS="$1" ;;
+  esac
+  shift
+done
+
+# build the whitelist
+python3 "$R/scripts/make_whitelist.py" "${GEN[@]+"${GEN[@]}"}" -o "$WL" || exit $?
+[ -n "${LIST:-}" ] && exit 0
+
+printf 'Sysname\tControl Channel List\tOffset\tNAC\tModulation\tTGID Tags File\tWhitelist\tBlacklist\tCenter Frequency\n' > "$TSV"
+printf 'LWIN-BR\t773.05625\t0\t0x1bd\tfsk4\t\t%s\t\t\n' "$WL" >> "$TSV"
 
 mkdir -p "$R/recordings" "$R/results"
+[ "$SECS" -eq 0 ] 2>/dev/null && RUN=99999 || RUN=$SECS
 
 cleanup() {
   echo; echo "stopping..."
@@ -21,8 +80,6 @@ cleanup() {
   pkill -f "gr-op25_repeater/apps/rx.py" 2>/dev/null
   [ -n "${REC_PID:-}"  ] && kill -INT "$REC_PID" 2>/dev/null
   wait 2>/dev/null
-  echo
-  ls -1 "$R"/recordings/TG*.wav 2>/dev/null | tail -20
   n=$(ls -1 "$R"/recordings/TG*.wav 2>/dev/null | wc -l)
   echo "-> $n call(s) in $R/recordings/"
   exit 0
@@ -31,27 +88,23 @@ trap cleanup INT TERM
 
 : > "$R/results/op25_record.log"
 
-# audio recorder first, so it is listening before op25 starts sending
 python3 "$R/scripts/udp_audio_record.py" $PORT "$RUN" "$R/recordings" \
         "$R/results/op25_record.log" &
 REC_PID=$!
 sleep 2
 
-# op25 is run under a pty (script -q -f) so Python line-buffers its output and the
-# recorder can read talkgroups live. `python3 -u` does NOT work here: op25 reconfigures
-# stdout and unbuffered mode breaks it ('_io.FileIO' object has no attribute 'detach').
-# -w sends audio over UDP (no sound card needed); -n silences encrypted traffic;
-# whitelist restricts to clear talkgroups. Do NOT add -2 (this system is Phase I).
-OP25_CMD="cd $A && exec python3 rx.py --args soapy=0,driver=hackrf -N AMP:0,LNA:40,VGA:44 -S 2000000 -q 0 -o 25000 -T $R/lwin_record.tsv -V -w -u $PORT -n -v 2"
+# op25 under a pty so its log is written in real time (python3 -u breaks op25 on 3.14).
+# -w = audio over UDP (no sound card); -n = silence encrypted; no -2 (system is Phase I).
+OP25_CMD="cd $A && exec python3 rx.py --args soapy=0,driver=hackrf -N AMP:0,LNA:40,VGA:44 -S 2000000 -q 0 -o 25000 -T $TSV -V -w -u $PORT -n -v 2"
 script -q -f -c "$OP25_CMD" "$R/results/op25_record.log" >/dev/null 2>&1 &
 OP25_PID=$!
 
-echo "listening on LWIN Baton Rouge Simulcast (CC 773.05625 MHz)"
-echo "clear talkgroups only; recordings -> $R/recordings/"
+echo "LWIN Baton Rouge Simulcast — control channel 773.05625 MHz"
+echo "whitelist: $(wc -l < "$WL") talkgroups -> $R/recordings/"
 [ "$SECS" -eq 0 ] 2>/dev/null && echo "Ctrl-C to stop." || echo "running ${SECS}s."
 
 wait $REC_PID
-kill $OP25_PID 2>/dev/null
+kill $OP25_PID 2>/dev/null; pkill -f "gr-op25_repeater/apps/rx.py" 2>/dev/null
 wait 2>/dev/null
 n=$(ls -1 "$R"/recordings/TG*.wav 2>/dev/null | wc -l)
 echo "-> $n call(s) in $R/recordings/"

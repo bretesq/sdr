@@ -174,24 +174,57 @@ proper marine-band antenna (relevant here given Mississippi River port traffic).
 
 ---
 
-## 6. Recording clear talkgroups
+## 6. Recording talkgroups
 
-**One command:**
 ```bash
-./scripts/lwin_listen.sh          # run until Ctrl-C
-./scripts/lwin_listen.sh 600      # or a fixed number of seconds
+./scripts/lwin_listen.sh                       # all clear BR-area talkgroups
+./scripts/lwin_listen.sh --pd --include-partial 600
+./scripts/lwin_listen.sh --tg 17165,17167,17169,17171 --include-partial
+./scripts/lwin_listen.sh --pd --list           # show selection, do not run
 python3 scripts/list_recordings.py
 ```
 
+### Talkgroup selection flags
+| Flag | Selects |
+|---|---|
+| `--pd` | police / sheriff **dispatch** (tag `Law Dispatch`) |
+| `--pd-all` | police dispatch + talk + tac |
+| `--fire` / `--fire-all` | fire dispatch (+ tac/talk) |
+| `--ems` | EMS + hospital |
+| `--interop` | interop / emergency ops |
+| `--preset NAME` | `pd pd-all fire fire-all ems interop schools publicworks all` |
+| `--tag "Law Dispatch,Law Talk"` | select by tag |
+| `--tg 17165,17139` | explicit talkgroup IDs |
+| `--match REGEX` | regex over alpha / description / category |
+| `--all-areas` | statewide instead of Baton Rouge area |
+| `--list` | print the selection and exit |
+
+Whitelists are generated from the reference DB by `scripts/make_whitelist.py`.
+
+### Encryption flags
+Recording is **clear-only by default**.
+
+| Flag | Effect |
+|---|---|
+| `--include-partial` | also follow *partially*-encrypted talkgroups |
+| `--include-encrypted` | also follow *fully*-encrypted talkgroups (records silence) |
+
+`--include-partial` is what you want for **BRPD and EBR Sheriff dispatch** — those are
+flagged partial but measured **93% clear** (OBSERVATIONS.md §5). op25's `-n` still silences
+any encrypted frames, so nothing unintelligible is written.
+
+Verified on a 200 s `--pd --include-partial` run: **16 calls, 63.6 s, 16/16 confirmed as
+speech**, including all 8 calls from partially-encrypted talkgroups (BRPD Dispatch 2 alone
+gave 12.1 s). Talkgroups heard: Port Allen PD, BRPD Dispatch 2/4, State Police Troop A
+Dispatch 1, EBR Sheriff Dispatch South/Alternate, East Feliciana Sheriff.
+
 Files are named with the talkgroup **at save time**:
 ```
-TG19592_39-PCSO-PTRL_20260830-162729.wav     Sheriff - Patrol
-TG18513_63-WFSO-DSP_20260830-162744.wav      Sheriff - Dispatch
-TG20039_32-FIRE-DSP1_20260830-162756.wav     Parishwide Fire Dispatch 1
-TG17513_61-PAPD-DISP_20260830-162849.wav     Port Allen Police - Dispatch
-TG17524_61-JAIL-CNTR_20260830-162948.wav     Prison - Central
+TG17167_17-BRPD-DSP2_20260830-170008.wav     Baton Rouge PD Dispatch 2   (12.1s)
+TG18000_19-EFSO-DISP_20260830-170203.wav     East Feliciana Sheriff      (15.1s)
+TG5000_SP-A-DISP1_20260830-170051.wav        State Police Troop A Disp 1
 ```
-`recordings/calls.json` carries the full metadata (tgid, alpha, description, category,
+`recordings/calls.json` carries full metadata (tgid, alpha, description, category,
 encryption flag, start time, duration).
 
 ### How the talkgroup gets into the filename
