@@ -171,56 +171,56 @@ proper marine-band antenna (relevant here given Mississippi River port traffic).
 
 ## 6. Recording clear talkgroups
 
+**One command:**
 ```bash
-./scripts/lwin_record.sh 400        # ~6.5 min; writes recordings/tgid-<tg>-<time>.wav
-python3 scripts/label_recordings.py # labels each call with talkgroup name + duration
+./scripts/lwin_listen.sh          # run until Ctrl-C
+./scripts/lwin_listen.sh 600      # or a fixed number of seconds
+python3 scripts/list_recordings.py
 ```
 
+Files are named with the talkgroup **at save time**:
+```
+TG19592_39-PCSO-PTRL_20260830-162729.wav     Sheriff - Patrol
+TG18513_63-WFSO-DSP_20260830-162744.wav      Sheriff - Dispatch
+TG20039_32-FIRE-DSP1_20260830-162756.wav     Parishwide Fire Dispatch 1
+TG17513_61-PAPD-DISP_20260830-162849.wav     Port Allen Police - Dispatch
+TG17524_61-JAIL-CNTR_20260830-162948.wav     Prison - Central
+```
+`recordings/calls.json` carries the full metadata (tgid, alpha, description, category,
+encryption flag, start time, duration).
+
+### How the talkgroup gets into the filename
+The UDP audio stream carries **only PCM** — no talkgroup ID. `udp_audio_record.py`
+therefore tails op25's log in parallel, tracks the currently-active talkgroup
+(`voice update: tg(N)` / `hold active tg(N)` / `set tgid=N`), and stamps it on the file
+when the call is flushed. A talkgroup older than 12 s is treated as stale, and a call
+whose grant lands just *after* the first audio packet is back-filled.
+
+Verified on a 160 s run: **10/10 calls labelled, 0 mismatches** against an independent
+re-derivation from op25's own timestamps, and 0 encrypted talkgroups recorded.
+
 Only **unencrypted** talkgroups are recorded. Two safeguards:
-- `lwin_clear_whitelist.txt` (referenced from `lwin_record.tsv`) limits op25 to talkgroups
-  the reference DB marks `clear`.
-- `-n` (`--nocrypt`) silences any encrypted traffic that slips through.
+- `lwin_clear_whitelist.txt` (534 clear talkgroups) referenced from `lwin_record.tsv`
+- `-n` (`--nocrypt`) silences any encrypted traffic that slips through
 
 Encrypted talkgroups observed on this site and deliberately **excluded**: 17086 Prison
 Security (full), 17165 BRPD Dispatch 1 (partial), 17133 Baker PD HQ (partial),
 17050 Sheriff Dispatch North (partial). No decryption was attempted.
 
-### Results from a 6.5-minute run
-15 calls, 34.1 s of decoded voice, all `clear`:
-
-| TG | Calls | Audio | Agency |
-|---|---|---|---|
-| 17345 | 3 | 12.5s | St. George Fire OPS |
-| 17139 | 8 | 11.9s | Baton Rouge Fire Dispatch 1 |
-| 17000 | 2 | 6.0s | LSU Police Dispatch 1 |
-| 6848 | 2 | 3.8s | Acadian EMS Zone 4 |
-
-Audio verified as genuine speech, not noise: 95-97% of energy in the 300-3400 Hz voice
-band with 26-49% syllabic (2-8 Hz) envelope modulation.
-
-### Why `-L` logfile workers do NOT work here (and what does)
-`-L` demodulates all calls from a **single fixed** center frequency — the workers never
-retune (`trunking.py:1743` needs `tsys.center_frequency`). But site 13's control channel is
-773 MHz while voice is granted onto **856-860 MHz**, ~85 MHz apart; no sample rate spans
-that. This box also has **no sound card** (`snd-aloop` unavailable), so `-U`/`-O` are out.
-
-The working approach: normal trunking (op25 retunes the one radio per call) with audio sent
-over UDP, captured by `scripts/udp_audio_record.py`. op25 emits 320-byte UDP packets of
-S16LE PCM @ 8 kHz to `--wireshark-port`; `-w` enables that output **without** requiring a
-sound device. Calls are split on a 2 s gap and labelled by correlating WAV start times
-against op25's timestamped `tg(NNN)` log lines.
-
-### Three fixes required to make recording work
-1. **Run from op25's `apps/` directory.** `rx.py` does `sys.path.append('tdma')` — a
+### Four fixes required to make recording work
+1. **Run op25 from its `apps/` directory.** `rx.py` does `sys.path.append('tdma')` — a
    *relative* path. Running elsewhere fails with `No module named 'lfsr'`; setting
    PYTHONPATH instead shifts the failure to `op25_c4fm_mod` (in `apps/tx/`).
 2. **op25 uses the GNU Radio 3.8 `wavfile_sink` API.** `p25_decoder.py:117` called
    `wavfile_sink(filename, n_channels, sample_rate, bits_per_sample)`; GR 3.10 replaced
-   the trailing int with two enums. Patched to:
-   `wavfile_sink(filename, n_channels, sample_rate, blocks.FORMAT_WAV, blocks.FORMAT_PCM_16, False)`
-   This only fires on the `-L` logfile path, so metadata-only runs never hit it.
+   the trailing int with two enums. Patched to
+   `wavfile_sink(..., blocks.FORMAT_WAV, blocks.FORMAT_PCM_16, False)`.
 3. **Do not pass `-2`.** LWIN is P25 **Phase I**; `-2` sets `num_ambe=2` (TDMA) and breaks
    Phase 1 IMBE voice. Voice updates logging `slot(-)` confirm FDMA.
+4. **Run op25 under a pty (`script -q -f`), not `python3 -u`.** The log must be written in
+   real time or the recorder mislabels calls, but `-u` crashes op25 on Python 3.14
+   (`'_io.FileIO' object has no attribute 'detach'` -> `lost sys.stderr`) because op25
+   reconfigures stdout. A pty makes Python line-buffer naturally.
 
 ### Site 13 band split (matters for recording)
 Control channel is 700 MHz (**773.05625**) but voice is granted onto **800 MHz**
@@ -338,8 +338,12 @@ recover the ~60% of calls the single radio misses while it is away following a c
 
 ## Layout
 ```
-scripts/    sweep_peaks.py find_control.py analyze_p25*.py scan_p25band.py
-            symbols.py sig2.py lwin_decode.sh fetch_lwin_db.py annotate_lwin.py
+scripts/    lwin_listen.sh          <- start listening (one command)
+            list_recordings.py      <- show what was recorded
+            lwin_cdr_run.sh / lwin_cdr.py   <- full call-detail record
+            find_signals.py         <- wideband survey (rolling baseline)
+            udp_audio_record.py lwin_decode.sh annotate_lwin.py
+            scan_p25band.py sweep_peaks.py find_control.py fetch_lwin_db.py
 results/    sweeps, op25 logs, RDS json, SPECTRUM_REPORT.md
 reference/  lwin_talkgroups.json  lwin_sites.json  lwin_categories.json
 captures/   raw IQ (.cs8) and op25 input (.cfile)  [large, gitignored]
