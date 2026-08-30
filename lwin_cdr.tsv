@@ -1,0 +1,2 @@
+Sysname	Control Channel List	Offset	NAC	Modulation	TGID Tags File	Whitelist	Blacklist	Center Frequency
+LWIN-CDR	773.05625	0	0x1bd	fsk4		/home/besquivel/rtl/lwin_nofollow.txt		

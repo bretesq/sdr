@@ -232,6 +232,56 @@ publicly streamed by services like Broadcastify. Recordings nonetheless contain 
 incident traffic involving real people. They are kept local, are gitignored, and are not
 redistributed here.
 
+---
+
+## 7. Complete call-detail record (the widest LWIN view)
+
+A single radio can either **stay on the control channel** (see every call, hear none) or
+**follow calls** (hear audio, miss grants that occur while it is away). Running both modes
+gives the full picture.
+
+```bash
+./scripts/lwin_cdr_run.sh 360     # control-channel only, never retunes
+python3 scripts/lwin_cdr.py       # parse into a call-detail record
+```
+
+The trick: point the whitelist at a **non-existent talkgroup** (`lwin_nofollow.txt`
+contains `999999`), so op25 never tunes away and logs 100% of grants.
+
+### 6-minute result — 33 talkgroups vs 9 seen while recording audio
+- **3765 grant events**, 14 172 TSBK messages, 20 distinct opcodes
+- **101 distinct source radios** (unit IDs)
+- 19 voice channels in use (851-860 MHz)
+- **2479 grants on clear talkgroups, 1167 on encrypted**
+
+| Agency | Talkgroups observed |
+|---|---|
+| LA State Police | Troop A / G / I Dispatch |
+| DOTD Motorist Assistance Patrol | Regions 1, 2, 5, 7 |
+| Sheriffs | Pointe Coupee, East Feliciana, Iberville, Livingston, St. Bernard |
+| Municipal | Port Allen PD, Central PD, Baton Rouge PD (1-4), Baton Rouge Fire |
+| Campus / schools | LSU PD, LSU Golf Course, EBR School Board Safety |
+| EMS / wildlife | Acadian EMS Zone 4, EBR Medical Common, LDWF Region 7 |
+
+Busiest single talkgroup was 17050 (EBR Sheriff Dispatch North, 494 grants) — which is
+*partially encrypted*, so it is excluded from audio recording.
+
+### Whitelist coverage
+`lwin_clear_whitelist.txt` was expanded from the 8 talkgroups initially observed to
+**534 clear talkgroups** across every Baton Rouge-area category in the reference DB
+(EBR, WBR, Livingston, Ascension, Iberville, E/W Feliciana, Pointe Coupee, LSU, Southern,
+State Police Troop A, EMS agencies, LDWF). Zero encrypted talkgroups are in that list.
+
+### Why a dedicated control-channel receiver is not possible here (measured)
+Ideal setup: park an RTL-SDR on the control channel while the HackRF follows voice.
+Measured control-channel SNR on **both** RTL-SDRs: **+2.7 dB** — far below the ~15 dB P25
+needs. Their antennas were never swapped (only the HackRF's was). Until a second decent
+UHF antenna or a coax splitter is added, single-radio retuning is the only option, and the
+CDR/audio split above is the best workaround.
+
+(Incidentally, RTL dongle **1** is well calibrated: its control-channel peak landed
++2.1 kHz from nominal, versus dongle 0's +24.6 ppm. Use `-p 0` for dongle 1.)
+
 ## Layout
 ```
 scripts/    sweep_peaks.py find_control.py analyze_p25*.py scan_p25band.py
