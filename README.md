@@ -83,20 +83,25 @@ python3 scripts/annotate_lwin.py     # resolve talkgroup IDs to names
 ### The channel-hunting method (works with no prior frequency list)
 `scripts/scan_p25band.py` captures the whole 768–776 MHz band at 8 Msps and tests
 **every** narrowband carrier for its symbol rate. This distinguishes:
-- **4800 baud** -> P25 Phase 1 C4FM (control channel = strongest, most continuous clock)
-- **6000 baud** -> P25 Phase 2 TDMA (voice)
+- **4800 baud** -> P25 Phase 1 C4FM. The control channel is the one whose 4800 Hz clock is
+  both strongest and most continuous.
+
+The clock estimate is reliable only on strong carriers. On weak or idle channels it returns
+junk — see `OBSERVATIONS.md` §7.1, where a spurious 6000 Hz reading led me to a wrong
+conclusion.
 
 Measured here:
 | Freq | SNR | Clock | Meaning |
 |---|---|---|---|
 | 773.05688 | 28.3 dB | 4800 @ 41.4 dB | **control channel** |
-| 769.19434 | 35.7 dB | 4800 @ 19.3 dB | Phase 1 |
-| 772.08081 | 23.9 dB | 6000 | Phase 2 TDMA voice |
+| 769.19434 | 35.7 dB | 4800 @ 19.3 dB | Site 50 (South Baton Rouge) control channel |
+| 772.08081 | 23.9 dB | 6000 (unreliable) | Site 50 *voice* channel — not Site 13 |
 | 774.14282 | 30.0 dB | ~6200 (unreliable) | not on Site 13's list |
 
 This is what finally located the control channel. Power-and-variance analysis alone was
-misleading: 772.08 is a strong *continuous* carrier but is a Phase 2 voice channel, not
-the control channel — which is why every early op25 attempt failed.
+misleading: 772.08 is a strong *continuous* carrier, but it is a **voice channel belonging
+to a different site** (RFSS 1 Site 50, South Baton Rouge) — which is why every early op25
+attempt against it failed.
 
 ---
 
