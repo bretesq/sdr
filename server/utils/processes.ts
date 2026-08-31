@@ -151,7 +151,10 @@ export function isProcessRunning(pid: number): boolean {
  * session. server.py used 'ab', which made the count cumulative across every
  * session ever (3,150 distinct .wav names in the current file).
  */
-export function startListening(opts: ListenOptions): { pid: number; config: ListenOptions } {
+export function startListening(
+  opts: ListenOptions,
+  sessionId?: number,
+): { pid: number; config: ListenOptions } {
   const script = join(scriptsDir(), 'lwin_listen.sh')
   const fd = openSync(listenLogPath(), 'w')
   try {
@@ -159,6 +162,12 @@ export function startListening(opts: ListenOptions): { pid: number; config: List
       cwd: sdrRoot(),
       detached: true,               // setsid: child.pid becomes the process-group leader
       stdio: ['ignore', fd, fd],
+      // Inherited by bash and then by udp_audio_record.py, so the recorder can
+      // stamp session_id on each call without threading an argument through
+      // the shell script.
+      env: sessionId === undefined
+        ? process.env
+        : { ...process.env, SDR_SESSION_ID: String(sessionId) },
     })
     child.unref()
 

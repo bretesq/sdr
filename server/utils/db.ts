@@ -57,10 +57,40 @@ export function getDb(): DatabaseSync {
   return db
 }
 
+let writable: DatabaseSync | null = null
+
+/**
+ * A writable handle, for the sessions table.
+ *
+ * Reads go through getDb(), which opens read-only so a bug in a query route
+ * cannot mutate the corpus. Session bookkeeping genuinely writes, so it gets
+ * its own connection rather than making everything writable.
+ *
+ * WAL means this does not block udp_audio_record.py writing calls at the same
+ * time; busy_timeout covers the brief exclusive lock during a checkpoint.
+ */
+export function getWritableDb(): DatabaseSync {
+  if (writable) return writable
+
+  const path = dbPath()
+  if (!existsSync(path)) {
+    throw createError({
+      statusCode: 503,
+      statusMessage: `No database at ${path}. Run: python3 scripts/import_to_sqlite.py`,
+    })
+  }
+
+  writable = new DatabaseSync(path)
+  writable.exec('PRAGMA busy_timeout = 5000')
+  return writable
+}
+
 /** Drop the handle so the next call reopens. Used after an import. */
 export function closeDb(): void {
   db?.close()
   db = null
+  writable?.close()
+  writable = null
 }
 
 // ---------------------------------------------------------------- row types

@@ -28,17 +28,10 @@ export function listenLogPath(): string {
   return join(sdrRoot(), 'web', 'listen.log')
 }
 
-export function listenPidPath(): string {
-  return join(sdrRoot(), 'web', 'listen.pid')
-}
-
-export function listenConfigPath(): string {
-  return join(sdrRoot(), 'web', 'listen.config.json')
-}
-
-export function listenStartedPath(): string {
-  return join(sdrRoot(), 'web', 'listen.started')
-}
+// listen.pid / listen.config.json / listen.started are gone: session state is a
+// row in sdr.db's `sessions` table, which also gives a history and a foreign
+// key for calls.session_id. Only the log remains a file, because it is op25's
+// stdout.
 
 export function whitelistPath(): string {
   return join(sdrRoot(), 'lwin_active_whitelist.txt')

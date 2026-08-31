@@ -1,4 +1,4 @@
-import { startListening, processStartTime } from '~/server/utils/processes'
+import { startListening } from '~/server/utils/processes'
 import { sessionStore } from '~/server/utils/session'
 import type { ListenOptions } from '~/server/utils/processes'
 
@@ -120,14 +120,22 @@ export default defineEventHandler(async (event) => {
     return { success: false, error: 'A listening session is already running' }
   }
 
+  // The session row is opened BEFORE the spawn so its id can be passed in the
+  // environment; the recorder reads SDR_SESSION_ID and stamps it on each call.
+  // Opening it afterwards would race the recorder's first flush.
+  const sessionId = sessionStore.open(body)
   try {
-    const { pid, config } = startListening(body)
-    const startTime = Date.now() / 1000
-    // Captured immediately, while we still know this pid is ours.
-    const procStart = processStartTime(pid)
-    sessionStore.set({ pid, config, startTime, procStart })
-    return { success: true, data: { pid, config, startTime } }
+    const { pid, config } = startListening(body, sessionId)
+    sessionStore.attach(sessionId, pid)
+    const session = sessionStore.get()
+    return {
+      success: true,
+      data: { pid, config, startTime: session?.startTime ?? Date.now() / 1000 },
+    }
   } catch (err) {
+    // Never leave an open row behind for a session that failed to start: it
+    // would read as "already running" and block every later Start.
+    sessionStore.close(sessionId)
     setResponseStatus(event, 500)
     return { success: false, error: err instanceof Error ? err.message : 'Failed to start' }
   }

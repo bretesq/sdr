@@ -218,3 +218,72 @@ class TestTranscripts(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestSessions(unittest.TestCase):
+    """The sessions table, which replaced web/listen.{pid,config,started}."""
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+        self.tmp.close()
+        self.db = sdr_db.connect(self.tmp.name)
+
+    def tearDown(self):
+        self.db.close()
+        for suffix in ('', '-wal', '-shm'):
+            try:
+                os.unlink(self.tmp.name + suffix)
+            except OSError:
+                pass
+
+    def open_session(self, config='{}', started=100.0):
+        self.db.execute(
+            'INSERT INTO sessions (config, started_at) VALUES (?, ?)',
+            (config, started))
+        return self.db.execute('SELECT last_insert_rowid()').fetchone()[0]
+
+    def test_calls_are_attributed_to_a_session(self):
+        sid = self.open_session()
+        sdr_db.upsert_call(self.db, file='a.wav', tgid=1, start=100.0, dur=1.0,
+                           session_id=sid)
+        self.db.commit()
+        r = self.db.execute("SELECT session_id FROM calls WHERE file='a.wav'").fetchone()
+        self.assertEqual(r['session_id'], sid)
+
+    def test_a_call_without_a_session_is_allowed(self):
+        """lwin_listen.sh run by hand sets no SDR_SESSION_ID; still record it."""
+        sdr_db.upsert_call(self.db, file='a.wav', tgid=1, start=100.0, dur=1.0,
+                           session_id=None)
+        self.db.commit()
+        r = self.db.execute("SELECT session_id FROM calls WHERE file='a.wav'").fetchone()
+        self.assertIsNone(r['session_id'])
+
+    def test_reinsert_does_not_orphan_a_call_from_its_session(self):
+        """COALESCE keeps the session when a later upsert carries none."""
+        sid = self.open_session()
+        sdr_db.upsert_call(self.db, file='a.wav', tgid=1, start=100.0, dur=1.0,
+                           session_id=sid)
+        sdr_db.upsert_call(self.db, file='a.wav', tgid=1, start=100.0, dur=2.0)
+        self.db.commit()
+        r = self.db.execute("SELECT session_id, dur FROM calls WHERE file='a.wav'").fetchone()
+        self.assertEqual(r['session_id'], sid)
+        self.assertEqual(r['dur'], 2.0)
+
+    def test_only_one_session_is_open_at_a_time_in_practice(self):
+        """`ended_at IS NULL` is how the server finds the live session."""
+        first = self.open_session(started=100.0)
+        self.db.execute('UPDATE sessions SET ended_at = ? WHERE id = ?', (150.0, first))
+        second = self.open_session(started=200.0)
+        self.db.commit()
+        open_rows = self.db.execute(
+            'SELECT id FROM sessions WHERE ended_at IS NULL').fetchall()
+        self.assertEqual([r['id'] for r in open_rows], [second])
+
+    def test_session_history_survives_being_closed(self):
+        """The point of a row over a pidfile: what ran, when, with what config."""
+        sid = self.open_session(config='{"preset":"pd"}', started=100.0)
+        self.db.execute('UPDATE sessions SET ended_at = ? WHERE id = ?', (160.0, sid))
+        self.db.commit()
+        r = self.db.execute('SELECT * FROM sessions WHERE id = ?', (sid,)).fetchone()
+        self.assertEqual(r['config'], '{"preset":"pd"}')
+        self.assertEqual(r['ended_at'] - r['started_at'], 60.0)

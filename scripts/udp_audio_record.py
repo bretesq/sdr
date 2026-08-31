@@ -138,6 +138,13 @@ print(f"talkgroup source: {LOG}", flush=True)
 # metadata is derivable from the filename and the WAV header, so a database
 # problem must never abort a recording. Failures are loud, not silent.
 db = None
+# Set by the web console when it spawns lwin_listen.sh, inherited through bash.
+# Absent when the script is run by hand from a terminal, which is fine: the call
+# is still recorded, just not attributed to a console session.
+try:
+    SESSION_ID = int(os.environ['SDR_SESSION_ID'])
+except (KeyError, ValueError):
+    SESSION_ID = None
 try:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import sdr_db
@@ -177,7 +184,8 @@ def flush():
             try:
                 sdr_db.upsert_call(db, file=fname, tgid=tg,
                                    start=call['start'], dur=round(dur, 2),
-                                   ended_at=call['t'], **call.get('meta', {}))
+                                   ended_at=call['t'], session_id=SESSION_ID,
+                                   **call.get('meta', {}))
                 db.commit()
             except Exception as e2:                        # noqa: BLE001
                 print(f"  WARNING: could not record {fname} in the database: {e2}",

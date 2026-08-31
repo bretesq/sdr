@@ -1,113 +1,141 @@
-import { readFileSync, writeFileSync, unlinkSync, renameSync } from 'node:fs'
-import { isOurListenSession } from './processes'
-import { listenPidPath, listenConfigPath, listenStartedPath } from './paths'
+import { getWritableDb } from './db'
+import { isOurListenSession, processStartTime } from './processes'
 import type { ListenOptions } from './processes'
 
+/**
+ * Listening sessions, stored as rows rather than three sidecar files.
+ *
+ * This used to be `web/listen.pid`, `web/listen.config.json` and
+ * `web/listen.started`, written separately and read back on recovery. A row
+ * gives the same recovery, plus a history of what was recorded when, plus a
+ * foreign key for `calls.session_id` so a recording can be traced to the run
+ * that produced it.
+ *
+ * IDENTITY, NOT JUST LIVENESS
+ * ---------------------------
+ * `proc_start` is /proc/<pid>/stat field 22. A pid alone is not an identity:
+ * the kernel recycles pid numbers, a process group outlives its leader, and a
+ * row left behind by a reboot would otherwise sit waiting for that number to be
+ * reissued. Stop signals a process GROUP, and process.kill only refuses OTHER
+ * users' processes, so a mistaken match puts everything the operator owns in
+ * range of a SIGKILL. The kernel never reissues the same (pid, starttime) pair,
+ * so together they are a real identity check.
+ */
+
 export interface Session {
+  id: number
   pid: number
   config: ListenOptions
   startTime: number
-  /**
-   * /proc/<pid>/stat field 22. A pid is not an identity — the kernel recycles
-   * pid numbers, and a stale sidecar survives reboots. Pairing the pid with the
-   * process's start time makes recovery verifiable, because the kernel will
-   * never reissue the same (pid, procStart) pair.
-   */
   procStart: number | null
 }
 
+interface SessionRow {
+  id: number
+  pid: number | null
+  proc_start: number | null
+  config: string | null
+  started_at: number
+}
+
+/** In-process cache. The row is the source of truth; this avoids a query per poll. */
 let current: Session | null = null
 
-/**
- * Write via a temp file and rename, so a crash or a full disk cannot leave a
- * TRUNCATED pid behind. `12345` cut short to `12` is still a valid pid pointing
- * at something arbitrary, which is the same blast radius as recycling without
- * needing the kernel to wrap around.
- */
-function writeAtomic(path: string, contents: string): void {
-  const tmp = `${path}.tmp`
-  writeFileSync(tmp, contents)
-  renameSync(tmp, path)
-}
-
-function persist(s: Session): void {
-  // pid and procStart travel together: a pid without its start time cannot be
-  // verified on recovery.
-  writeAtomic(listenPidPath(), `${s.pid} ${s.procStart ?? ''}`.trim())
-  writeAtomic(listenConfigPath(), JSON.stringify(s.config))
-  writeAtomic(listenStartedPath(), String(s.startTime))
-}
-
-/** Recover a session started before this server process existed. */
-function recover(): Session | null {
+function toSession(row: SessionRow): Session {
+  let config: ListenOptions = {}
   try {
-    const raw = readFileSync(listenPidPath(), 'utf-8').trim().split(/\s+/)
-    const pid = Number.parseInt(raw[0], 10)
-    const procStart = raw[1] ? Number.parseInt(raw[1], 10) : null
-
-    // Verify identity, not just liveness. Without this a recycled pid means
-    // Stop SIGINTs — then SIGKILLs — an unrelated process GROUP.
-    if (!Number.isFinite(pid) || !isOurListenSession(pid, procStart)) {
-      // The recorded process is gone or is not ours. Clear the sidecars now:
-      // leaving them means the stale window never closes and we sit waiting for
-      // the kernel to recycle that pid number onto something innocent.
-      removeSidecars()
-      return null
-    }
-
-    let config: ListenOptions = {}
-    try {
-      config = JSON.parse(readFileSync(listenConfigPath(), 'utf-8')) as ListenOptions
-    } catch { /* config is a nicety; the pid is what matters for Stop */ }
-
-    let startTime = Date.now() / 1000
-    try {
-      const t = Number.parseFloat(readFileSync(listenStartedPath(), 'utf-8').trim())
-      if (Number.isFinite(t)) startTime = t
-    } catch { /* fall back to now */ }
-
-    return { pid, config, startTime, procStart }
+    config = row.config ? JSON.parse(row.config) as ListenOptions : {}
   } catch {
-    return null
+    // A malformed config is cosmetic — the pid is what Stop actually needs.
   }
-}
-
-function removeSidecars(): void {
-  for (const p of [listenPidPath(), listenConfigPath(), listenStartedPath()]) {
-    try {
-      unlinkSync(p)
-    } catch (err) {
-      // ENOENT means the file is already gone, which is the desired end state.
-      // Anything else (EACCES, EISDIR) is a real fault worth surfacing.
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
-    }
+  return {
+    id: row.id,
+    pid: row.pid ?? 0,
+    config,
+    startTime: row.started_at,
+    procStart: row.proc_start,
   }
 }
 
 export const sessionStore = {
-  set(s: Session): void {
-    current = s
-    persist(s)
+  /**
+   * Record a session BEFORE the process is spawned, so the recorder can find
+   * its own id. udp_audio_record.py reads SDR_SESSION_ID from the environment,
+   * which Node sets on the spawn and bash passes through; opening the row after
+   * the spawn would race the recorder's first flush.
+   */
+  open(config: ListenOptions): number {
+    const db = getWritableDb()
+    const startTime = Date.now() / 1000
+    db.prepare(
+      'INSERT INTO sessions (config, started_at) VALUES (?, ?)',
+    ).run(JSON.stringify(config), startTime)
+    const row = db.prepare('SELECT last_insert_rowid() AS id').get() as { id: number }
+    current = { id: row.id, pid: 0, config, startTime, procStart: null }
+    return row.id
+  },
+
+  /** Attach the pid once the spawn has returned one. */
+  attach(id: number, pid: number): void {
+    const procStart = processStartTime(pid)
+    getWritableDb()
+      .prepare('UPDATE sessions SET pid = ?, proc_start = ? WHERE id = ?')
+      .run(pid, procStart, id)
+    if (current?.id === id) {
+      current.pid = pid
+      current.procStart = procStart
+    }
   },
 
   /**
-   * The live session, from memory or recovered from the sidecar files.
-   * Clears both when the process is gone.
+   * The live session, or null. Closes any open row whose process is gone or is
+   * not ours, so a stale row cannot keep claiming a session is running.
    */
   get(): Session | null {
-    if (current && !isOurListenSession(current.pid, current.procStart)) {
+    if (current && current.pid > 0
+        && !isOurListenSession(current.pid, current.procStart)) {
+      this.close(current.id)
       current = null
-      removeSidecars()
     }
-    if (!current) {
-      current = recover()
+    if (current) return current
+
+    const db = getWritableDb()
+    const row = db.prepare(
+      `SELECT id, pid, proc_start, config, started_at
+         FROM sessions WHERE ended_at IS NULL
+        ORDER BY started_at DESC LIMIT 1`,
+    ).get() as SessionRow | undefined
+    if (!row) return null
+
+    const candidate = toSession(row)
+
+    // A row with no pid was opened moments ago and has not been attached yet;
+    // treat it as live rather than closing a session that is mid-start.
+    if (candidate.pid === 0) {
+      current = candidate
+      return candidate
     }
-    return current
+
+    if (!isOurListenSession(candidate.pid, candidate.procStart)) {
+      this.close(candidate.id)      // left over from a crash or a reboot
+      return null
+    }
+
+    current = candidate
+    return candidate
+  },
+
+  /** Mark a session finished. Idempotent. */
+  close(id: number): void {
+    getWritableDb()
+      .prepare('UPDATE sessions SET ended_at = ? WHERE id = ? AND ended_at IS NULL')
+      .run(Date.now() / 1000, id)
+    if (current?.id === id) current = null
   },
 
   clear(): void {
+    if (current) this.close(current.id)
     current = null
-    removeSidecars()
   },
 
   isRunning(): boolean {

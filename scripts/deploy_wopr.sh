@@ -7,16 +7,16 @@ REMOTE_DIR=wopr_adp
 # Genuine known-pair (from lwin_enc_capture.log CIPHERTXT+ADP ESS, and IMBE-encode of
 # TG17164 WAV frame 0). The silence-codeword assumption was wrong (full 2^40 found no key).
 # Now use a REAL speech-frame plaintext.
-MI="2f 2a d2 8c 42 7f 8c 2f 00"
+MI="54 6d f4 d0 c7 6c f8 50 00"
 CT="ee de 1b 2d 17 a9 b8 b6 c1 51 37"
-PT="75 5e ef 00 04 ee 00 00 00 00 00"
+PT="01 50 20 00 00 00 00 00 00 00 00"
 
 NTHREADS="${1:-256}"
 
 # ---------------------------------------------------------------------------
 # Single-machine (full 2^40 on wopr) — default when invoked as `deploy_wopr.sh [nthreads]`
 # ---------------------------------------------------------------------------
-if [ -z "$SHARD" ] || [ "$SHARD" = "full" ]; then
+if [ -z "${SHARD:-}" ] || [ "${SHARD:-}" = "full" ]; then
     ssh wopr "mkdir -p ~/$REMOTE_DIR"
     scp "$R/scripts/adp_brute.cpp" wopr:~/$REMOTE_DIR/adp_brute.cpp
     ssh wopr "cd ~/$REMOTE_DIR && g++ -O3 -march=native -fopenmp -o adp_brute adp_brute.cpp"

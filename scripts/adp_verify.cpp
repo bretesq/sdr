@@ -15,8 +15,11 @@ static std::vector<uint8_t> hex_to_bytes(const char *s) {
     while (*p) {
         while (*p == ' ' || *p == ',' || *p == '\t') ++p;
         if (!*p) break;
-        out.push_back((uint8_t)strtol(p, nullptr, 16));
-        while (*p && *p != ' ' && *p != ',' && *p != '\t') ++p;
+        char *end = nullptr;
+        unsigned long v = strtoul(p, &end, 16);
+        out.push_back((uint8_t)v);
+        if (end == p) break;
+        p = end;
     }
     return out;
 }
