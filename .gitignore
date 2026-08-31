@@ -27,9 +27,19 @@ models/
 *.pth
 *.pb
 
-# Generated results and logs
-results/*.log
-results/*.txt
+# op25 logs containing individual radio unit IDs — kept local, never published.
+# (See the privacy note in README.md; these are the per-call traces behind the
+# aggregate CDR numbers the README reports.)
+results/lwin_cdr.log
+results/enc_id.log
+results/*.clean
+
+# Raw op25 voice-update log: no unit IDs, but 21 MB and rewritten every run.
+results/op25_record.log
+
+# Spectrum sweeps (*.csv), RDS decodes (rds_*.json), SPECTRUM_REPORT.md and the
+# acars/adsb/ais captures stay tracked — they are the evidence behind the README
+# and contain no unit identifiers.
 
 # Secrets and credentials
 lwin_keys.json
