@@ -30,6 +30,15 @@ models/
 # op25 logs containing individual radio unit IDs — kept local, never published.
 # (See the privacy note in README.md; these are the per-call traces behind the
 # aggregate CDR numbers the README reports.)
+# op25 logs carry srcaddr — real 24-bit radio unit IDs — and this is a public
+# repo. Unit IDs were leaked once already and needed a history rewrite plus a
+# repo recreate to purge. This was a denylist of individual filenames, so every
+# NEW log name leaked by default; op25_if2.log reached 23 srcaddr entries that
+# way. Ignore the whole class instead.
+results/*.log
+!results/fm_sweep.log
+!results/wide_sweep.log
+!results/rtl433_live.log
 results/lwin_cdr.log
 results/enc_id.log
 results/*.clean
