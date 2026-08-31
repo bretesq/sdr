@@ -705,3 +705,58 @@ Result from the same run: **4,351 grants, 51 talkgroups, 49 voice frequencies,
 **§10.5's claim is now delivered: one session produces both the audio and a
 complete grant census**, which `OBSERVATIONS.md` §3.3 records as impossible with
 a single receiver.
+
+---
+
+## 13. Wired into the web console (2026-08-31)
+
+`mode: 'single' | 'multi'` end to end. **'single' is unchanged and remains the
+default**, so an existing client's request behaves exactly as before.
+
+| layer | change |
+|---|---|
+| `ListenOptions` | `mode`, `legs`, `nVoice700`, `nVoice800`, `census` |
+| `buildListenArgs` | emits the multi-only flags **only** in multi mode — `lwin_listen.sh` exits 1 on an unknown option |
+| `scriptFor()` / `LAUNCHERS` | one mapping shared by the spawn path, the pid identity check and the tests |
+| `start.post.ts` | validates the new fields; rejects multi-only fields in single mode rather than ignoring them |
+| `ListenControl.vue` | mode toggle, per-band receiver counts (default 3 and 5), census checkbox |
+| `plugins/primevue.ts` | registers `SelectButton`, which was missing and would have rendered as nothing |
+
+### 13.1 Two bugs found while wiring, both of which stranded a radio
+
+1. **`isOurListenSession` matched only `lwin_listen.sh`** in `/proc/<pid>/cmdline`.
+   A multi-mode session was invisible to Stop, which answered 409 while both
+   HackRFs kept recording.
+2. **`isRadioBusy` matched only `python3 rx\.py --args`.** That does not match
+   `multi_rx`: the launcher runs `python3 multi_rx.py -c <cfg> -v 10`, with no
+   `--args` in its argv at all. A stranded `multi_rx` holding **both** radios
+   read as "radio free", so Stop returned early without `pkill`-ing it and the
+   next Start contended for two radios. Both patterns are now checked, and the
+   last-resort `pkill` sweep covers both.
+
+### 13.2 Verified against a live server
+
+Validation matrix — all ten bad bodies rejected with specific messages,
+including `legs: "800"` (that band has no live control channel, so such a
+session would never see a grant). Cross-site → 403; `form-urlencoded` → 415, so
+the CSRF guards still cover the new fields.
+
+End to end, a real 60 s multi session started from the API spawned exactly:
+
+```
+bash scripts/lwin_listen_multi.sh --legs 700,800 --n-voice-700 3 --n-voice-800 5 \
+     --preset pd-all --include-partial 60
+python3 scripts/udp_audio_record.py --rx-id 1 23462 ...   (through --rx-id 8 23476)
+python3 multi_rx.py -c lwin_both.json -v 10
+```
+
+with `running=true, radioBusy=true` — the latter would have been `false` before
+the pattern fix. `POST /api/listen/stop` returned in 0.4 s, left **nothing**
+holding a radio or a UDP port, and the census imported on the way out:
+**317 grants, 78 linked to a recorded call.**
+
+The UI was checked by server-rendering both states: the toggle and its hint text
+render in single mode with the multi-only inputs correctly absent, and
+`nv700`/`nv800`/`census` render as real form inputs once the mode is multi.
+(Chrome could not load the test port, so this was verified from the SSR HTML
+rather than by clicking.)
