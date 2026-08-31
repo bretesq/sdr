@@ -339,11 +339,19 @@ the antenna had not yet been swapped.
 | clock error | -0.3 ppm on both, TCXO-grade. The old "+24.6 ppm, use `-p 25`" was wrong and was *injecting* 19 kHz of error |
 | receiver health | 33.3 dB SNR on 104.1 MHz FM — the front end is fine |
 | `[R82XX] PLL not locked!` | cosmetic; it fires at 104 MHz too, where SNR is 33 dB |
-| tuner IF bandwidth | clamping to 300 kHz is worth **+1.6 dB** (`scripts/tuner_bw_test.py`), now available as op25's `--tuner-bw` |
+| tuner IF bandwidth | **no measurable benefit** — +0.3 dB at 300 kHz, inside run-to-run noise. `--tuner-bw` exists in op25 now but does not help here |
+| tuner gain | best ~4.7 dB at 44.5 dB gain; the front end is *not* overloading, and turning gain down makes it worse. The long-standing 40 dB was already about right |
 | real decode attempt | **0 TSBK** with the tuner both wide and narrow, parked on the control channel for 60 s each |
 
-So the tuner clamp is real but does not bridge the gap: ~7.4 dB against the
-~15 dB P25 needs, still ~8 dB short. What has *not* been tried is the one
+Measured properly the control channel reads **~4.7 dB** here, about **10 dB**
+short of the ~15 dB P25 needs.
+
+> Two earlier figures in this file were wrong and are retracted. A gain sweep
+> appearing to show +17 dB for turning gain down, and +1.6 dB for clamping the
+> tuner, were both artifacts of measuring at DC: the RTL2832U has a large DC
+> offset spike, and tuning directly to the channel puts the wanted carrier on
+> top of it. Both tools now tune 25 kHz low so the carrier is clear of DC —
+> which is exactly why op25's own working config passes `-o 25000`. What has *not* been tried is the one
 variable section 7 named and never changed — the antenna. The HackRF reads
 +28.3 dB on this same channel, and a 26 dB gap between an R820T2 and a HackRF
 is not a front-end difference.

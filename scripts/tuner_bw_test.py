@@ -42,6 +42,17 @@ import numpy as np
 DEFAULT_CC = 773_056_250
 SAMPLE_RATE = 1_024_000
 
+# The receiver is deliberately tuned BELOW the channel by this much, so the
+# wanted carrier lands at +OFFSET_HZ and the RTL2832U's DC offset spike stays at
+# 0 where it can be excluded.
+#
+# Measuring at DC does not work and produces confidently wrong numbers. A gain
+# sweep done that way reported 24.8 dB at gain 0 falling to 5.7 dB at gain 40,
+# apparently a 17 dB win for turning gain down. It was the DC spike the whole
+# time: measured properly, off DC, the carrier is 0.6 dB at gain 0 and 1.8 dB at
+# gain 40 — the opposite conclusion. op25 avoids the same trap with `-o 25000`.
+OFFSET_HZ = 25_000
+
 # 0 asks the driver for automatic (widest) — the default everything else uses.
 BANDWIDTHS = [0, 1_500_000, 1_000_000, 600_000, 300_000, 200_000]
 
@@ -62,13 +73,12 @@ def load() -> ctypes.CDLL:
     return lib
 
 
-def snr_at_dc(iq: np.ndarray, rate: int, channel_hz: float = 12_500.0) -> float:
-    """SNR of the carrier at band centre, in dB.
+def snr_offset(iq: np.ndarray, rate: int, channel_hz: float = 12_500.0) -> float:
+    """SNR of the carrier sitting at +OFFSET_HZ, in dB.
 
-    The receiver is tuned directly to the control channel, so the signal sits at
-    DC. Welch-average to steady the estimate, take the peak inside +/- half a
-    channel width, and compare it to the median of everything outside a guard
-    band — a median, so a second carrier in the window cannot drag the floor up.
+    The receiver is tuned OFFSET_HZ below the channel so the carrier is clear of
+    the DC spike. Welch-average, take the peak in a window around the offset,
+    and compare against the median of a band well away from both.
     """
     nfft = 4096
     nseg = len(iq) // nfft
@@ -82,8 +92,9 @@ def snr_at_dc(iq: np.ndarray, rate: int, channel_hz: float = 12_500.0) -> float:
     psd = 10 * np.log10(acc / nseg + 1e-20)
 
     freqs = np.fft.fftshift(np.fft.fftfreq(nfft, 1 / rate))
-    signal = np.abs(freqs) <= channel_hz / 2
-    noise = np.abs(freqs) > channel_hz * 4          # guard band
+    signal = np.abs(freqs - OFFSET_HZ) <= channel_hz / 2
+    # Well away from both the carrier and DC.
+    noise = (np.abs(freqs) > OFFSET_HZ + channel_hz * 3) & (np.abs(freqs) < rate / 4)
     if not signal.any() or not noise.any():
         return float('nan')
     return float(psd[signal].max() - np.median(psd[noise]))
@@ -91,7 +102,7 @@ def snr_at_dc(iq: np.ndarray, rate: int, channel_hz: float = 12_500.0) -> float:
 
 def measure(lib, dev, freq: int, gain_tenths: int, bw: int, secs: float) -> float:
     lib.rtlsdr_set_tuner_bandwidth(dev, bw)
-    lib.rtlsdr_set_center_freq(dev, freq)
+    lib.rtlsdr_set_center_freq(dev, freq - OFFSET_HZ)   # carrier -> +OFFSET_HZ
     lib.rtlsdr_reset_buffer(dev)
 
     want = int(SAMPLE_RATE * 2 * secs) & ~0x3FFF     # multiple of 16 KiB
@@ -102,7 +113,7 @@ def measure(lib, dev, freq: int, gain_tenths: int, bw: int, secs: float) -> floa
 
     raw = np.frombuffer(bytes(buf[:got.value]), dtype=np.uint8).astype(np.float32)
     iq = (raw[0::2] - 127.5) + 1j * (raw[1::2] - 127.5)
-    return snr_at_dc(iq, SAMPLE_RATE)
+    return snr_offset(iq, SAMPLE_RATE)
 
 
 def main() -> int:
