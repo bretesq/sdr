@@ -1,0 +1,11 @@
+[
+  { "cat": "*Baton Rouge Police*",  "tag": "Law*",     "set": "la-brpd-law" },
+  { "cat": "*(17) - Sheriff*",      "tag": "Law*",     "set": "la-ebrso-law" },
+  { "cat": "*(17) - Sheriff*",      "tag": "Corrections", "set": "la-ebrso-law" },
+  { "cat": "State Police*",         "tag": "Law*",     "set": "la-lsp-law" },
+  { "cat": "LSU*",                  "tag": "Law*",     "set": "la-lsupd-law" },
+  { "cat": "*",                     "tag": "Fire*",    "set": "la-generic-fire" },
+  { "cat": "*",                     "tag": "EMS*",     "set": "la-generic-ems" },
+  { "cat": "*",                     "tag": "Hospital", "set": "la-generic-ems" },
+  { "cat": "*",                     "tag": "*",        "set": "la-generic-law" }
+]

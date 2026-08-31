@@ -1,0 +1,13 @@
+{
+  "id": "la-generic-ems",
+  "name": "Louisiana — EMS (generic)",
+  "discipline": "ems",
+  "extends": "la-common",
+  "sources": [],
+  "ten": {},
+  "signal": {},
+  "response": {},
+  "conflicts": {
+    "ten.*": "No EMS-specific ten-code list attested for this system. EMS traffic here is predominantly plain language plus response codes, which come from la-common. Left empty rather than borrowing the law set."
+  }
+}

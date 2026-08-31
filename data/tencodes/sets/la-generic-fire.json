@@ -1,0 +1,13 @@
+{
+  "id": "la-generic-fire",
+  "name": "Louisiana — fire (generic)",
+  "discipline": "fire",
+  "extends": "la-common",
+  "sources": [],
+  "ten": {},
+  "signal": {},
+  "response": {},
+  "conflicts": {
+    "ten.*": "Fire ten-codes in Louisiana differ fundamentally from law ten-codes (s2, poster N508SP1: 10-26 'working fire', 10-29 'fire under control'), and that list is attributed to SE Louisiana rather than this system. Shipping it here would produce confidently wrong expansions on 318 fire calls. Left empty until confirmed against this system's traffic."
+  }
+}

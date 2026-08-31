@@ -1,0 +1,13 @@
+{
+  "id": "la-ebrso-law",
+  "name": "East Baton Rouge Parish Sheriff's Office — Law",
+  "discipline": "law",
+  "extends": "la-generic-law",
+  "sources": [],
+  "ten": {},
+  "signal": {},
+  "response": {},
+  "conflicts": {
+    "*": "No authoritative BRPD-specific code list is published. s2 states the single Louisiana list circulating online is 'completely incorrect'. This file exists as the destination for codes confirmed from this system's own traffic; until then the generic set applies through `extends`."
+  }
+}
