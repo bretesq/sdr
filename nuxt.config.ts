@@ -57,9 +57,16 @@ export default defineNuxtConfig({
   // .gitignore for its watch list, so without this the dev server registers
   // watchers on all of it — slow boot, ENOSPC risk on WSL2, and a watcher event
   // for every .wav the recorder flushes while you are using the app.
+  //
+  // Anchored with './'. A bare 'recordings/**' matches that segment at ANY
+  // depth, so it also covered server/api/recordings/ and Nuxt stopped watching
+  // the recordings API routes — a new file there was not picked up until a
+  // full restart. Same root cause as .gitignore:2, which had untracked those
+  // routes outright.
   ignore: [
-    'recordings/**', 'results/**', 'captures/**', 'models/**',
-    'src/**', 'reference/**', 'web/**', 'tools/**', 'docs/**', 'adp_brute/**',
+    './recordings/**', './results/**', './captures/**', './models/**',
+    './src/**', './reference/**', './web/**', './tools/**', './docs/**',
+    './adp_brute/**',
     'lwin_*.tsv', 'lwin_*.txt', 'lwin_keys.json',
   ],
 })
