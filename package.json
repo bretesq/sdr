@@ -7,9 +7,10 @@
     "build": "nuxt build",
     "preview": "nuxt preview",
     "typecheck": "nuxt typecheck",
-    "test": "vitest run",
+    "test": "vitest run && python3 -m unittest discover -s scripts/tests",
     "postinstall": "nuxt prepare",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test:py": "python3 -m unittest discover -s scripts/tests -v"
   },
   "dependencies": {
     "@primevue/themes": "^4.2.0",
