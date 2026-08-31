@@ -644,3 +644,64 @@ Two candidate fixes, neither attempted:
   source, and the receiver already knows its device's centre, rate and
   `usable_bw_pct`. Cost: a *second* untracked patch to a vendored dependency,
   with the liability `patches/README.md` describes.
+
+---
+
+## 12. Both fixes landed and re-measured (2026-08-31)
+
+### 12.1 Window-aware receiver selection
+
+`patches/op25-tk_p25-window-aware-find-talkgroup.patch`: receivers read
+`freq_min`/`freq_max` from their channel config (emitted by
+`make_multirx_cfg.py` from the demodulator's own bound) and skip talkgroups
+whose current frequency is outside it. Both keys default to 0, which disables
+the check, so the patch is inert for any config that omits them.
+
+300 s run, same flags, against §11's run:
+
+| | before | after |
+|---|---|---|
+| `Unable to tune` | 1,243 | **0** |
+| `leaving it unclaimed` | 1,243 | **0** |
+| 700-leg tune attempts | 1,300 → 6 calls | **60 → 10 calls** |
+| **700-leg capture** | 6 of 12 (**50%**) | **10 of 12 (83%)** |
+| 800-leg capture | all 54 announced | all 37 announced |
+
+**Zero wasted tune attempts.** The cross-band churn is gone, and the 700 leg
+went from capturing half its announced grants to five-sixths.
+
+Total calls were 64 against §11's 70, but the traffic differed between windows
+(37 vs 54 distinct 800-leg grants announced). What improved is capture
+*efficiency*, which is the thing under our control. Note receiver 3 logged zero
+attempts: with the churn removed, 3 receivers is more than the 700 leg needs.
+
+The `release-unreachable-grant` patch is now belt-and-braces rather than
+load-bearing — it still guards a grant announced on a frequency inside the
+window but unreachable for another reason, and both patches are checked at
+startup because both fail quietly.
+
+### 12.2 Grant census
+
+The data was never missing. `import_grants.py`'s regex required
+`srcaddr=(\d+)`, but `tk_p25.py` formats that field with `%s` and passes `None`
+when the grant TSBK carried no source:
+
+```
+08/31/26 15:06:59.070324 [LWIN-BR] set tgid=17088, srcaddr=None, svcopts=None
+```
+
+It matched **95 of 705** grants in the §11 log — an 87% silent loss. These lines
+carry the **sysname** prefix, not a receiver id: the system emits exactly one
+per announced grant regardless of pool size, so no dedup is needed. Fixed, with
+regression tests carrying both modules' verbatim line forms.
+
+The launcher now runs at `-v 10` by default (at `-v 2` op25 logs no grant lines
+at all) and imports on exit, including on Ctrl-C. `--no-census` restores `-v 2`.
+
+Result from the same run: **4,351 grants, 51 talkgroups, 49 voice frequencies,
+930 linked to a recorded call** — 14.5 grants/s against the reference CDR run's
+10.5/s on a quieter day.
+
+**§10.5's claim is now delivered: one session produces both the audio and a
+complete grant census**, which `OBSERVATIONS.md` §3.3 records as impossible with
+a single receiver.
