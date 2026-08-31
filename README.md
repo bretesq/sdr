@@ -356,6 +356,42 @@ variable section 7 named and never changed — the antenna. The HackRF reads
 +28.3 dB on this same channel, and a 26 dB gap between an R820T2 and a HackRF
 is not a front-end difference.
 
+### The supplied antenna is resonant at 375 MHz, not 773
+
+Measured across bands on dongle 1, 15 s sweeps, gain 45:
+
+| band | excess over floor | peak |
+|---|---|---|
+| FM 88-108 MHz | +22.3 dB | 20.1 |
+| VHF / NOAA 155-165 | +18.1 dB | 13.8 |
+| **UHF business 460-470** | **+24.2 dB** | 3.3 |
+| LWIN 700 control | +5.8 dB | -6.8 |
+| LWIN 800 voice | +8.3 dB | -11.9 |
+
+The antenna is not deaf at UHF — 460-470 MHz is its *best* band of the five. It
+simply is not resonant where LWIN lives, and the length says why:
+
+| | frequency | quarter wave |
+|---|---|---|
+| supplied 8" duck | **375 MHz** | 20.0 cm = 7.87 in |
+| LWIN control | 773.06 MHz | **9.70 cm = 3.82 in** |
+| LWIN voice | 852.5 MHz | 8.80 cm = 3.46 in |
+| UHF business | 465 MHz | 16.13 cm = 6.35 in |
+
+An 8-inch whip is a quarter wave at 375 MHz, which is exactly why it peaks at
+460. At 773 MHz it is roughly a HALF wave, and a half-wave whip with no ground
+plane presents a very high feedpoint impedance — a bad match, and most of the
+signal is lost in it rather than reaching the receiver.
+
+**If the duck telescopes** — the vendor listing calls it "8" (20 cm) adjustable"
+— collapse it to about **3.8 inches** and re-measure with `scripts/cc_snr.py`.
+That is a quarter wave at the control channel instead of an awkward half wave,
+and it costs nothing. One setting near 3.6-3.8 in covers the 800 MHz voice side
+reasonably too.
+
+Note this was measured with the antenna already vertical and window-mounted, so
+placement is not the remaining variable — length is.
+
 ### The antenna constraint, and what it implies
 
 The Skyfall unit has **one BNC input, split internally** to both RTL receivers.
