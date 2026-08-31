@@ -148,9 +148,20 @@
       </div>
 
       <div class="flex align-items-center gap-2">
-        <Checkbox v-model="ess" input-id="ess" binary :disabled="running" />
-        <label for="ess" class="text-sm">
+        <!--
+          Disabled when the census is on: the census already forces op25 to
+          -v 10 (lwin_listen_multi.sh sets VERBOSITY=10 for CENSUS=1), which is
+          the same level --ess asks for. Leaving it clickable let the operator
+          untick it and still pay the full ~10x log volume, with the label
+          implying they had avoided it.
+        -->
+        <Checkbox
+          v-model="ess" input-id="ess" binary
+          :disabled="running || essImplied"
+        />
+        <label for="ess" class="text-sm" :class="{ 'text-color-secondary': essImplied }">
           Capture encryption headers (op25 -v 10, ~10&times; log volume)
+          <template v-if="essImplied">— already on, the grant census needs -v 10</template>
         </label>
       </div>
 
@@ -225,6 +236,12 @@ const modes = [
 const nVoice700 = ref<number>(3)
 const nVoice800 = ref<number>(5)
 const census = ref(true)
+
+/**
+ * True when op25 is already at -v 10 for another reason, so the ESS switch
+ * cannot change anything. Only the census forces it, and only in multi mode.
+ */
+const essImplied = computed(() => mode.value === 'multi' && census.value)
 
 const modeHint = computed(() =>
   mode.value === 'multi'
@@ -381,7 +398,9 @@ async function start(): Promise<void> {
         includePartial: includePartial.value,
         includeEncrypted: includeEncrypted.value,
         stt: stt.value,
-        ess: ess.value,
+        // essImplied means op25 runs at -v 10 regardless, so send true rather
+        // than recording a config that says ESS was off when it was not.
+        ess: ess.value || essImplied.value,
         duration: duration.value ?? undefined,
       },
     })

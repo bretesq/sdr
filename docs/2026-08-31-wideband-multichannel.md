@@ -760,3 +760,35 @@ render in single mode with the multi-only inputs correctly absent, and
 `nv700`/`nv800`/`census` render as real form inputs once the mode is multi.
 (Chrome could not load the test port, so this was verified from the SSR HTML
 rather than by clicking.)
+
+### 13.3 Verifications that closed the remaining gaps
+
+**The console's call counter is correct in multi mode.** Eight recorders inherit
+one `web/listen.log` fd and interleave writes to it, so `countCalls` could have
+undercounted. A web-app-driven 150 s multi session, sampled against the
+recordings directory:
+
+| t | console `callCount` | new files on disk |
+|---|---|---|
+| 40 s | 8 | 8 |
+| 80 s | 18 | 18 |
+| 120 s | 25 | 25 |
+
+Exact at every sample. The session then ended on its own with
+`running=false, radioBusy=false`, nothing stranded, 31 calls on disk, and the
+census imported: **1,586 grants, 28 talkgroups, 391 linked to a recorded call.**
+(`callCount` reads 0 once idle — pre-existing and deliberate,
+`status.get.ts:14` counts only for a live session.)
+
+**Single mode has no regression from the parser extraction.** It is the default
+and the thing run daily, and it had not had a live session since `op25_log.py`
+was split out of `udp_audio_record.py`. A 90 s
+`./scripts/lwin_listen.sh --pd-all --include-partial` run saved **8 calls, all 8
+labelled with a talkgroup, 0 `TGunknown`** — precisely the failure mode a broken
+parser would produce.
+
+**The ESS checkbox no longer misstates its cost.** `CENSUS=1` already forces
+op25 to `-v 10`, so `--ess` changed nothing while the census was on — yet both
+checkboxes advertised "~10x log volume", letting the operator untick ESS and
+still pay it. It is now disabled in that state and says why, and the request
+reports `ess: true` rather than storing a config claiming it was off.
