@@ -8,7 +8,11 @@ parallel and track the currently-active talkgroup.
 IMPORTANT: run op25 with `python3 -u` or its stdout is block-buffered and the log lags,
 which mislabels calls.
 
-Usage: udp_audio_record.py [port] [seconds] [outdir] [op25_log]
+Usage: udp_audio_record.py [--rx-id N] [port] [seconds] [outdir] [op25_log]
+
+  --rx-id N   under multi_rx.py, attribute only log lines tagged [N] to this
+              recorder. N recorders share one op25 log; without this they all
+              read every channel's talkgroup and mislabel each other's calls.
 """
 import socket, sys, wave, time, os, select, json, re, datetime, signal
 
@@ -28,10 +32,23 @@ def _on_signal(signum, frame):
 signal.signal(signal.SIGINT, _on_signal)
 signal.signal(signal.SIGTERM, _on_signal)
 
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 23456
-SECS = float(sys.argv[2]) if len(sys.argv) > 2 else 400
-OUT  = sys.argv[3] if len(sys.argv) > 3 else '/home/besquivel/rtl/recordings'
-LOG  = sys.argv[4] if len(sys.argv) > 4 else '/home/besquivel/rtl/results/op25_record.log'
+# --rx-id is pulled out of argv BEFORE the positional parse, so the four
+# positional arguments keep their existing meaning for lwin_listen.sh,
+# lwin_capture_audio.sh, lwin_capture_enc.sh and the web console — none of
+# which pass it.
+_argv = sys.argv[1:]
+RX_ID = None
+if '--rx-id' in _argv:
+    _i = _argv.index('--rx-id')
+    if _i + 1 >= len(_argv):
+        sys.exit('--rx-id needs a receiver number')
+    RX_ID = int(_argv[_i + 1])
+    del _argv[_i:_i + 2]
+
+PORT = int(_argv[0]) if len(_argv) > 0 else 23456
+SECS = float(_argv[1]) if len(_argv) > 1 else 400
+OUT  = _argv[2] if len(_argv) > 2 else '/home/besquivel/rtl/recordings'
+LOG  = _argv[3] if len(_argv) > 3 else '/home/besquivel/rtl/results/op25_record.log'
 DB   = '/home/besquivel/rtl/reference/lwin_talkgroups.json'
 GAP, MINDUR = 2.0, 0.7
 
@@ -49,8 +66,9 @@ for p in (PORT, PORT + 1):
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
     s.bind(('127.0.0.1', p)); s.setblocking(False); socks.append(s)
-tail = LogTail(LOG)
-print(f"listening 127.0.0.1:{PORT}/{PORT+1} for {SECS:.0f}s -> {OUT}/", flush=True)
+tail = LogTail(LOG, rx_id=RX_ID)
+print(f"listening 127.0.0.1:{PORT}/{PORT+1} for {SECS:.0f}s -> {OUT}/"
+      + (f"  [receiver {RX_ID}]" if RX_ID is not None else ""), flush=True)
 print(f"talkgroup source: {LOG}", flush=True)
 
 # The database is opened best-effort. The .wav is the irreplaceable artifact;
