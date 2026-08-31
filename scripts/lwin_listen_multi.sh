@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# Listen to LWIN with SEVERAL receivers at once, across both bands.
+#
+# Unlike lwin_listen.sh (op25 rx.py, ONE receiver that must leave the control
+# channel to hear a call, so it captures ~25% of calls and an incomplete grant
+# census), this runs op25 multi_rx.py with a pool of receivers:
+#
+#   HackRF One, 8 Msps @ 771.4185 MHz   1 receiver PINNED to the control
+#                                       channel (773.05625) + 3 voice
+#   HackRF Pro, 12 Msps @ 855.7250 MHz  5 voice receivers
+#
+# Site 13 splits its voice across 769-772 and 851-860 MHz, 87 MHz apart, which
+# no single HackRF sample rate spans — hence two radios. The pinned control
+# receiver never retunes, so a run produces audio AND a 100% grant census at
+# the same time, which OBSERVATIONS.md §3.3 records as impossible with one
+# receiver.
+#
+# Requires patches/op25-tk_p25-release-unreachable-grant.patch: without it a
+# receiver handed a grant on the other band claims the call and records
+# silence. Checked at startup.
+#
+# See docs/2026-08-31-wideband-multichannel.md.
+#
+# Usage: lwin_listen_multi.sh [options] [seconds]
+#   --legs 700|800|700,800   which bands (default 700,800)
+#   --n-voice-700 N          voice receivers on the One (default 3)
+#   --n-voice-800 N          voice receivers on the Pro (default 5)
+#   --stt                    transcribe new .wav files as they land
+#   --ess                    op25 -v 10 so ESS (algid/keyid/mi) is logged
+#   everything else          the same talkgroup-selection flags as
+#                            lwin_listen.sh, passed to make_whitelist.py
+#   -h, --help               this help
+#
+# Examples
+#   ./scripts/lwin_listen_multi.sh --pd-all --include-partial --list
+#   ./scripts/lwin_listen_multi.sh --pd-all --include-partial 300
+#   ./scripts/lwin_listen_multi.sh --legs 700 --n-voice-700 3 120
+set -u
+R=/home/besquivel/rtl
+A=$R/src/op25/op25/gr-op25_repeater/apps
+. "$R/scripts/radios.sh"          # HRF_*_ARGS / HRF_*_GAINS: address radios by serial
+BASE_PORT=23460
+WL=$R/lwin_active_whitelist.txt
+CCWL=$R/lwin_nofollow.txt
+CFG=$R/lwin_both.json
+LOG=$R/results/op25_multi.log
+LEGS=700,800
+SECS=0
+STT=0
+ESS=0
+NV700=""
+NV800=""
+GEN=()
+
+usage() { sed -n '2,/^set -u/p' "$0" | sed 's/^# \{0,1\}//; $d'; exit 0; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --legs)              LEGS="$2"; shift ;;
+    --n-voice-700)       NV700="$2"; shift ;;
+    --n-voice-800)       NV800="$2"; shift ;;
+    --stt)               STT=1 ;;
+    --ess)               ESS=1 ;;
+    --pd)                GEN+=(--preset pd) ;;
+    --pd-all)            GEN+=(--preset pd-all) ;;
+    --fire)              GEN+=(--preset fire) ;;
+    --fire-all)          GEN+=(--preset fire-all) ;;
+    --ems)               GEN+=(--preset ems) ;;
+    --interop)           GEN+=(--preset interop) ;;
+    --preset)            GEN+=(--preset "$2"); shift ;;
+    --tag)               GEN+=(--tag "$2"); shift ;;
+    --tg)                GEN+=(--tg "$2"); shift ;;
+    --match)             GEN+=(--match "$2"); shift ;;
+    --all-areas)         GEN+=(--all-areas) ;;
+    --include-partial)   GEN+=(--include-partial) ;;
+    --include-encrypted) GEN+=(--include-encrypted) ;;
+    --list)              GEN+=(--list); LIST=1 ;;
+    -h|--help)           usage ;;
+    -*)                  echo "unknown option: $1" >&2; exit 1 ;;
+    *)                   SECS="$1" ;;
+  esac
+  shift
+done
+
+# The op25 patch is not tracked by git (src/ is gitignored), so a re-clone or
+# reset silently removes it and cross-band grants start getting eaten.
+if ! grep -q "leaving it unclaimed" "$A/tk_p25.py" 2>/dev/null; then
+  echo "ERROR: op25 is missing patches/op25-tk_p25-release-unreachable-grant.patch." >&2
+  echo "       Without it a receiver handed a grant on the other band claims the" >&2
+  echo "       call and records silence. Re-apply per patches/README.md." >&2
+  exit 1
+fi
+
+python3 "$R/scripts/make_whitelist.py" "${GEN[@]+"${GEN[@]}"}" -o "$WL" || exit $?
+[ -n "${LIST:-}" ] && exit 0
+
+# The control receiver's whitelist holds one talkgroup that does not exist, so
+# find_talkgroup never matches for it and it never leaves the control channel.
+echo 999999 > "$CCWL"
+
+CFG_ARGS=(--legs "$LEGS" --whitelist "$WL" --cc-whitelist "$CCWL"
+          --base-port "$BASE_PORT" -o "$CFG")
+[ -n "$NV700" ] && CFG_ARGS+=(--n-voice-700 "$NV700")
+[ -n "$NV800" ] && CFG_ARGS+=(--n-voice-800 "$NV800")
+python3 "$R/scripts/make_multirx_cfg.py" "${CFG_ARGS[@]}" || exit $?
+
+# One recorder per VOICE channel. Ports and receiver ids come from the config
+# itself rather than being recomputed here, so the two can never drift: the
+# receiver id is the channel's index, which is what op25 uses as msgq_id
+# (multi_rx.py:configure_channels assigns msgq_id = len(self.channels)).
+mapfile -t RX_PORTS < <(python3 - "$CFG" <<'PY'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+for i, ch in enumerate(cfg['channels']):
+    if ch['name'] == 'CC':
+        continue                      # pinned to the control channel; no audio
+    print(i, ch['destination'].rsplit(':', 1)[1], ch['device'], ch['name'])
+PY
+) || exit $?
+
+mkdir -p "$R/recordings" "$R/results"
+[ "$SECS" -eq 0 ] 2>/dev/null && RUN=99999 || RUN=$SECS
+: > "$LOG"
+
+REC_PIDS=()
+cleanup() {
+  echo; echo "stopping..."
+  [ -n "${OP25_PID:-}" ] && kill "$OP25_PID" 2>/dev/null
+  pkill -f "python3 multi_rx\.py" 2>/dev/null
+  for p in "${REC_PIDS[@]+"${REC_PIDS[@]}"}"; do kill -INT "$p" 2>/dev/null; done
+  [ -n "${STT_PID:-}" ] && kill -INT "$STT_PID" 2>/dev/null
+  wait 2>/dev/null
+  n=$(ls -1 "$R"/recordings/TG*.wav 2>/dev/null | wc -l)
+  echo "-> $n call(s) total in $R/recordings/"
+  exit 0
+}
+trap cleanup INT TERM
+
+for row in "${RX_PORTS[@]}"; do
+  set -- $row
+  python3 "$R/scripts/udp_audio_record.py" --rx-id "$1" \
+          "$2" "$RUN" "$R/recordings" "$LOG" &
+  REC_PIDS+=($!)
+done
+sleep 2
+
+if [ "$STT" -eq 1 ]; then
+  python3 "$R/scripts/stt_watch.py" --dir "$R/recordings" &
+  STT_PID=$!
+  echo "STT watcher started (whisper small.en on CPU)"
+fi
+
+# Under a pty so the log is written in real time (python3 -u breaks op25 on 3.14).
+VERBOSITY=2
+[ "$ESS" -eq 1 ] && VERBOSITY=10
+OP25_CMD="cd $A && exec python3 multi_rx.py -c $CFG -v $VERBOSITY"
+script -q -f -c "$OP25_CMD" "$LOG" >/dev/null 2>&1 &
+OP25_PID=$!
+
+echo
+echo "LWIN Baton Rouge Simulcast — legs $LEGS, ${#RX_PORTS[@]} voice receiver(s)"
+echo "whitelist: $(wc -l < "$WL") talkgroups -> $R/recordings/"
+for row in "${RX_PORTS[@]}"; do
+  set -- $row
+  echo "  receiver $1  udp/$2  $3  $4"
+done
+[ "$SECS" -eq 0 ] 2>/dev/null && echo "Ctrl-C to stop." || echo "running ${SECS}s."
+
+wait "${REC_PIDS[0]}"
+cleanup
