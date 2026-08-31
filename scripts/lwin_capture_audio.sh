@@ -6,6 +6,7 @@
 set -u
 R=/home/besquivel/rtl
 A=$R/src/op25/op25/gr-op25_repeater/apps
+. "$R/scripts/radios.sh"          # HRF_*_ARGS / HRF_*_GAINS: address radios by serial
 WL=/tmp/brpd_wl.txt
 TSV=$R/lwin_brpd_audio.tsv
 PORT=23456
@@ -29,7 +30,7 @@ sleep 2
 # encrypted bursts still produce (garbage) audio in the WAV, but the CIPHERTXT + MI
 # in the log give us the ciphertext; the clear segments of the WAV give the real IMBE
 # plaintext (encode the clear audio to 11-byte IMBE codeword).
-OP25_CMD="cd $A && exec python3 rx.py --args soapy=0,driver=hackrf -N AMP:0,LNA:40,VGA:44 -S 2000000 -q 0 -o 25000 -T $TSV -V -w -u $PORT -v 9"
+OP25_CMD="cd $A && exec python3 rx.py --args $HRF_PRO_ARGS -N $HRF_PRO_GAINS -S 2000000 -q 0 -o 25000 -T $TSV -V -w -u $PORT -v 9"
 script -q -f -c "$OP25_CMD" "$R/results/op25_brpd_audio.log" >/dev/null 2>&1 &
 OP25_PID=$!
 

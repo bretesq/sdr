@@ -47,6 +47,7 @@
 set -u
 R=/home/besquivel/rtl
 A=$R/src/op25/op25/gr-op25_repeater/apps
+. "$R/scripts/radios.sh"          # HRF_*_ARGS / HRF_*_GAINS: address radios by serial
 PORT=23456
 WL=$R/lwin_active_whitelist.txt
 TSV=$R/lwin_active.tsv
@@ -124,7 +125,7 @@ fi
 VERBOSITY=2
 [ "$ESS" -eq 1 ] && VERBOSITY=10
 
-OP25_CMD="cd $A && exec python3 rx.py --args soapy=0,driver=hackrf -N AMP:0,LNA:40,VGA:44 -S 2000000 -q 0 -o 25000 -T $TSV -V -w -u $PORT -n -v $VERBOSITY"
+OP25_CMD="cd $A && exec python3 rx.py --args $HRF_PRO_ARGS -N $HRF_PRO_GAINS -S 2000000 -q 0 -o 25000 -T $TSV -V -w -u $PORT -n -v $VERBOSITY"
 script -q -f -c "$OP25_CMD" "$R/results/op25_record.log" >/dev/null 2>&1 &
 OP25_PID=$!
 

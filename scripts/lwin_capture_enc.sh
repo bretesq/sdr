@@ -10,6 +10,7 @@
 set -u
 R=/home/besquivel/rtl
 A=$R/src/op25/op25/gr-op25_repeater/apps
+. "$R/scripts/radios.sh"          # HRF_*_ARGS / HRF_*_GAINS: address radios by serial
 WL=$R/lwin_enc_tgs.txt
 TSV=$R/lwin_enc.tsv
 SECS=${1:-180}
@@ -34,7 +35,7 @@ mkdir -p "$R/results"
 # CIPHERTXT/ESS lines AND the audio, so we can match a low-energy (silence) audio segment to
 # its LDU2 frame and use the fixed IMBE silence codeword as the known plaintext.
 PORT=23457
-OP25_CMD="cd $A && exec python3 rx.py --args soapy=0,driver=hackrf -N AMP:0,LNA:40,VGA:44 -S 2000000 -q 0 -o 25000 -T $TSV -V -w -u $PORT -v 10"
+OP25_CMD="cd $A && exec python3 rx.py --args $HRF_PRO_ARGS -N $HRF_PRO_GAINS -S 2000000 -q 0 -o 25000 -T $TSV -V -w -u $PORT -v 10"
 script -q -f -c "$OP25_CMD" "$R/results/lwin_enc_capture.log" >/dev/null 2>&1 &
 OP25_PID=$!
 # Run the audio recorder in parallel (same pattern as lwin_listen.sh).
