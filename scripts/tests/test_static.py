@@ -30,7 +30,7 @@ import unittest
 SCRIPTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Modules that are pure definitions and therefore safe to actually import.
-IMPORTABLE = ['sdr_db']
+IMPORTABLE = ['sdr_db', 'op25_log']
 
 
 def bound_names(tree: ast.AST) -> set[str]:
