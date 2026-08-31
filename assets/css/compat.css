@@ -21,9 +21,63 @@
   --surface-100: var(--p-highlight-background);
 }
 
-/* Nuxt + PrimeVue 4 style no <body> at all. Required either way. */
+/* Nuxt + PrimeVue 4 style no <body> at all — no background, no colour, and
+   crucially no font-family, so everything fell back to the browser default
+   (Times New Roman). Inter and JetBrains Mono are self-hosted by @nuxt/fonts,
+   so this works on an isolated LAN with no CDN. */
 body {
   margin: 0;
   background: var(--p-content-background);
   color: var(--p-text-color);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+               Roboto, 'Helvetica Neue', Arial, sans-serif;
+  /* Inter's optical sizing and modern numerics. tnum keeps the talkgroup-ID and
+     duration columns from jittering as digits change width. */
+  font-optical-sizing: auto;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+/* PrimeVue components inherit from their own root, not from body. */
+.p-component,
+input,
+button,
+select,
+textarea {
+  font-family: inherit;
+}
+
+/* Tabular figures wherever numbers are compared down a column: talkgroup IDs,
+   durations, timestamps, counts. A step down from the body size, which is the
+   convention for data-dense tables and stops the timestamp and talkgroup
+   columns wrapping to two lines at Inter's wider metrics. */
+table,
+.p-datatable,
+.p-paginator {
+  font-variant-numeric: tabular-nums;
+  font-size: 13.5px;
+}
+
+/* Timestamps, durations and IDs should never wrap mid-value. */
+.p-datatable tbody td:has(> time),
+.p-datatable .p-datatable-tbody > tr > td:first-child {
+  white-space: nowrap;
+}
+
+code,
+kbd,
+pre,
+samp {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo,
+               Consolas, 'Liberation Mono', monospace;
+  font-size: 0.9em;
+}
+
+/* Tighter, less bouncy headings than the browser default scale. */
+h1, h2, h3 {
+  letter-spacing: -0.02em;
+  line-height: 1.2;
 }

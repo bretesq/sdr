@@ -1,7 +1,16 @@
 export default defineNuxtConfig({
   compatibilityDate: '2025-01-01',
   devtools: { enabled: true },
-  modules: ['@nuxt/eslint'],
+  modules: ['@nuxt/eslint', '@nuxt/fonts'],
+  // Self-hosted, downloaded at build time — no CDN, so the console still works
+  // on an isolated LAN. Nuxt + Aura set no font-family at all, which lands on
+  // the browser default (Times New Roman) and looks like a 1998 intranet.
+  fonts: {
+    families: [
+      { name: 'Inter', provider: 'google', weights: [400, 500, 600, 700] },
+      { name: 'JetBrains Mono', provider: 'google', weights: [400, 500] },
+    ],
+  },
   css: [
     'primeicons/primeicons.css',
     'primeflex/primeflex.css',
@@ -21,11 +30,17 @@ export default defineNuxtConfig({
       // than by IP returns "Blocked request. This host is not allowed."
       // localhost and bare IPs are permitted by default; named hosts are not.
       //
-      // A leading dot matches the domain and all its subdomains. This is a
-      // LAN-only console, so the allowlist is deliberately narrow rather than
-      // `true` — `true` disables the check entirely for any host that can
-      // resolve to this box.
-      allowedHosts: ['monarch.esquivel.io', '.esquivel.io'],
+      // Set NUXT_ALLOWED_HOSTS in .env (gitignored) to a comma-separated list,
+      // e.g. `NUXT_ALLOWED_HOSTS=box.example.com,.example.com` — a leading dot
+      // matches the domain and all its subdomains. Kept out of the repo so a
+      // public checkout carries nobody's hostname.
+      //
+      // Prefer naming hosts over `true`, which disables the check entirely for
+      // any host that can be made to resolve to this box.
+      allowedHosts: (process.env.NUXT_ALLOWED_HOSTS ?? '')
+        .split(',')
+        .map(h => h.trim())
+        .filter(Boolean),
     },
   },
   // The repo root holds 221 MB / 6,463 files in recordings/ (growing during every
