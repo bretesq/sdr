@@ -564,46 +564,83 @@ grant was matched by a release, so no call was silently eaten. Without
 `patches/op25-tk_p25-release-unreachable-grant.patch` those 1,243 grants would
 each have occupied a receiver recording silence for the length of a call.
 
-### 11.3 NOT delivered: the grant census
+### 11.3 Grant census: the data is there, the importer cannot read it
 
-§10.5 claimed "audio plus a 100% grant census". **The audio half is delivered;
-the census half is not.** Two independent causes:
+§10.5 claimed "audio plus a 100% grant census". **The audio half is delivered.
+The census half is not — but only because of a parser mismatch, not because the
+data is missing.**
 
-1. **At `-v 2`, multi_rx logs no grant primitives at all.** Counted in the run's
-   log: `TSBK: op=` 0, `set tgid=` 0, `new tgid=` 0, `rfss_sts_bcst` 0. Only
-   `voice update` (1,758). The reference CDR run used `-v 10`.
-2. **`import_grants.py:42` parses `set tgid=(\d+), srcaddr=(\d+)`** — which is
-   `trunking.py`'s format, i.e. the `rx.py` path. `tk_p25.py` never emits it.
-   This is the *same* two-module trap that the old `FREQPAT` fell into, in a
-   different script.
+At `-v 2` the log carries no grant primitives at all (`TSBK: op=` 0,
+`set tgid=` 0, `new tgid=` 0, `rfss_sts_bcst` 0; only `voice update`). At
+**`-v 10`** (`--ess`), a 40 s run gives:
 
-There is also a design question, not just a bug: under `multi_rx` the
-`voice update` line is emitted by the *tuning* receiver, not by the control
-receiver, so there is no single-receiver grant stream to import. **The same
-grant was announced to up to 7 different receivers** (TG 17171 on 852.9125),
-so any census built from these lines must dedupe on (tgid, freq, time) rather
-than counting lines.
+| line | total | from receiver `[0]` |
+|---|---|---|
+| `TSBK: op=` | 1,461 | **1,461** |
+| `tsbk(0x00) grp_v_ch_grant` | 95 | 95 |
+| `tsbk(0x02) grp_v_ch_grant_up` | 315 | 315 |
+| `rfss_sts_bcst` | 77 | 77 |
+| `set tgid=` | 705 | **0** |
+| `voice update` | 210 | 0 |
 
-### 11.4 New finding: cross-band churn is costing 700 MHz calls
+**410 grant TSBKs in 40 s = 10.25 grants/s, against the reference CDR run's
+10.5 grants/s** — the pinned control receiver is seeing the whole grant stream,
+exactly as designed.
 
-`voice update` lines per receiver:
+What blocks the import:
+
+1. **`import_grants.py:42` parses `set tgid=(\d+), srcaddr=(\d+)`**, which is
+   `trunking.py`'s format — the `rx.py` path. Under `multi_rx` those 705 lines
+   come from the *voice* receivers, not from `[0]`, and the same grant produces
+   one per receiver that tried it, so importing them would multiply-count.
+   This is the same two-module trap the old `FREQPAT` fell into.
+2. **The launcher does not run the import** and defaults to `-v 2`, where the
+   TSBKs are not logged at all.
+
+The tractable fix: parse `[0] tsbk(0x00) grp_v_ch_grant` / `tsbk(0x02)
+grp_v_ch_grant_up` from the control receiver, and have the launcher run at
+`-v 10` when a census is wanted. Filtering on `[0]` removes the
+multiply-counting problem without needing (tgid, freq, time) dedup.
+
+### 11.4 The 700 MHz leg captured half its announced grants
+
+Distinct `(tgid, freq)` grants announced during the 300 s run, against calls
+recorded:
+
+| leg | distinct grants announced | calls captured |
+|---|---|---|
+| 700 | **12** | **6** |
+| 800 | 54 | 64 |
+
+The 800 leg captured at least every grant announced to it (64 > 54 because a
+`(tgid, freq)` pair recurs as separate calls). The 700 leg captured **6 of 12**.
+
+`voice update` lines per receiver show why:
 
 | receiver | leg | voice updates | calls landed |
 |---|---|---|---|
-| 1, 2, 3 | 700 | 409 + 440 + 451 = **1,300** | **6** |
+| 1, 2, 3 | 700 | 409 + 440 + 451 = **1,300** | 6 |
 | 4–8 | 800 | 219 + 115 + 91 + 25 + 8 = 458 | 64 |
 
-The 700-leg receivers spent the run being handed 800 MHz grants they cannot
-reach — ~1,294 of their 1,300 attempts failed. They were therefore busy, or
-cycling, when real 700-leg grants arrived. The census says ~27% of traffic is
-on the 700 leg, which over 70 calls predicts ~19; we got **6**.
+The three 700-leg receivers spent the run being handed 800 MHz grants they
+cannot reach — around 1,294 of their 1,300 attempts failed — so they were
+mid-failed-attempt when real 700-leg grants arrived.
+`tk_p25.py find_talkgroup` (2576) picks by priority and claim status only; it
+has no notion of which frequencies a receiver's device window can reach.
 
-`tk_p25.py find_talkgroup` (2576) has no notion of which frequencies a given
-receiver's device window can reach — it picks by priority and claim status
-only. The unclaim patch makes this survivable rather than fatal, but the fix
-that removes the waste is to make `find_talkgroup` skip talkgroups whose
-current frequency is outside this receiver's window. The receiver already
-knows its device's centre, rate and `usable_bw_pct`.
+**An earlier draft of this section claimed "~19 expected, got 6" by scaling the
+2026-08-30 census. That was wrong** — this run's own announced-grant split was
+12:54 (18%/82%), not the census's 27%/73%, so traffic varied between windows.
+The defensible statement is the measured one: **50% capture on the 700 leg
+against ~100% on the 800 leg.**
 
-**Open, not yet attempted.** Expected effect: the 700 leg recovers toward its
-~19 calls, taking the total from ~75% toward the ~92% projected in §10.5.
+Two candidate fixes, neither attempted:
+
+- **Rebalance receiver counts** to match the observed traffic split (2/6 or
+  1/7). One config edit, no vendored patch. But it does not reduce per-receiver
+  churn, and it gives the 700 leg less capacity, so it may not help.
+- **Make `find_talkgroup` window-aware** — skip talkgroups whose current
+  frequency is outside this receiver's window. This removes the waste at its
+  source, and the receiver already knows its device's centre, rate and
+  `usable_bw_pct`. Cost: a *second* untracked patch to a vendored dependency,
+  with the liability `patches/README.md` describes.
