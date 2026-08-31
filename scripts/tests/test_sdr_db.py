@@ -14,6 +14,7 @@ Everything runs against a temporary database, never the real sdr.db.
 from __future__ import annotations
 
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -287,3 +288,185 @@ class TestSessions(unittest.TestCase):
         r = self.db.execute('SELECT * FROM sessions WHERE id = ?', (sid,)).fetchone()
         self.assertEqual(r['config'], '{"preset":"pd"}')
         self.assertEqual(r['ended_at'] - r['started_at'], 60.0)
+
+
+class TestCodeMigration(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+        self.tmp.close()
+        self.db = sdr_db.connect(self.tmp.name)
+
+    def tearDown(self):
+        self.db.close()
+        os.unlink(self.tmp.name)
+
+    def _columns(self):
+        return {r[1] for r in self.db.execute('PRAGMA table_info(calls)')}
+
+    def test_derived_columns_exist(self):
+        for col in ('transcript_norm', 'codes_text', 'codes_set_id', 'codes_rev'):
+            self.assertIn(col, self._columns())
+
+    def test_call_codes_table_exists(self):
+        self.db.execute('SELECT count(*) FROM call_codes')
+
+    def test_migration_is_idempotent(self):
+        before = self._columns()
+        self.db.close()
+        self.db = sdr_db.connect(self.tmp.name)
+        self.assertEqual(self._columns(), before)
+
+    def test_fts_indexes_the_derived_columns(self):
+        cols = [r[1] for r in self.db.execute('PRAGMA table_info(calls_fts)')]
+        self.assertEqual(cols[:2], ['transcript_norm', 'codes_text'])
+
+
+class TestMigrationFromLegacySchema(unittest.TestCase):
+    """Simulates the real sdr.db as it exists today: a `calls` table with no
+    derived columns and the old single-column `calls_fts`. This is the branch
+    that will actually run against the 3,220-row production database in a
+    later task, and TestCodeMigration's tempfile-from-scratch setup never
+    exercises it (SCHEMA there creates the new-shape calls_fts directly, so
+    _migrate is a no-op ALTER + an already-matching FTS drop/recreate).
+    """
+
+    _LEGACY_SCHEMA = """
+        CREATE TABLE calls (
+          id         INTEGER PRIMARY KEY,
+          file       TEXT NOT NULL UNIQUE,
+          tgid       INTEGER,
+          start      REAL NOT NULL,
+          dur        REAL NOT NULL DEFAULT 0,
+          transcript TEXT,
+          src_addr   INTEGER,
+          algid      INTEGER,
+          rfss       INTEGER,
+          site       INTEGER
+        );
+        CREATE VIRTUAL TABLE calls_fts USING fts5(
+          transcript, content = 'calls', content_rowid = 'id'
+        );
+        CREATE TRIGGER calls_ai AFTER INSERT ON calls BEGIN
+          INSERT INTO calls_fts(rowid, transcript) VALUES (new.id, new.transcript);
+        END;
+        CREATE TRIGGER calls_ad AFTER DELETE ON calls BEGIN
+          INSERT INTO calls_fts(calls_fts, rowid, transcript) VALUES('delete', old.id, old.transcript);
+        END;
+        CREATE TRIGGER calls_au AFTER UPDATE ON calls BEGIN
+          INSERT INTO calls_fts(calls_fts, rowid, transcript) VALUES('delete', old.id, old.transcript);
+          INSERT INTO calls_fts(rowid, transcript) VALUES (new.id, new.transcript);
+        END;
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+        self.tmp.close()
+        legacy = sqlite3.connect(self.tmp.name)
+        legacy.executescript(self._LEGACY_SCHEMA)
+        legacy.execute(
+            "INSERT INTO calls (file, start, dur, transcript) VALUES "
+            "('old.wav', 0, 0, 'Zachary 43 copy')")
+        legacy.commit()
+        legacy.close()
+
+    def tearDown(self):
+        os.unlink(self.tmp.name)
+
+    def test_migrating_a_legacy_db_adds_columns_and_preserves_data(self):
+        db = sdr_db.connect(self.tmp.name)
+        cols = {r[1] for r in db.execute('PRAGMA table_info(calls)')}
+        for col in ('transcript_norm', 'codes_text', 'codes_set_id', 'codes_rev'):
+            self.assertIn(col, cols)
+        fts_cols = [r[1] for r in db.execute('PRAGMA table_info(calls_fts)')]
+        self.assertEqual(fts_cols[:2], ['transcript_norm', 'codes_text'])
+        row = db.execute("SELECT transcript FROM calls WHERE file = 'old.wav'").fetchone()
+        self.assertEqual(row['transcript'], 'Zachary 43 copy')
+        self.assertEqual(
+            db.execute('PRAGMA user_version').fetchone()[0], sdr_db._USER_VERSION)
+        db.close()
+
+    def test_user_version_is_not_rewritten_on_a_second_connect(self):
+        """A live _migrate that keeps rebuilding FTS on every connect would
+        pass every other assertion here while quietly re-scanning the whole
+        table on each open against the real, larger database."""
+        db = sdr_db.connect(self.tmp.name)
+        db.close()
+        db = sdr_db.connect(self.tmp.name)
+        self.assertEqual(
+            db.execute('PRAGMA user_version').fetchone()[0], sdr_db._USER_VERSION)
+        db.close()
+
+
+class TestTgidFromFilename(unittest.TestCase):
+    def test_parses_the_tg_prefix(self):
+        self.assertEqual(
+            sdr_db.tgid_from_filename('TG16505_17-EBRP-FD1_20260830-210810.wav'),
+            16505)
+
+    def test_returns_none_for_an_unparseable_name(self):
+        self.assertIsNone(sdr_db.tgid_from_filename('something-else.wav'))
+
+
+class TestSetTranscriptWritesCodes(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+        self.tmp.close()
+        self.db = sdr_db.connect(self.tmp.name)
+        self.db.execute(
+            "INSERT INTO talkgroups (tgid, alpha, cat, tag) VALUES "
+            "(17170, '17-BRPD TLK3', "
+            "'East Baton Rouge Parish (17) - Baton Rouge Police', 'Law Talk')")
+        self.db.commit()
+        self.file = 'TG17170_17-BRPD-TLK3_20260830-210810.wav'
+
+    def tearDown(self):
+        self.db.close()
+        os.unlink(self.tmp.name)
+
+    def test_transcript_column_is_the_raw_text(self):
+        sdr_db.set_transcript(self.db, self.file, 'Zachary, 43 is 1042.')
+        row = self.db.execute(
+            'SELECT transcript, transcript_norm FROM calls WHERE file = ?',
+            (self.file,)).fetchone()
+        self.assertEqual(row['transcript'], 'Zachary, 43 is 1042.')
+        self.assertEqual(row['transcript_norm'], 'Zachary, 43 is 10-42.')
+
+    def test_call_codes_row_is_written(self):
+        sdr_db.set_transcript(self.db, self.file, 'Zachary, 43 is 1042.')
+        rows = self.db.execute(
+            'SELECT raw, canonical, kind, meaning, confidence FROM call_codes'
+        ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['raw'], '1042')
+        self.assertEqual(rows[0]['canonical'], '10-42')
+        self.assertEqual(rows[0]['confidence'], 'medium')
+
+    def test_reindexing_replaces_rather_than_duplicates(self):
+        for _ in range(3):
+            sdr_db.set_transcript(self.db, self.file, 'Zachary, 43 is 1042.')
+        n = self.db.execute('SELECT count(*) AS n FROM call_codes').fetchone()['n']
+        self.assertEqual(n, 1)
+
+    def test_set_id_is_resolved_from_the_filename_not_the_row(self):
+        """A transcript can land before the recorder's row, when tgid is NULL."""
+        orphan = 'TG17170_17-BRPD-TLK3_20260830-999999.wav'
+        sdr_db.set_transcript(self.db, orphan, '10-4')
+        row = self.db.execute(
+            'SELECT tgid, codes_set_id FROM calls WHERE file = ?',
+            (orphan,)).fetchone()
+        self.assertIsNone(row['tgid'])
+        self.assertEqual(row['codes_set_id'], 'la-brpd-law')
+
+    def test_fts_finds_a_call_by_code_meaning(self):
+        sdr_db.set_transcript(self.db, self.file, 'signal 20 on Airline')
+        hit = self.db.execute(
+            "SELECT rowid FROM calls_fts WHERE calls_fts MATCH 'crash'"
+        ).fetchone()
+        self.assertIsNotNone(hit)
+
+    def test_codes_rev_is_recorded(self):
+        sdr_db.set_transcript(self.db, self.file, '10-4')
+        rev = self.db.execute(
+            'SELECT codes_rev FROM calls WHERE file = ?',
+            (self.file,)).fetchone()['codes_rev']
+        self.assertTrue(rev)
