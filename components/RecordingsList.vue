@@ -2,17 +2,24 @@
   <section class="p-4 border-round surface-card">
     <div class="flex align-items-center justify-content-between mb-3">
       <h2 class="text-xl font-bold m-0">Recordings</h2>
-      <Button icon="pi pi-refresh" text rounded :loading="loading" @click="load" />
+      <Button icon="pi pi-refresh" text rounded aria-label="Reload recordings" :loading="loading" @click="load" />
     </div>
+
+    <Message v-if="error" severity="error" :closable="false" class="mb-3">
+      {{ error }}
+      <Button label="Retry" text size="small" class="ml-2" @click="load" />
+    </Message>
 
     <div class="flex gap-2 mb-3">
       <InputText
         v-model="search" class="flex-1"
+        aria-label="Search recordings"
         placeholder="Search talkgroup, alpha, description, category, filename or transcript text"
       />
       <Select
         v-model="encFilter" :options="encOptions"
         option-label="label" option-value="value" class="w-10rem"
+        aria-label="Filter by encryption"
       />
     </div>
 
@@ -32,7 +39,9 @@
       sort-field="start" :sort-order="-1"
     >
       <template #empty>
-        <span v-if="recordings.length === 0">No recordings yet.</span>
+        <span v-if="loading">Loading recordings…</span>
+        <span v-else-if="error">Could not load recordings.</span>
+        <span v-else-if="recordings.length === 0">No recordings yet.</span>
         <span v-else>No recordings match this search or filter.</span>
       </template>
 
@@ -70,12 +79,12 @@
       </Column>
       <Column header="" style="width: 4rem">
         <template #body="{ data }">
-          <Button icon="pi pi-play" text rounded aria-label="Play recording" @click="open(data)" />
+          <Button icon="pi pi-play" text rounded :aria-label="`Play ${data.alpha ?? data.file}`" @click="open(data)" />
         </template>
       </Column>
     </DataTable>
 
-    <p class="text-sm text-color-secondary mt-2 mb-0">
+    <p v-if="!loading" class="text-sm text-color-secondary mt-2 mb-0">
       showing {{ filtered.length }} of {{ recordings.length }} recordings
       <span v-if="filtered.length !== recordings.length">(filtered)</span>
     </p>
@@ -127,7 +136,8 @@ interface Recording {
 interface ApiResponse<T> { success: boolean, data?: T, error?: string }
 
 const recordings = ref<Recording[]>([])
-const loading = ref(false)
+const loading = ref(true)   // SSR paints a loading state, not a false 'empty'
+const error = ref('')
 const search = ref('')
 const encFilter = ref('all')
 
@@ -180,12 +190,36 @@ async function load(): Promise<void> {
   loading.value = true
   try {
     const res = await $fetch<ApiResponse<Recording[]>>('/api/recordings/list')
-    if (res.success && res.data) recordings.value = res.data
-  } catch {
-    recordings.value = []
+    if (res.success && res.data) {
+      recordings.value = res.data
+      error.value = ''
+    } else {
+      error.value = res.error ?? 'The server returned no recordings.'
+    }
+  } catch (e) {
+    // Deliberately NOT `recordings.value = []`. Blanking the table turns
+    // "the backend is down" into "you have no recordings", which on a
+    // monitoring console is an active lie — and it also wipes a populated
+    // table on a transient blip. Keep the last known rows and say so.
+    error.value = apiError(e, 'Could not reach the server.')
   } finally {
     loading.value = false
   }
+}
+
+/**
+ * ofetch throws a FetchError whose .message is only the status line; the
+ * handler's JSON body is on .data.
+ */
+function apiError(e: unknown, fallback: string): string {
+  if (e && typeof e === 'object' && 'data' in e) {
+    const d = (e as { data?: unknown }).data
+    if (d && typeof d === 'object' && 'error' in d
+        && typeof (d as { error?: unknown }).error === 'string') {
+      return (d as { error: string }).error
+    }
+  }
+  return e instanceof Error ? e.message : fallback
 }
 
 async function open(rec: Recording): Promise<void> {
@@ -239,7 +273,10 @@ function encSeverity(enc: string | null): string {
 <style scoped>
 /* [BLANK_AUDIO] — a silenced encrypted burst, not speech. */
 .blank {
-  opacity: 0.5;
+  /* NOT opacity. Composited against white, opacity:.5 on #334155 measures
+     2.64:1 — below WCAG AA's 4.5 — across 518 rows. The muted token measures
+     4.76:1 and italic already carries the signal non-chromatically. */
+  color: var(--p-text-muted-color);
   font-style: italic;
 }
 

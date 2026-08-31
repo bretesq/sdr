@@ -4,7 +4,8 @@
 
     <div v-if="running" class="p-3 mb-3 border-round surface-100">
       <div class="flex align-items-center gap-2">
-        <Tag value="RECORDING" severity="success" />
+        <!-- Green reads "healthy". If the poll is stale we cannot claim that. -->
+        <Tag :value="stale ? 'RECORDING?' : 'RECORDING'" :severity="stale ? 'warn' : 'success'" />
         <span class="text-sm text-color-secondary">pid {{ pid }}</span>
       </div>
       <div class="text-2xl font-bold mt-2">{{ callCount }} calls</div>
@@ -14,11 +15,16 @@
       <div v-if="configSummary" class="text-sm mt-1">{{ configSummary }}</div>
     </div>
 
+    <Message v-if="stale" severity="warn" :closable="false" class="mb-3">
+      No response from the server since {{ new Date(lastOk).toLocaleTimeString() }} —
+      the state shown may be out of date.
+    </Message>
+
     <div class="flex flex-column gap-3">
       <div>
-        <label for="preset" class="block mb-1 text-sm">Preset</label>
+        <span id="preset-label" class="block mb-1 text-sm">Preset</span>
         <Select
-          id="preset" v-model="preset" :options="presets"
+          v-model="preset" aria-labelledby="preset-label" :options="presets"
           option-label="label" option-value="value"
           placeholder="Select a preset" :disabled="running" class="w-full"
           show-clear
@@ -79,7 +85,7 @@
       <div>
         <label for="dur" class="block mb-1 text-sm">Duration (seconds)</label>
         <InputNumber
-          id="dur" v-model="duration" :disabled="running"
+          v-model="duration" input-id="dur" :disabled="running"
           :min="1" placeholder="blank = until stopped" class="w-full"
         />
       </div>
@@ -123,6 +129,7 @@ interface StatusPayload {
   config: ListenConfig | null
   callCount: number
   startTime: number | null
+  lastUpdate: number
 }
 
 interface ApiResponse<T> { success: boolean, data?: T, error?: string }
@@ -146,6 +153,19 @@ const startTime = ref<number | null>(null)
 const runningConfig = ref<ListenConfig | null>(null)
 const busy = ref(false)
 const error = ref('')
+
+/**
+ * When the last status poll SUCCEEDED. Without this a dead backend is
+ * indistinguishable from a healthy idle one: the panel keeps showing RECORDING
+ * and a frozen call count forever, and the first sign of trouble is Stop
+ * failing for no visible reason.
+ */
+const lastOk = ref<number>(Date.now())
+const now = ref<number>(Date.now())
+let clock: ReturnType<typeof setInterval> | null = null
+
+// Two missed 5s polls. Long enough not to flicker on one slow response.
+const stale = computed(() => now.value - lastOk.value > 13_000)
 
 const presets = ref<PresetOption[]>([])
 
@@ -201,10 +221,12 @@ onMounted(async () => {
 
   await refresh()
   timer = setInterval(refresh, 5000)
+  clock = setInterval(() => { now.value = Date.now() }, 2000)
 })
 
 onUnmounted(() => {
   if (timer) clearInterval(timer)
+  if (clock) clearInterval(clock)
 })
 
 async function refresh(): Promise<void> {
@@ -216,6 +238,7 @@ async function refresh(): Promise<void> {
     callCount.value = res.data.callCount
     startTime.value = res.data.startTime
     runningConfig.value = res.data.config
+    lastOk.value = Date.now()
   } catch (err) {
     // A failed poll is usually transient (dev-server reload, brief network
     // blip), so the last known state stays on screen rather than flashing an

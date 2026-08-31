@@ -1,23 +1,48 @@
 <template>
   <section class="p-4 border-round surface-card">
-    <h2 class="text-xl font-bold mt-0 mb-3">Talkgroups</h2>
+    <div class="flex align-items-center justify-content-between mb-3">
+      <h2 class="text-xl font-bold m-0">Talkgroups</h2>
+      <!--
+        scripts/lwin_listen.sh:75 regenerates lwin_active_whitelist.txt on every
+        Start, so the `active` marks go stale the moment a session begins and the
+        footer below then asserts something false. Not reloaded automatically on
+        Start: startListening() returns as soon as bash is spawned, before
+        make_whitelist.py has necessarily written the file, so an immediate
+        refetch would just cache the old contents.
+      -->
+      <Button
+        icon="pi pi-refresh" text rounded
+        aria-label="Reload talkgroups and whitelist"
+        :loading="loading" @click="reload"
+      />
+    </div>
+
+    <Message v-if="error" severity="error" :closable="false" class="mb-3">
+      {{ error }}
+      <Button label="Retry" text size="small" class="ml-2" @click="reload" />
+    </Message>
 
     <div class="flex gap-2 mb-3 flex-wrap">
       <Select
         v-model="area" :options="areaOptions"
         option-label="label" option-value="value"
-        class="w-12rem" @change="load"
+        class="w-12rem" aria-label="Area" @change="load"
       />
       <Select
         v-model="category" :options="categoryOptions"
         option-label="label" option-value="value"
-        placeholder="All categories" class="w-14rem" show-clear
+        placeholder="All categories" class="w-14rem" show-clear aria-label="Filter by category"
       />
       <Select
         v-model="encFilter" :options="encOptions"
         option-label="label" option-value="value" class="w-10rem"
+        aria-label="Filter by encryption"
       />
-      <InputText v-model="search" placeholder="Search TG, alpha, desc, category, tag" class="flex-1" />
+      <InputText
+        v-model="search" class="flex-1"
+        aria-label="Search talkgroups"
+        placeholder="Search TG, alpha, desc, category, tag"
+      />
     </div>
 
     <!--
@@ -33,7 +58,9 @@
       :virtual-scroller-options="{ itemSize: 40 }"
     >
       <template #empty>
-        <span v-if="talkgroups.length === 0">No talkgroups loaded.</span>
+        <span v-if="loading">Loading talkgroups…</span>
+        <span v-else-if="error">Could not load talkgroups.</span>
+        <span v-else-if="talkgroups.length === 0">No talkgroups loaded.</span>
         <span v-else>No talkgroups match these filters.</span>
       </template>
 
@@ -60,7 +87,7 @@
       Counts, not just a legend sentence. This is how you notice at a glance that
       a filtering bug has silently emptied the table — the failure mode B1 caused.
     -->
-    <p class="text-sm text-color-secondary mt-3 mb-0">
+    <p v-if="!loading" class="text-sm text-color-secondary mt-3 mb-0">
       showing {{ filtered.length }} of {{ talkgroups.length }} talkgroups
       ({{ area === 'br' ? 'Baton Rouge area' : 'statewide' }})
       · {{ whitelist.size }} in the current
@@ -92,7 +119,8 @@ const search = ref('')
 
 const talkgroups = ref<Talkgroup[]>([])
 const whitelist = ref<Set<number>>(new Set())
-const loading = ref(false)
+const loading = ref(true)   // SSR paints loading, not a false 'empty'
+const error = ref('')
 
 const areaOptions: Option[] = [
   { value: 'br',  label: 'Baton Rouge Area' },
@@ -128,9 +156,11 @@ const filtered = computed<Talkgroup[]>(() => {
   }).map(t => ({ ...t, inWhitelist: whitelist.value.has(t.tgid) }))
 })
 
-onMounted(async () => {
+async function reload(): Promise<void> {
   await Promise.all([load(), loadWhitelist()])
-})
+}
+
+onMounted(reload)
 
 async function load(): Promise<void> {
   loading.value = true
@@ -139,9 +169,16 @@ async function load(): Promise<void> {
     const res = await $fetch<ApiResponse<Talkgroup[]>>('/api/talkgroups/list', {
       query: { area: area.value },
     })
-    if (res.success && res.data) talkgroups.value = res.data
-  } catch {
-    talkgroups.value = []
+    if (res.success && res.data) {
+      talkgroups.value = res.data
+      error.value = ''
+    } else {
+      error.value = res.error ?? 'The server returned no talkgroups.'
+    }
+  } catch (e) {
+    // Not `talkgroups.value = []` — see RecordingsList. An empty table here
+    // would read as "this area has no talkgroups", which is never true.
+    error.value = e instanceof Error ? e.message : 'Could not reach the server.'
   } finally {
     loading.value = false
   }
@@ -152,7 +189,8 @@ async function loadWhitelist(): Promise<void> {
     const res = await $fetch<ApiResponse<{ tgids: number[] }>>('/api/talkgroups/whitelist')
     if (res.success && res.data) whitelist.value = new Set(res.data.tgids)
   } catch {
-    whitelist.value = new Set()
+    // Keep the last known whitelist rather than un-marking every row, which
+    // would falsely imply nothing is being recorded.
   }
 }
 
