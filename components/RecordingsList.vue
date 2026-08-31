@@ -98,8 +98,8 @@
     </DataTable>
 
     <p v-if="!loading" class="text-sm text-color-secondary mt-2 mb-0">
-      showing {{ filtered.length }} of {{ recordings.length }} recordings
-      <span v-if="filtered.length !== recordings.length">(filtered)</span>
+      showing {{ filtered.length }} of {{ total }} recordings
+      <span v-if="filtered.length !== total">(filtered)</span>
     </p>
 
     <Dialog
@@ -206,24 +206,31 @@ const encOptions = [
   { value: 'none',    label: 'Unlabelled' },
 ]
 
-const filtered = computed(() => {
-  const q = search.value.trim().toLowerCase()
-  return recordings.value.filter((r) => {
-    if (encFilter.value === 'none') {
-      if (r.enc) return false
-    } else if (encFilter.value !== 'all' && r.enc !== encFilter.value) {
-      return false
-    }
-    if (!q) return true
-    // Six fields, matching server.py's [alpha, desc, cat, transcript, file, tgid].
-    // Transcript search is the point of --stt: 3,220 non-empty transcripts.
-    return String(r.tgid ?? '').includes(q)
-      || (r.alpha ?? '').toLowerCase().includes(q)
-      || (r.desc ?? '').toLowerCase().includes(q)
-      || (r.cat ?? '').toLowerCase().includes(q)
-      || (r.transcript ?? '').toLowerCase().includes(q)
-      || r.file.toLowerCase().includes(q)
-  })
+// Filtering happens in SQL now, so `filtered` is simply what the server
+// returned. Transcript matching is an FTS5 index lookup rather than
+// String.includes across every transcript in the browser.
+const filtered = computed(() => recordings.value)
+
+// `total` is the unfiltered corpus size, so the footer can say "N of M".
+const total = ref(0)
+
+/**
+ * Debounced because each keystroke is now a request.
+ *
+ * The frontend review measured client-side filtering at 0.33-0.81ms and
+ * explicitly said NOT to debounce it — correct then, because the work was
+ * local. A network round trip is a different cost, so 250ms applies here and
+ * would have been pure added latency before.
+ */
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+
+watch([search, encFilter], () => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(load, 250)
+})
+
+onUnmounted(() => {
+  if (searchTimer) clearTimeout(searchTimer)
 })
 
 // Bumped by ListenControl 1.5 s after Stop, when calls.json has been flushed.
@@ -232,24 +239,43 @@ watch(recordingsRefresh, load)
 
 onMounted(load)
 
+/**
+ * Guards against a slow earlier request landing after a faster later one and
+ * overwriting it with stale rows — visible as the table briefly showing results
+ * for a prefix of what you typed.
+ */
+let requestSeq = 0
+
 async function load(): Promise<void> {
+  const seq = ++requestSeq
   loading.value = true
   try {
-    const res = await $fetch<ApiResponse<Recording[]>>('/api/recordings/list')
+    const res = await $fetch<ApiResponse<Recording[]> & { total?: number }>(
+      '/api/recordings/list',
+      { query: {
+        search: search.value.trim() || undefined,
+        enc: encFilter.value === 'all' ? undefined : encFilter.value,
+      } },
+    )
+    if (seq !== requestSeq) return          // superseded; drop it
     if (res.success && res.data) {
       recordings.value = res.data
+      if (typeof res.total === 'number' && !search.value.trim() && encFilter.value === 'all') {
+        total.value = res.total
+      }
       error.value = ''
     } else {
       error.value = res.error ?? 'The server returned no recordings.'
     }
   } catch (e) {
+    if (seq !== requestSeq) return
     // Deliberately NOT `recordings.value = []`. Blanking the table turns
     // "the backend is down" into "you have no recordings", which on a
     // monitoring console is an active lie — and it also wipes a populated
     // table on a transient blip. Keep the last known rows and say so.
     error.value = apiError(e, 'Could not reach the server.')
   } finally {
-    loading.value = false
+    if (seq === requestSeq) loading.value = false
   }
 }
 

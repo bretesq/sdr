@@ -26,7 +26,7 @@
       <Select
         v-model="area" :options="areaOptions"
         option-label="label" option-value="value"
-        class="w-12rem" aria-label="Area" @change="load"
+        class="w-12rem" aria-label="Area" @change="changeArea"
       />
       <Select
         v-model="category" :options="categoryOptions"
@@ -88,7 +88,7 @@
       a filtering bug has silently emptied the table — the failure mode B1 caused.
     -->
     <p v-if="!loading" class="text-sm text-color-secondary mt-3 mb-0">
-      showing {{ filtered.length }} of {{ talkgroups.length }} talkgroups
+      showing {{ filtered.length }} of {{ total }} talkgroups
       ({{ area === 'br' ? 'Baton Rouge area' : 'statewide' }})
       · {{ whitelist.size }} in the current
       <code>lwin_active_whitelist.txt</code>, marked
@@ -127,10 +127,14 @@ const areaOptions: Option[] = [
   { value: 'all', label: 'Statewide' },
 ]
 
-const categoryOptions = computed<Option[]>(() => {
-  const cats = new Set(talkgroups.value.map(t => t.cat).filter(Boolean))
-  return [...cats].sort().map(c => ({ value: c, label: c }))
-})
+// Fetched separately, not derived from the loaded rows: with server-side
+// filtering the loaded set shrinks, so deriving would leave the dropdown
+// offering only the category already selected.
+const categories = ref<string[]>([])
+const categoryOptions = computed<Option[]>(() =>
+  categories.value.map(c => ({ value: c, label: c })))
+
+const total = ref(0)
 
 const encOptions: Option[] = [
   { value: 'all',     label: 'All encryption' },
@@ -139,36 +143,50 @@ const encOptions: Option[] = [
   { value: 'full',    label: 'Full' },
 ]
 
-// `inWhitelist` is derived onto each row rather than read from a Set in the
-// template, so the Whitelist column has a real field for PrimeVue to sort on.
-const filtered = computed<Talkgroup[]>(() => {
-  const q = search.value.trim().toLowerCase()
-  return talkgroups.value.filter((t) => {
-    if (category.value && t.cat !== category.value) return false
-    if (encFilter.value !== 'all' && t.enc !== encFilter.value) return false
-    if (!q) return true
-    // server.py searched [alpha, desc, cat, tag, tgid].
-    return String(t.tgid).includes(q)
-      || (t.alpha ?? '').toLowerCase().includes(q)
-      || (t.desc ?? '').toLowerCase().includes(q)
-      || (t.cat ?? '').toLowerCase().includes(q)
-      || (t.tag ?? '').toLowerCase().includes(q)
-  }).map(t => ({ ...t, inWhitelist: whitelist.value.has(t.tgid) }))
+// Filtering is SQL now; `inWhitelist` is still derived here so the Whitelist
+// column has a real field for PrimeVue to sort on.
+const filtered = computed<Talkgroup[]>(() =>
+  talkgroups.value.map(t => ({ ...t, inWhitelist: whitelist.value.has(t.tgid) })))
+
+// Debounced: each keystroke is a request now. Client-side filtering measured
+// 0.5-0.8ms and rightly had no debounce; a round trip is a different cost.
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+watch([search, category, encFilter], () => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(load, 250)
+})
+onUnmounted(() => {
+  if (searchTimer) clearTimeout(searchTimer)
 })
 
 async function reload(): Promise<void> {
-  await Promise.all([load(), loadWhitelist()])
+  await Promise.all([load(), loadWhitelist(), loadCategories()])
+}
+
+/** Area is a different corpus, so reset the filters that were scoped to it. */
+async function changeArea(): Promise<void> {
+  category.value = null
+  await load()
 }
 
 onMounted(reload)
 
+let requestSeq = 0
+
 async function load(): Promise<void> {
+  const seq = ++requestSeq
   loading.value = true
-  category.value = null
   try {
-    const res = await $fetch<ApiResponse<Talkgroup[]>>('/api/talkgroups/list', {
-      query: { area: area.value },
-    })
+    const res = await $fetch<ApiResponse<Talkgroup[]> & { total?: number }>(
+      '/api/talkgroups/list',
+      { query: {
+        area: area.value,
+        category: category.value || undefined,
+        enc: encFilter.value === 'all' ? undefined : encFilter.value,
+        search: search.value.trim() || undefined,
+      } },
+    )
+    if (seq !== requestSeq) return
     if (res.success && res.data) {
       talkgroups.value = res.data
       error.value = ''
@@ -180,7 +198,16 @@ async function load(): Promise<void> {
     // would read as "this area has no talkgroups", which is never true.
     error.value = e instanceof Error ? e.message : 'Could not reach the server.'
   } finally {
-    loading.value = false
+    if (seq === requestSeq) loading.value = false
+  }
+}
+
+async function loadCategories(): Promise<void> {
+  try {
+    const res = await $fetch<ApiResponse<string[]>>('/api/talkgroups/categories')
+    if (res.success && res.data) categories.value = res.data
+  } catch {
+    // Non-fatal: the dropdown is empty but every other filter still works.
   }
 }
 
