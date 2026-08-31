@@ -1194,13 +1194,20 @@ CREATE INDEX IF NOT EXISTS idx_call_codes_canon ON call_codes(canonical, call_id
 
 - [ ] **Step 4: Add the migration**
 
-In `scripts/sdr_db.py`, add these imports at the top alongside the existing ones:
+In `scripts/sdr_db.py`, add these imports at the top alongside the existing ones
+(`os` and `sqlite3` are already imported):
 
 ```python
 import re
 import tencodes
 import tencode_sets
 ```
+
+These are sibling-module imports, so they resolve only when `scripts/` is on
+`sys.path`. Verified: all three current consumers — `stt_watch.py`,
+`stt_transcribe.py` and `udp_audio_record.py` — already do the
+`sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))` dance before
+`import sdr_db`, as do the tests. Any new consumer must do the same.
 
 Add this function immediately above `def connect(`:
 
@@ -1611,7 +1618,46 @@ if __name__ == '__main__':
 Run: `python3 -m unittest discover -s scripts/tests -v`
 Expected: PASS, all tests
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Run the first backfill against the real database**
+
+The migration in Task 3 rebuilt `calls_fts` over `transcript_norm`, which is
+NULL for every existing row until a backfill populates it. Until this step
+runs, **all transcript search returns nothing** and `call_codes` is empty. The
+migration and the first backfill have to land together, so this happens here
+rather than in Task 7 — and Task 5's tests read this database.
+
+Stop the transcriber first so nothing writes mid-run, and take a copy:
+
+```bash
+pkill -f stt_watch.py || true
+cp sdr.db sdr.db.pre-tencodes
+python3 scripts/backfill_codes.py
+```
+
+Expected: `~3,800 scanned, all updated, 0 skipped, ~230 code mentions stored`.
+The exact numbers move with the corpus, which grows while live capture runs.
+
+Sanity-check that search works again before moving on:
+
+```bash
+python3 -c "
+import sqlite3
+c = sqlite3.connect('file:sdr.db?mode=ro', uri=True)
+print('fts matching suspicious:', c.execute(
+    \"SELECT count(*) FROM calls_fts WHERE calls_fts MATCH 'suspicious'\").fetchone()[0])
+print('mentions:', c.execute('SELECT count(*) FROM call_codes').fetchone()[0])"
+```
+
+Expected: both counts non-zero. If the FTS count is 0 the backfill did not
+populate `transcript_norm` — stop and fix that before Task 5.
+
+Restart the transcriber:
+
+```bash
+python3 scripts/stt_watch.py --dir recordings &
+```
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add scripts/backfill_codes.py scripts/tests/test_backfill_codes.py
@@ -1797,15 +1843,23 @@ function codesFor(files: string[]): Map<string, CodeMention[]> {
   const byFile = new Map<string, CodeMention[]>()
   if (files.length === 0) return byFile
 
-  const placeholders = files.map(() => '?').join(',')
-  const rows = getDb().prepare(
-    `SELECT c.file, cc.raw, cc.canonical, cc.kind, cc.meaning, cc.confidence,
-            cc.off_start, cc.off_end
-       FROM call_codes cc
-       JOIN calls c ON c.id = cc.call_id
-      WHERE c.file IN (${placeholders})
-      ORDER BY c.file, cc.off_start`,
-  ).all(...files) as unknown as CodeRow[]
+  // Chunked: listRecordings defaults to limit 5000, and a 5,000-placeholder
+  // IN clause is at the mercy of SQLITE_MAX_VARIABLE_NUMBER, which is a
+  // build-time setting. 500 is comfortably under every default.
+  const CHUNK = 500
+  const rows: CodeRow[] = []
+  for (let i = 0; i < files.length; i += CHUNK) {
+    const batch = files.slice(i, i + CHUNK)
+    const placeholders = batch.map(() => '?').join(',')
+    rows.push(...getDb().prepare(
+      `SELECT c.file, cc.raw, cc.canonical, cc.kind, cc.meaning, cc.confidence,
+              cc.off_start, cc.off_end
+         FROM call_codes cc
+         JOIN calls c ON c.id = cc.call_id
+        WHERE c.file IN (${placeholders})
+        ORDER BY c.file, cc.off_start`,
+    ).all(...batch) as unknown as CodeRow[])
+  }
 
   for (const r of rows) {
     const list = byFile.get(r.file) ?? []
@@ -2302,36 +2356,23 @@ mentions and needs no gloss."
 - Consumes: everything from Tasks 1-6.
 - Produces: a populated `call_codes`, and `results/tencode_report.txt` — the sourcing worklist.
 
-- [ ] **Step 1: Back up the database**
+The first backfill already ran at the end of Task 4, so this task is
+verification and reporting. `sdr.db.pre-tencodes` from that step should still
+exist; nothing here writes to the corpus beyond re-deriving calls captured
+since.
+
+- [ ] **Step 1: Regenerate the report on the current corpus**
 
 ```bash
-cp sdr.db sdr.db.pre-tencodes
+python3 scripts/backfill_codes.py --only-stale --report | tee results/tencode_report.txt
 ```
 
-The migration drops and rebuilds `calls_fts`. That is recoverable by re-running
-the migration, but a copy costs 3 MB and removes the question.
+`--only-stale` because Task 4 already did the full pass. Expected: a small
+`updated` count — the calls captured while you were building Tasks 5 and 6 —
+then the per-agency table and the unresolved worklist.
 
-- [ ] **Step 2: Stop the transcriber so nothing writes mid-migration**
 
-```bash
-pkill -f stt_watch.py || true
-```
-
-Confirm nothing remains: `pgrep -af stt_watch.py` should print nothing.
-
-- [ ] **Step 3: Run the backfill with a report**
-
-```bash
-python3 scripts/backfill_codes.py --report | tee results/tencode_report.txt
-```
-
-Expected: roughly `~3,800 scanned, all updated, 0 skipped, ~230 code mentions stored`.
-The exact count moves with the corpus, which grows while live capture runs; what
-matters is that `scanned` equals the number of non-empty transcripts and
-`updated` equals `scanned`.
-followed by the per-agency table and the unresolved worklist.
-
-- [ ] **Step 4: Verify the derived layer against the corpus**
+- [ ] **Step 2: Verify the derived layer against the corpus**
 
 ```bash
 python3 - <<'EOF'
@@ -2363,7 +2404,7 @@ Expected: `transcript_norm` populated for every transcribed call; ~230 mentions,
 about 190 high / 13 medium / 22 low, roughly 90% carrying a meaning;
 `10-4` the most frequent; a non-zero count for the meaning search.
 
-- [ ] **Step 5: Verify idempotence on the real database**
+- [ ] **Step 3: Verify idempotence on the real database**
 
 ```bash
 python3 scripts/backfill_codes.py --only-stale
@@ -2372,15 +2413,10 @@ python3 scripts/backfill_codes.py --only-stale
 Expected: `N scanned, 0 updated, N skipped` — nothing is stale immediately
 after a full backfill.
 
-- [ ] **Step 6: Restart the transcriber and confirm live writes carry codes**
+- [ ] **Step 4: Confirm live writes carry codes**
 
-Start the transcriber through the UI's transcriber control, or:
-
-```bash
-python3 scripts/stt_watch.py --dir recordings &
-```
-
-Then, after the next call is transcribed:
+The transcriber was restarted at the end of Task 4. After the next call is
+transcribed:
 
 ```bash
 python3 -c "
@@ -2394,7 +2430,7 @@ for r in c.execute('''SELECT c.file, c.codes_set_id, cc.canonical, cc.meaning
 
 Expected: recent calls carry `codes_set_id` and any codes they contain.
 
-- [ ] **Step 7: Commit the report and remove the backup**
+- [ ] **Step 5: Commit the report and remove the backup**
 
 ```bash
 git add results/tencode_report.txt
@@ -2406,4 +2442,4 @@ run backfill_codes.py --only-stale to apply it to history."
 rm sdr.db.pre-tencodes
 ```
 
-Only remove the backup after Step 4 and Step 6 have both passed.
+Only remove the backup after Steps 2 and 4 have both passed.
