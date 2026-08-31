@@ -82,6 +82,13 @@
         <label for="stt" class="text-sm">Transcribe with Whisper</label>
       </div>
 
+      <div class="flex align-items-center gap-2">
+        <Checkbox v-model="ess" input-id="ess" binary :disabled="running" />
+        <label for="ess" class="text-sm">
+          Capture encryption headers (op25 -v 10, ~10&times; log volume)
+        </label>
+      </div>
+
       <div>
         <label for="dur" class="block mb-1 text-sm">Duration (seconds)</label>
         <InputNumber
@@ -120,6 +127,7 @@ interface ListenConfig {
   includePartial?: boolean
   includeEncrypted?: boolean
   stt?: boolean
+  ess?: boolean
   duration?: number
 }
 
@@ -144,6 +152,7 @@ const allAreas = ref(false)
 const includePartial = ref(false)
 const includeEncrypted = ref(false)
 const stt = ref(false)
+const ess = ref(false)
 const duration = ref<number | null>(null)
 
 const running = ref(false)
@@ -189,6 +198,7 @@ const configSummary = computed(() => {
   if (c.includePartial) bits.push('+partial')
   if (c.includeEncrypted) bits.push('+encrypted')
   if (c.stt) bits.push('stt')
+  if (c.ess) bits.push('ess')
   if (c.duration) bits.push(`${c.duration}s`)
   return bits.join(' · ')
 })
@@ -264,6 +274,7 @@ async function start(): Promise<void> {
         includePartial: includePartial.value,
         includeEncrypted: includeEncrypted.value,
         stt: stt.value,
+        ess: ess.value,
         duration: duration.value ?? undefined,
       },
     })

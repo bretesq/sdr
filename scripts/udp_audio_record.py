@@ -39,11 +39,35 @@ def slug(s, n=28):
     s = re.sub(r'[^A-Za-z0-9]+', '-', (s or '').strip()).strip('-')
     return (s[:n].rstrip('-') or 'unknown')
 
+# Per-call P25 metadata, all read from op25's own log output.
+#
+#   voice update:  tg(17169), freq(851287500), slot(-), prio(3)
+#   ESS: algid=aa, keyid=8, mi=00 00 00 00 00 00 00 00 00
+#   rfss_sts_bcst: syid: 1bd rfid: 1 stid: 13 ch1: 16e8(773.056250)
+#
+# ESS needs op25 at -v 10. Everything else appears at the default verbosity.
+FREQPAT = re.compile(r'voice update:\s*tg\((\d+)\),\s*freq\((\d+)\)')
+ESSPAT  = re.compile(r'ESS:\s*algid=([0-9a-f]+),\s*keyid=([0-9a-f]+),\s*mi=([0-9a-f ]{26})')
+SITEPAT = re.compile(r'rfss_sts_bcst:\s*syid:\s*([0-9a-f]+)\s*rfid:\s*(\d+)\s*stid:\s*(\d+)')
+NACPAT  = re.compile(r'NAC\s+0x([0-9a-f]{3})')
+
+
 class LogTail:
-    """Follow op25's log and expose the most recently active talkgroup."""
+    """Follow op25's log and expose the current call's metadata.
+
+    Everything here is best-effort and time-bounded by TG_TTL: op25 emits these
+    lines asynchronously from the audio stream, so a value older than the
+    freshness window belongs to a previous call and must not be attached to
+    this one. That is the same rule the talkgroup already used.
+    """
     def __init__(self, path):
         self.path, self.fh, self.buf = path, None, ''
         self.tg, self.tg_t = None, 0.0
+        self.freq, self.freq_t = None, 0.0
+        self.ess, self.ess_t = None, 0.0          # (algid, keyid, mi)
+        self.site = None                           # (sysid, rfss, stid) — static per site
+        self.nac = None
+
     def poll(self):
         if self.fh is None:
             if not os.path.exists(self.path): return
@@ -51,15 +75,54 @@ class LogTail:
         chunk = self.fh.read()
         if not chunk: return
         self.buf += ANSI.sub('', chunk)
+        now = time.time()
+
         # op25 rewrites the status line without newlines, so scan the whole buffer tail
         for m in TGPAT.finditer(self.buf):
             tg = next(g for g in m.groups() if g)
-            self.tg, self.tg_t = int(tg), time.time()
-        self.buf = self.buf[-4000:]
+            self.tg, self.tg_t = int(tg), now
+
+        # tg+freq together: the grant's voice channel for this call
+        for m in FREQPAT.finditer(self.buf):
+            self.tg, self.tg_t = int(m.group(1)), now
+            self.freq, self.freq_t = int(m.group(2)), now
+
+        # ESS is the AUTHORITATIVE encryption signal for this specific call,
+        # independent of the reference DB's static enc flag — which is known to
+        # disagree: TG 17086 is flagged 'full' in RadioReference but transmitted
+        # algid 0x80 (clear) in all 23 observations here.
+        for m in ESSPAT.finditer(self.buf):
+            self.ess = (int(m.group(1), 16), int(m.group(2), 16),
+                        m.group(3).replace(' ', ''))
+            self.ess_t = now
+
+        for m in SITEPAT.finditer(self.buf):
+            self.site = (int(m.group(1), 16), int(m.group(2)), int(m.group(3)))
+
+        for m in NACPAT.finditer(self.buf):
+            self.nac = int(m.group(1), 16)
+
+        self.buf = self.buf[-8000:]
+
     def current(self):
         if self.tg is not None and time.time() - self.tg_t < TG_TTL:
             return self.tg
         return None
+
+    def metadata(self):
+        """Fresh per-call metadata. Stale values are dropped, not guessed."""
+        now = time.time()
+        algid = keyid = mi = None
+        if self.ess and now - self.ess_t < TG_TTL:
+            algid, keyid, mi = self.ess
+        return {
+            'freq':  self.freq if (self.freq and now - self.freq_t < TG_TTL) else None,
+            'algid': algid, 'keyid': keyid, 'mi': mi,
+            'sysid': self.site[0] if self.site else None,
+            'rfss':  self.site[1] if self.site else None,
+            'site':  self.site[2] if self.site else None,
+            'nac':   self.nac,
+        }
 
 socks = []
 for p in (PORT, PORT + 1):
@@ -113,7 +176,8 @@ def flush():
         if db is not None:
             try:
                 sdr_db.upsert_call(db, file=fname, tgid=tg,
-                                   start=call['start'], dur=round(dur, 2))
+                                   start=call['start'], dur=round(dur, 2),
+                                   ended_at=call['t'], **call.get('meta', {}))
                 db.commit()
             except Exception as e2:                        # noqa: BLE001
                 print(f"  WARNING: could not record {fname} in the database: {e2}",
@@ -133,9 +197,17 @@ try:
                 pkts += 1
                 if len(d) >= 320:
                     if call is None:
-                        call = {'start': now, 'tg': tail.current(), 't': now}
+                        call = {'start': now, 'tg': tail.current(), 't': now,
+                                'meta': tail.metadata()}
                     elif call['tg'] is None:
                         call['tg'] = tail.current()      # grant may land just after audio
+                        # The ESS and the voice-channel grant can arrive after
+                        # the first audio packet too; take them while the call
+                        # is still open rather than losing them.
+                        fresh = tail.metadata()
+                        for k, v in fresh.items():
+                            if call['meta'].get(k) is None and v is not None:
+                                call['meta'][k] = v
                     buf += d; call['t'] = now
         if call and time.time() - call['t'] > GAP:
             flush()

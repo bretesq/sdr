@@ -216,22 +216,46 @@ def connect(path: str = DB_PATH) -> sqlite3.Connection:
 
 
 def upsert_call(db: sqlite3.Connection, *, file: str, tgid: int | None,
-                start: float, dur: float, session_id: int | None = None) -> None:
-    """Record one finished call.
+                start: float, dur: float, session_id: int | None = None,
+                ended_at: float | None = None, freq: int | None = None,
+                algid: int | None = None, keyid: int | None = None,
+                mi: str | None = None, rfss: int | None = None,
+                site: int | None = None, nac: int | None = None,
+                wacn: int | None = None, sysid: int | None = None,
+                src_addr: int | None = None) -> None:
+    """Record one finished call with whatever P25 metadata was observed.
 
-    ON CONFLICT keeps whatever transcript is already there — stt_watch.py may
-    have written one before the recorder's own row landed, and losing it is
-    exactly the bug this table exists to prevent.
+    Every metadata argument is optional and defaults to None. op25 emits these
+    asynchronously and the caller drops anything stale, so a missing value means
+    "not observed for this call" — never a zero or a guess.
+
+    ON CONFLICT uses COALESCE throughout so a re-insert can only ADD detail: it
+    keeps an existing transcript (stt_watch.py may have written one before the
+    recorder's row landed) and keeps any field the new row does not carry.
     """
     db.execute(
-        """INSERT INTO calls (file, tgid, start, dur, session_id)
-           VALUES (?, ?, ?, ?, ?)
+        """INSERT INTO calls
+             (file, tgid, start, dur, session_id, ended_at, freq,
+              algid, keyid, mi, rfss, site, nac, wacn, sysid, src_addr)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(file) DO UPDATE SET
-             tgid       = excluded.tgid,
+             tgid       = COALESCE(excluded.tgid,     calls.tgid),
              start      = excluded.start,
              dur        = excluded.dur,
-             session_id = COALESCE(excluded.session_id, calls.session_id)""",
-        (file, tgid, start, dur, session_id),
+             session_id = COALESCE(excluded.session_id, calls.session_id),
+             ended_at   = COALESCE(excluded.ended_at, calls.ended_at),
+             freq       = COALESCE(excluded.freq,     calls.freq),
+             algid      = COALESCE(excluded.algid,    calls.algid),
+             keyid      = COALESCE(excluded.keyid,    calls.keyid),
+             mi         = COALESCE(excluded.mi,       calls.mi),
+             rfss       = COALESCE(excluded.rfss,     calls.rfss),
+             site       = COALESCE(excluded.site,     calls.site),
+             nac        = COALESCE(excluded.nac,      calls.nac),
+             wacn       = COALESCE(excluded.wacn,     calls.wacn),
+             sysid      = COALESCE(excluded.sysid,    calls.sysid),
+             src_addr   = COALESCE(excluded.src_addr, calls.src_addr)""",
+        (file, tgid, start, dur, session_id, ended_at, freq,
+         algid, keyid, mi, rfss, site, nac, wacn, sysid, src_addr),
     )
 
 

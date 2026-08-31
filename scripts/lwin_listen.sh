@@ -23,6 +23,15 @@
 #   --include-encrypted also follow fully-encrypted talkgroups (records silence).
 #
 # STT (speech-to-text)
+#   --ess               raise op25 to -v 10 so it prints the ESS header
+#                       (algid/keyid/mi) for every voice frame. That is the
+#                       AUTHORITATIVE per-call encryption signal, independent of
+#                       the reference DB's static enc flag — which is known to
+#                       disagree: TG 17086 is flagged 'full' upstream but
+#                       transmitted algid 0x80 (clear) in all 23 observations.
+#                       Costs roughly 10x the log volume (~24 MB/hour against
+#                       ~2.4 MB/hour) and is off by default because the 800 MHz
+#                       voice leg here is marginal and extra I/O is not free.
 #   --stt                 launch stt_watch.py in parallel with the recorder. New
 #                       .wav files are transcribed as they land, and transcripts
 #                       are merged into calls.json.
@@ -44,6 +53,7 @@ TSV=$R/lwin_active.tsv
 SECS=0
 STT=0
 GEN=()          # args passed through to make_whitelist.py
+ESS=0           # --ess: -v 10 so op25 prints ESS encryption headers
 
 usage() { sed -n '2,/^set -u/p' "$0" | sed 's/^# \{0,1\}//; $d'; exit 0; }
 
@@ -63,6 +73,7 @@ while [ $# -gt 0 ]; do
     --include-partial)   GEN+=(--include-partial) ;;
     --include-encrypted) GEN+=(--include-encrypted) ;;
     --stt)               STT=1 ;;
+    --ess)               ESS=1 ;;
     --list)              GEN+=(--list) ; LIST=1 ;;
     -h|--help)           usage ;;
     -*)                  echo "unknown option: $1" >&2; exit 1 ;;
@@ -110,7 +121,10 @@ fi
 
 # op25 under a pty so its log is written in real time (python3 -u breaks op25 on 3.14).
 # -w = audio over UDP (no sound card); -n = silence encrypted; no -2 (system is Phase I).
-OP25_CMD="cd $A && exec python3 rx.py --args soapy=0,driver=hackrf -N AMP:0,LNA:40,VGA:44 -S 2000000 -q 0 -o 25000 -T $TSV -V -w -u $PORT -n -v 2"
+VERBOSITY=2
+[ "$ESS" -eq 1 ] && VERBOSITY=10
+
+OP25_CMD="cd $A && exec python3 rx.py --args soapy=0,driver=hackrf -N AMP:0,LNA:40,VGA:44 -S 2000000 -q 0 -o 25000 -T $TSV -V -w -u $PORT -n -v $VERBOSITY"
 script -q -f -c "$OP25_CMD" "$R/results/op25_record.log" >/dev/null 2>&1 &
 OP25_PID=$!
 

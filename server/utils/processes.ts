@@ -18,6 +18,13 @@ export interface ListenOptions {
   includePartial?: boolean
   includeEncrypted?: boolean
   stt?: boolean
+  /**
+   * Raise op25 to -v 10 so it emits the ESS header (algid/keyid/mi) per voice
+   * frame — the authoritative per-call encryption signal, which the reference
+   * DB's static flag is known to contradict. Costs ~10x the log volume, so it
+   * is opt-in.
+   */
+  ess?: boolean
   duration?: number
 }
 
@@ -32,6 +39,7 @@ export function buildListenArgs(opts: ListenOptions): string[] {
   if (opts.includePartial)   args.push('--include-partial')
   if (opts.includeEncrypted) args.push('--include-encrypted')
   if (opts.stt)              args.push('--stt')
+  if (opts.ess)              args.push('--ess')
   if (opts.duration)         args.push(String(opts.duration))  // positional — must stay last
 
   return args
