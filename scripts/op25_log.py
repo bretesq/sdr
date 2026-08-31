@@ -13,8 +13,8 @@ loads `tk_p25.py`):
     "voice update:  tg(17051), freq(852912500), slot(-), prio(3)"
      no receiver id | frequency in Hz (int) | no radio id
 
-  multi_rx.py -> tk_p25.py:2623
-    "[2] voice update:  tg(6848), rid(2601234), freq(769.593750), slot(-), prio(3)"
+  multi_rx.py -> tk_p25.py:2623   (rid below is invented, not a real unit ID)
+    "[2] voice update:  tg(6848), rid(1234567), freq(769.593750), slot(-), prio(3)"
      receiver id    | frequency in MHz (float) | radio id present
 
 Assuming either format alone loses metadata SILENTLY rather than erroring, so
