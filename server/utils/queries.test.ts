@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest'
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
+import { join } from 'node:path'
+import { sdrRoot } from './paths'
 import { listRecordings, getRecording, listTalkgroups, listCategories } from './queries'
 import { dbPath } from './db'
 
@@ -74,11 +76,23 @@ describe('listCategories', () => {
 
 describe('listRecordings', () => {
   it('returns every recording, newest first', () => {
+    // NOT an exact count. Every recording session adds rows, so a hard number
+    // here goes red the moment the radio runs — the same mistake an earlier
+    // whitelist test made. Assert the invariants: there is a substantial
+    // corpus, and it is ordered newest-first.
     const { rows, total } = listRecordings()
-    expect(total).toBe(3240)
+    expect(total).toBeGreaterThanOrEqual(3240)
+    expect(rows).toHaveLength(total)
     for (let i = 1; i < rows.length; i++) {
       expect(rows[i].start).toBeLessThanOrEqual(rows[i - 1].start)
     }
+  })
+
+  it('agrees with the .wav files on disk', () => {
+    // The real invariant: every recording on disk is indexed, and the index
+    // invents nothing. This is what the destructive calls.json write broke.
+    const wavs = readdirSync(join(sdrRoot(), 'recordings')).filter(f => f.endsWith('.wav'))
+    expect(listRecordings().total).toBe(wavs.length)
   })
 
   it('joins talkgroup metadata rather than resolving it per row in JS', () => {
