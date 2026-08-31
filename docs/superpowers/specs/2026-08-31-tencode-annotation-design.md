@@ -146,11 +146,48 @@ EBR Fire share a parish but not a codebook: Fire/EMS largely use plain language
 plus response codes, Law uses 10-codes. That is 975 Fire/EMS calls where applying
 a police 10-code table would produce confidently wrong expansions.
 
-**Sourcing reality.** BRPD, EBRSO, LSP, LSU PD and generic Law/Fire/EMS sets are
-findable. Authoritative lists for the small parishes (Pointe Coupee, West
-Feliciana, Iberville, East Feliciana) likely do not exist in published form.
-Those resolve to `la-generic-law`, and any code not in it stays un-expanded. A
-missing list degrades to "no expansion", never to a wrong one.
+### Sourcing findings (verified 2026-08-31)
+
+A search pass before committing this design changed the Phase 1 plan. Recorded
+here so it is not re-discovered during implementation:
+
+- **Louisiana agencies do not follow APCO.** LSP and local agencies use a code
+  set distinct from APCO and from neighbouring states, and they mix 10-codes,
+  *signal* codes, plain language and statute shorthand.
+- **Statewide/LSP-level codes are citable, and the corpus corroborates them.**
+  Published LSP signal codes include `signal 20` (vehicle crash), `signal 18`
+  (stranded motorist), `signal 98` (DUI), `signal 100` (hit-and-run),
+  `signal 103` (disturbance). The corpus independently contains `signal 20` (x2),
+  `signal 18` and `signal 31` — agreement between an external source and observed
+  traffic, which is the strongest validation available without agency documents.
+- **Agency-specific BRPD and EBRSO lists are NOT reliably published.** A
+  RadioReference discussion of Louisiana 10-codes states that the single list
+  circulating online is "completely incorrect". Treating any such list as
+  authoritative would poison the membership test that the whole extractor depends
+  on.
+
+**Consequence for Phase 1.** Build only what is defensible:
+
+| Set | Source | Status |
+|---|---|---|
+| `la-generic-law` | Published LSP / Louisiana signal + 10-code lists, cross-checked against corpus occurrences | Buildable now |
+| `la-generic-fire`, `la-generic-ems` | Response codes (`code 1/2/3`) — small, well-attested | Buildable now |
+| `la-brpd-law`, `la-ebrso-law`, `la-lsp-law`, `la-lsupd-law` | Not reliably published | **Start empty**, `extends` the generic set |
+| Small parishes | Not published | No file; resolve to `la-generic-law` |
+
+An empty agency set that only `extends` the generic one is a valid, working
+configuration — the chain does the work, and the file exists as the place a
+verified agency-specific code goes once one is confirmed.
+
+Two paths fill the agency sets over time, and the design supports both without
+change: the operator supplies a list they trust, or a code is confirmed from the
+corpus itself. Phase 6's unresolved-code report is what drives this — it names
+codes actually spoken on a given agency's talkgroups, ranked by frequency, which
+is a far better sourcing worklist than a generic list of 100 codes most of which
+never air here.
+
+**A missing list always degrades to "no expansion", never to a wrong one.** That
+is the property that makes shipping with mostly-empty agency sets acceptable.
 
 ---
 
@@ -233,7 +270,10 @@ codes_text      TEXT,   -- "1042 10-42 end of shift" — raw + canonical + meani
                         -- space-joined over every mention. Unresolved codes
                         -- contribute raw + canonical only, so they stay
                         -- searchable before their set is sourced.
-codes_set_id    TEXT,   -- which set resolved this call; makes stale rows findable
+codes_set_id    TEXT,   -- which set resolved this call
+codes_rev       TEXT,   -- short hash of (extractor version + resolved chain
+                        -- content). This, not codes_set_id, is what makes a
+                        -- row findable as stale.
 
 CREATE TABLE IF NOT EXISTS call_codes (
   id         INTEGER PRIMARY KEY,
@@ -317,9 +357,26 @@ existing SSE broadcast carries them with no new plumbing.
 how a newly-sourced code set gets applied to history.
 
 - default: recompute all rows;
-- `--only-stale`: recompute only rows whose `codes_set_id` differs from what the
-  resolver returns today. Also cleans up calls whose transcript arrived before
-  their `tgid` did.
+- `--only-stale`: recompute rows whose `codes_set_id` **or** `codes_rev` differs
+  from what the resolver and extractor produce today. Also cleans up calls whose
+  transcript arrived before their `tgid` did.
+
+**Why `codes_rev` and not `codes_set_id` alone.** `codes_set_id` only changes when
+a call resolves to a *different* set. Correcting a `meaning` inside an existing
+set, adding a code to it, or changing the `extends` chain leaves `codes_set_id`
+identical — so `--only-stale` would silently skip every affected row, and the
+corrected meaning would never reach `codes_text` (which is FTS-indexed) or
+`call_codes.meaning`. Since meanings will be corrected repeatedly as sets are
+sourced and validated, that is the common case, not an edge case.
+
+`codes_rev` is a short hash over the extractor version plus the fully-resolved
+chain content for that set. It changes on any edit that could alter output,
+including a change to the extractor itself, so re-derivation stays correct
+without anyone having to remember which kind of edit needs a full backfill.
+
+One exception by design: `common` affects rendering only, never `codes_text` or
+`call_codes`. It is excluded from the `codes_rev` hash, so toggling it takes
+effect immediately with no backfill.
 
 ---
 
@@ -452,7 +509,7 @@ Data before extractor, because membership is the disambiguator.
 
 | Phase | Deliverable |
 |---|---|
-| 1 | Source code sets: BRPD, EBRSO, LSP, LSU PD, generic Law/Fire/EMS. Data-integrity tests pass. |
+| 1 | Build `la-generic-law` from citable LSP/Louisiana lists, cross-checked against corpus occurrences; `la-generic-fire`/`-ems` response codes; agency sets created empty with `extends`. Data-integrity tests pass. |
 | 2 | `scripts/tencodes.py` + golden and negative tests. Pure function, no DB. |
 | 3 | Migration, `call_codes`, FTS rebuild, `set_transcript` hook, `backfill_codes.py`. |
 | 4 | `code` filter in `listRecordings()` + `/api/codes/stats`. |
@@ -475,8 +532,9 @@ correction, and the corpus would rot with every code-table fix.
 
 | Risk | Mitigation |
 |---|---|
-| Code sets for small parishes are unpublished | Resolution chain degrades to `la-generic-law`; unknown codes render un-expanded, never guessed |
+| Agency-specific lists (BRPD, EBRSO) are unpublished, and the one list circulating online is reported incorrect | Agency sets ship empty and `extends` the generic set; unknown codes render un-expanded, never guessed. Phase 6's report drives verified additions |
+| A sourced meaning is later corrected | `codes_rev` makes every affected row stale, so `--only-stale` re-derives it; `src` provenance makes each expansion auditable |
 | `10NN` split produces false positives | Membership test + address/room stop-words + `medium` confidence, excluded from stats by default |
 | FTS rebuild during live capture | One-off, 3,740 rows; WAL means readers are not blocked; run between sessions |
 | TS reads columns before migration runs | `getDb()` column check throws the existing loud "run this command" error |
-| Sourced meanings turn out wrong | `src` provenance on every entry makes each expansion auditable; re-derive after a fix |
+
