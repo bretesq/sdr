@@ -1,18 +1,17 @@
-import { join } from 'node:path'
-import { loadTalkgroups, filterByArea, filterTalkgroups } from '~/server/utils/talkgroups'
-import { referenceDir } from '~/server/utils/paths'
+import { listTalkgroups } from '~/server/utils/queries'
 
 export default defineEventHandler((event) => {
   const q = getQuery(event)
-  const area = q.area === 'all' ? 'all' : 'br'
-  const category = q.category ? String(q.category) : undefined
-  const text = q.text ? String(q.text) : undefined
-  const enc = q.enc ? String(q.enc) : undefined
 
-  const all = loadTalkgroups(join(referenceDir(), 'lwin_talkgroups.json'))
-  const data = filterTalkgroups(filterByArea(all, area), { category, text, enc })
+  const { rows, total } = listTalkgroups({
+    area: q.area === 'all' ? 'all' : 'br',
+    category: q.category ? String(q.category) : undefined,
+    enc: q.enc ? String(q.enc) : undefined,
+    search: q.search ? String(q.search) : undefined,
+  })
 
-  // Entries carry tag and mode as well as tgid/alpha/desc/cat/enc — return them
-  // whole. server.py returned both; tag is searched and mode shows "D enc".
-  return { success: true, data, total: all.length }
+  // `total` is the whole-DB count (4163), deliberately independent of `area`.
+  // TalkgroupBrowser's footer uses the length of the array it holds, so BR
+  // reads "601 of 601"; do not repoint it at this field.
+  return { success: true, data: rows, total }
 })
