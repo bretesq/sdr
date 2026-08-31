@@ -356,20 +356,52 @@ variable section 7 named and never changed — the antenna. The HackRF reads
 +28.3 dB on this same channel, and a 26 dB gap between an R820T2 and a HackRF
 is not a front-end difference.
 
+### The RTL2832U's 28.8 MHz crystal makes a spur comb across UHF
+
+Know this before trusting any UHF measurement from these dongles. The 28.8 MHz
+clock produces strong internal spurs at every multiple AND half-multiple:
+
+| multiple | frequency | excess over floor |
+|---|---|---|
+| 13.5 | 388.800 MHz | +14.2 dB |
+| 14.0 | 403.200 MHz | +23.6 dB |
+| 14.5 | 417.600 MHz | +33.0 dB |
+| 15.0 | 432.000 MHz | +41.0 dB |
+| 15.5 | 446.400 MHz | +41.0 dB |
+| 16.0 | **460.800 MHz** | **+43.4 dB** |
+
+Off-comb controls at 410.0, 425.0 and 440.0 MHz read +11.2, +1.1 and +10.1 dB.
+
+These **pass** section 8's retune discriminator — they hold their absolute
+frequency as the LO moves — because they are fixed internal spurs, not
+LO-relative artifacts. That test separates LO images from real signals; it does
+not separate internal spurs from real signals. The comb spacing is what does.
+
+A federal-band survey here initially "found" carriers at 417.599 and
+460.801 MHz at +20 and +31 dB. Both are comb entries. **Nothing real was found
+in 406-420 or 450-470.**
+
 ### The supplied antenna is resonant at 375 MHz, not 773
 
-Measured across bands on dongle 1, 15 s sweeps, gain 45:
+This rests on geometry, not on a band sweep. An earlier version of this section
+cited "+24.2 dB at 460-470, its best band" as evidence — that was the 460.8 MHz
+spur. Re-measured in spur-free windows the picture is much flatter:
 
-| band | excess over floor | peak |
-|---|---|---|
-| FM 88-108 MHz | +22.3 dB | 20.1 |
-| VHF / NOAA 155-165 | +18.1 dB | 13.8 |
-| **UHF business 460-470** | **+24.2 dB** | 3.3 |
-| LWIN 700 control | +5.8 dB | -6.8 |
-| LWIN 800 voice | +8.3 dB | -11.9 |
+| band | excess over floor |
+|---|---|
+| FM 88-108 | +18.4 dB |
+| UHF 465-473 (clean) | +12.0 dB |
+| LWIN 800 voice | +9.0 dB |
+| UHF 421-429 (clean) | +8.2 dB |
+| LWIN 700 control | +6.0 dB |
+| VHF 155-162 | +4.3 dB |
 
-The antenna is not deaf at UHF — 460-470 MHz is its *best* band of the five. It
-simply is not resonant where LWIN lives, and the length says why:
+UHF still beats LWIN 700, but by 6 dB rather than 18, and LWIN 800 beats one of
+the UHF windows. Note too that excess-over-floor cannot measure antenna response
+*across* bands at all: FM broadcast is 100 kW a few miles away while LWIN is a
+distant simulcast, so the table mostly reflects transmitter power and distance.
+
+The length argument stands on its own, independent of any of the above:
 
 | | frequency | quarter wave |
 |---|---|---|

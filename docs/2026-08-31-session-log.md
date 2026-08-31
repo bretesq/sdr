@@ -169,6 +169,34 @@ frequency *accuracy*, not sensitivity — genuinely valuable for a 12.5 kHz
 channel, and it becomes decisive once the antenna is fixed, but it cannot
 recover signal that never arrived.
 
+### The 28.8 MHz spur comb
+
+A federal-band survey with the RTL, run while waiting on the antenna, "found"
+strong carriers at 417.599 MHz (+20 dB) and 460.801 MHz (+31 dB) — far above
+LWIN's +5.8. Both are internal spurs. The dongle's 28.8 MHz crystal produces a
+comb at every multiple and half-multiple:
+
+    13.5 x 28.8 = 388.8 MHz   +14.2 dB
+    14.0        = 403.2       +23.6
+    14.5        = 417.6       +33.0
+    15.0        = 432.0       +41.0
+    15.5        = 446.4       +41.0
+    16.0        = 460.8       +43.4
+    off-comb controls 410.0 / 425.0 / 440.0  ->  +11.2 / +1.1 / +10.1
+
+They **pass** README section 8's retune discriminator, holding their absolute
+frequency as the LO moves, because they are fixed internal spurs rather than
+LO-relative artifacts. That test separates LO images from real signals; it does
+not separate internal spurs from real signals. Comb spacing is what does.
+
+Nothing real was found in 406-420 or 450-470 MHz.
+
+This also forced a correction to the antenna section. It had cited "+24.2 dB at
+460-470, its best band" as evidence the antenna was fine at UHF — that was the
+460.8 spur. Spur-free windows give UHF 465-473 at +12.0 against LWIN 700 at
++6.0: a 6 dB gap, not 18. The 375 MHz resonance conclusion stands, but on
+geometry alone; the band sweep was never evidence for it.
+
 ### Two of my own findings, retracted
 
 Both tools initially tuned directly to the channel and measured the peak within
