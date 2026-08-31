@@ -109,9 +109,12 @@ const selected = ref<Recording | null>(null)
 const transcript = ref('')
 const loadingTranscript = ref(false)
 
-// Real vocabulary: 'full', never 'encrypted'. 'none' covers recordings whose
-// talkgroup is not in the reference DB — 279 of 3,232 have no calls.json entry,
-// and the old console had this option for exactly that reason.
+// Real vocabulary: 'full', never 'encrypted'. 'none' covers a recording whose
+// talkgroup is absent from the reference DB. Today that is 0 of 3,232 — a
+// missing calls.json entry (279 of them) is NOT an unresolved enc, because
+// scanRecordings resolves enc from the reference DB regardless. The option is
+// kept because the old console had it and it would catch a genuinely unknown
+// talkgroup; an empty table when it is selected is correct, not a bug.
 const encOptions = [
   { value: 'all',     label: 'All' },
   { value: 'clear',   label: 'Clear' },
@@ -130,7 +133,7 @@ const filtered = computed(() => {
     }
     if (!q) return true
     // Six fields, matching server.py's [alpha, desc, cat, transcript, file, tgid].
-    // Transcript search is the point of --stt: 3,231 transcripts on disk.
+    // Transcript search is the point of --stt: 3,220 non-empty transcripts.
     return String(r.tgid ?? '').includes(q)
       || (r.alpha ?? '').toLowerCase().includes(q)
       || (r.desc ?? '').toLowerCase().includes(q)
@@ -191,7 +194,7 @@ function formatDuration(sec: number): string {
 
 /**
  * op25's -n silences encrypted bursts, so partial-encryption talkgroups produce
- * many calls that transcribe to exactly [BLANK_AUDIO] — 528 of 3,231 today.
+ * many calls that transcribe to exactly [BLANK_AUDIO] — 518 of 3,232 today.
  * Without dimming they are indistinguishable from real content at a glance.
  */
 function isBlank(t: string): boolean {

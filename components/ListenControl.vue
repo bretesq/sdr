@@ -216,8 +216,13 @@ async function refresh(): Promise<void> {
     callCount.value = res.data.callCount
     startTime.value = res.data.startTime
     runningConfig.value = res.data.config
-  } catch {
-    // transient; leave the last known state in place
+  } catch (err) {
+    // A failed poll is usually transient (dev-server reload, brief network
+    // blip), so the last known state stays on screen rather than flashing an
+    // error every 5s. Logged rather than swallowed: a *persistent* failure here
+    // means the status panel is silently frozen, which is worth being able to
+    // see in the console.
+    console.warn('[ListenControl] status poll failed:', err)
   }
 }
 

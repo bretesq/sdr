@@ -1788,31 +1788,43 @@ export default defineEventHandler((event) => {
   setHeader(event, 'Accept-Ranges', 'bytes')
 
   if (!range) {
-    setHeader(event, 'Content-Length', String(size))
+    setHeader(event, 'Content-Length', size)   // h3 types this as number, not string
     // Returning a Node Readable directly: h3 handles it, and sendStream() is
     // deprecated in h3 v1.
     return createReadStream(path)
   }
 
   const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim())
-  if (!m) {
+  const unsatisfiable = (): string => {
     setResponseStatus(event, 416)
     setHeader(event, 'Content-Range', `bytes */${size}`)
     return ''
   }
 
-  const start = m[1] ? Number(m[1]) : 0
-  const end = m[2] ? Math.min(Number(m[2]), size - 1) : size - 1
+  // `bytes=-` with both sides empty is malformed, not a whole-file request.
+  if (!m || (!m[1] && !m[2])) return unsatisfiable()
 
-  if (start >= size || end < start) {
-    setResponseStatus(event, 416)
-    setHeader(event, 'Content-Range', `bytes */${size}`)
-    return ''
+  let start: number
+  let end: number
+
+  if (!m[1]) {
+    // Suffix range: `bytes=-500` means the LAST 500 bytes (RFC 7233 §2.1),
+    // NOT bytes 0-500. Getting this wrong serves the head of the file under a
+    // self-consistent Content-Range — wrong audio, no error, completely silent.
+    const suffixLength = Number(m[2])
+    start = Math.max(0, size - suffixLength)
+    end = size - 1
+  } else {
+    start = Number(m[1])
+    end = m[2] ? Math.min(Number(m[2]), size - 1) : size - 1
   }
+
+  if (start >= size || end < start) return unsatisfiable()
 
   setResponseStatus(event, 206)
   setHeader(event, 'Content-Range', `bytes ${start}-${end}/${size}`)
-  setHeader(event, 'Content-Length', String(end - start + 1))
+  // h3 types Content-Length as a number — String() here is a TS2345 error.
+  setHeader(event, 'Content-Length', end - start + 1)
   return createReadStream(path, { start, end })
 })
 ```
@@ -1886,6 +1898,12 @@ export default defineEventHandler((event) => {
 
   // Entries carry tag and mode as well as tgid/alpha/desc/cat/enc — return them
   // whole. server.py returned both; tag is searched and mode shows "D enc".
+  //
+  // NOTE: `total` is the WHOLE-DB count (4163), deliberately independent of
+  // `area`. TalkgroupBrowser's footer denominator is talkgroups.length (the
+  // area-filtered array it already holds), so BR reads "showing 601 of 601".
+  // Do not "simplify" the footer to use this field — BR would silently become
+  // "showing 601 of 4163".
   return { success: true, data, total: all.length }
 })
 ```
@@ -2203,8 +2221,12 @@ async function refresh(): Promise<void> {
     callCount.value = res.data.callCount
     startTime.value = res.data.startTime
     runningConfig.value = res.data.config
-  } catch {
-    // transient; leave the last known state in place
+  } catch (err) {
+    // A failed poll is usually transient (dev-server reload, brief network
+    // blip), so the last known state stays on screen rather than flashing an
+    // error every 5s. Logged rather than swallowed: a *persistent* failure here
+    // means the status panel is silently frozen, which is worth seeing.
+    console.warn('[ListenControl] status poll failed:', err)
   }
 }
 
@@ -2404,9 +2426,12 @@ const selected = ref<Recording | null>(null)
 const transcript = ref('')
 const loadingTranscript = ref(false)
 
-// Real vocabulary: 'full', never 'encrypted'. 'none' covers recordings whose
-// talkgroup is not in the reference DB — 279 of 3,232 have no calls.json entry,
-// and the old console had this option for exactly that reason.
+// Real vocabulary: 'full', never 'encrypted'. 'none' covers a recording whose
+// talkgroup is absent from the reference DB. Today that is 0 of 3,232 — a
+// missing calls.json entry (279 of them) is NOT an unresolved enc, because
+// scanRecordings resolves enc from the reference DB regardless. The option is
+// kept because the old console had it and it would catch a genuinely unknown
+// talkgroup; an empty table when it is selected is correct, not a bug.
 const encOptions = [
   { value: 'all',     label: 'All' },
   { value: 'clear',   label: 'Clear' },
@@ -2425,7 +2450,7 @@ const filtered = computed(() => {
     }
     if (!q) return true
     // Six fields, matching server.py's [alpha, desc, cat, transcript, file, tgid].
-    // Transcript search is the point of --stt: 3,231 transcripts on disk.
+    // Transcript search is the point of --stt: 3,220 non-empty transcripts.
     return String(r.tgid ?? '').includes(q)
       || (r.alpha ?? '').toLowerCase().includes(q)
       || (r.desc ?? '').toLowerCase().includes(q)
@@ -2486,7 +2511,7 @@ function formatDuration(sec: number): string {
 
 /**
  * op25's -n silences encrypted bursts, so partial-encryption talkgroups produce
- * many calls that transcribe to exactly [BLANK_AUDIO] — 528 of 3,231 today.
+ * many calls that transcribe to exactly [BLANK_AUDIO] — 518 of 3,232 today.
  * Without dimming they are indistinguishable from real content at a glance.
  */
 function isBlank(t: string): boolean {
@@ -2541,7 +2566,7 @@ git commit -m "feat: add RecordingsList component with playback and transcripts"
 - Create: `components/TalkgroupBrowser.vue`
 
 **Interfaces:**
-- Consumes: `GET /api/talkgroups/list`, `GET /api/talkgroups/whitelist`, `GET /api/config/presets` (for the area options).
+- Consumes: `GET /api/talkgroups/list`, `GET /api/talkgroups/whitelist`. **Not** `/api/config/presets` — `areaOptions` is a hardcoded two-entry literal, which is right for a fixed br/all toggle.
 - Produces: `<TalkgroupBrowser />` — no props, no emits.
 
 - [ ] **Step 1: Create `components/TalkgroupBrowser.vue`**
