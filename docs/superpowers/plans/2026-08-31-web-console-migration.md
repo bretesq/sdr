@@ -331,11 +331,20 @@ Pure-layout classes are unaffected and used throughout: `grid`, `col-12`, `lg:co
 /* Bridge PrimeFlex 3's theme classes onto PrimeVue 4 Aura design tokens. */
 :root {
   --surface-card: var(--p-content-background);
-  --surface-100: var(--p-surface-100);
   --surface-border: var(--p-content-border-color);
   --text-color: var(--p-text-color);
   --text-color-secondary: var(--p-text-muted-color);
   --border-radius: var(--p-content-border-radius);
+
+  /* NOT --p-surface-100. That is a RAW PALETTE step (var(--p-slate-100)) and
+     stays light in dark mode, so a `surface-100` row renders near-white text on
+     a near-white background — verified unreadable in a dark-theme screenshot.
+     --p-highlight-background is the SEMANTIC equivalent and is theme-aware:
+       light: var(--p-primary-50)
+       dark:  color-mix(in srgb, var(--p-primary-400), transparent 84%)
+     Both call sites (whitelist rows, the running-session block) mean "call this
+     out", which is what highlight-background is for. */
+  --surface-100: var(--p-highlight-background);
 }
 
 /* Nuxt + PrimeVue 4 style no <body> at all. Required either way. */
