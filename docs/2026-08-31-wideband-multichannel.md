@@ -15,8 +15,14 @@ sample rate spans that. The listed 800 MHz control channels that would have
 avoided a second radio are **measured dead** (§5), and the RTL cannot hold
 773.05625 with the antenna it has: **+0.6 dB against the ~15 dB needed** (§4).
 
-There is a **zero-hardware Phase 0** that is strictly better than either script
-we run today (§8), and a ~$20 antenna unlocks 25% → 73%.
+**UPDATE, same day — the antenna blocker is gone.** A second HackRF was plugged
+in (a **HackRF One**, not a Pro) and it **holds site 13's control channel**:
++21.4 dB, 100% continuity, and op25 decoded **1,459 TSBK updates / 26 talkgroups
+/ 48 radio IDs with one startup timeout in 75 s**. See §10. Both legs are now
+reachable with hardware already on the desk, so ~92% of calls needs no purchase.
+§10 also carries an **urgent** finding: the One enumerated as SoapySDR index 0,
+*ahead* of the Pro, so every existing script's `soapy=0` now points at the wrong
+radio.
 
 ---
 
@@ -91,8 +97,8 @@ radio, not more bandwidth.
 
 Each leg *individually* fits a HackRF window:
 
-- 800 leg: needs ±4.475 MHz. At **12 Msps** with `usable_bw_pct 0.85` the limit
-  is `(12e6×0.85)/2 − if1/2 = 5.05 MHz`. Fits with 0.58 MHz margin.
+- 800 leg: needs ±4.688 MHz. At **12 Msps** with `usable_bw_pct 0.85` the limit
+  is `(12e6×0.85)/2 − if_rate/2 = 5.088 MHz`. Fits with 0.40 MHz margin.
 - 700 leg: 3.00 MHz — fits in 4 Msps.
 
 ## 3. The software supports it (verified by reading the code)
@@ -105,7 +111,7 @@ Each leg *individually* fits a HackRF window:
 - **A "retune" inside the window is free.** `channel.set_freq` (`multi_rx.py:449`)
   calls `demod.set_relative_frequency()` first and only hard-tunes if that
   fails. The relative path rewrites bandpass taps out of a cache
-  (`p25_demodulator.py:462`) — no hardware tune, no settling time.
+  (`p25_demodulator_dev.py`) — no hardware tune, no settling time.
 - **There is a real voice-receiver pool.** `tk_p25.py:2576 find_talkgroup` skips
   any talkgroup whose `['receiver']` is already claimed, so N receivers on one
   system take N different calls, priority-ordered.
@@ -316,6 +322,7 @@ live control channel**:
 | covers | 769.68125 … 774.54375 (4 granted voice + both 700 MHz control) |
 | rate / centre | **8 Msps @ 771.4185 MHz** |
 | `if_rate` | **25000** (`get_decim`: 8 Msps → 25000, decim 80/4, if1 100 kHz) |
+| usable half-span | ±3.3875 MHz (need ±2.431) |
 | DC clearance | 662 kHz to the nearest audible carrier |
 | channels | 1 pinned control + 3 voice |
 
@@ -359,7 +366,11 @@ Add a third receiver for the 700 MHz voice sub-window, or a second wideband radi
 
 - **`if_rate` must match `get_decim`'s second stage** or every channel pays an
   `arb_resampler`: 8 Msps → 25000; 12 Msps → 24000; 16 Msps → 25000.
-  **10 Msps cannot cover the 800 leg** (limit 4.20 MHz < 4.688 needed).
+  Note `multi_rx.py:62` imports **`p25_demodulator_dev`**, not
+  `p25_demodulator`, and the `_dev` bound is
+  `|offset| ≤ (rate·usable_bw)/2 − if_rate/2` — `if_rate` (24–25 kHz), not
+  `if1` (96–100 kHz). Every half-span figure here uses the `_dev` formula.
+  **10 Msps cannot cover the 800 leg** (limit 4.2375 MHz < 4.688 needed).
 - **Centres are chosen off-channel** (771.4185 / 855.725). The DC spike is the
   trap of commit `cf019d4`, and a device-level `offset` cannot protect
   off-centre channels.
@@ -408,3 +419,191 @@ Re-run `lwin_cdr_run.sh` for an hour across a busy period before treating
 "98% at 6 receivers" as a design target rather than an order-of-magnitude
 estimate. The 25% figure for today's single receiver is the robust one, and it is
 the one that motivates the work.
+
+---
+
+## 10. UPDATE: a second HackRF changes the conclusion (measured 2026-08-31)
+
+### 10.1 What was plugged in
+
+```
+Index 0: HackRF One  930c64dc275e54c3  Board ID 2, r10,   fw v2.2.0      (API 1.08)
+Index 1: HackRF Pro  977c64de2d717413  Board ID 5, r1.2,  fw 2026.01.3   (API 1.10)
+```
+
+A **HackRF One**, not a second Pro. Through SoapySDR both report **1.0–20.0
+MSps**, so for this work they are equivalent.
+
+### 10.2 URGENT: device indices swapped, and `soapy=0` now selects the wrong radio
+
+The One enumerated as **index 0**, ahead of the Pro. Every script here uses
+`--args soapy=0,driver=hackrf` — `lwin_listen.sh:127`,
+`lwin_capture_audio.sh:32`, `lwin_capture_enc.sh:37`, `lwin_cdr_run.sh:6` — so
+they now open the **One** while every gain figure and SNR baseline in this
+repository was measured on the **Pro**. Enumeration order is not guaranteed
+stable across replugs either.
+
+**Fix: address by serial.** Verified working through gr-osmosdr's Soapy backend:
+
+```
+--args 'soapy=0,driver=hackrf,serial=0000000000000000977c64de2d717413'   # Pro
+--args 'soapy=0,driver=hackrf,serial=0000000000000000930c64dc275e54c3'   # One
+```
+
+`osmosdr.source()` logged `Opening HackRF Pro #1 977c…` and
+`Opening HackRF One #0 930c…` respectively. The serial must be the full
+zero-padded 32-character form SoapySDR reports. `soapy=0` stays — it is
+gr-osmosdr's own source index, not the device index.
+
+### 10.3 The One holds the control channel — §4's blocker is void
+
+Its input is **13.7 dB hotter** than the Pro's, so it needs its own gain
+setting. Measured at 8 Msps @ 771.4185 MHz, scoring 773.05625 (site 13's active
+control channel, continuous):
+
+| gain | RMS | clip | 773.05625 peak / mean | continuity |
+|---|---|---|---|---|
+| `LNA:40,VGA:44` | −3.7 dBFS | **0.64%** | 20.6 / 20.0 dB | 100% |
+| **`LNA:40,VGA:20`** | −23.0 dBFS | **0.0000%** | **21.4 / 19.9 dB** | 100% |
+| `LNA:24,VGA:14` | −25.5 dBFS | 0.0000% | 12.7 / 12.0 dB | 100% |
+
+**Working setting for the One: `AMP:0,LNA:40,VGA:20`.** `VGA:44` clips and
+`VGA:14` falls below op25's threshold. Note this differs from the Pro's
+`VGA:44` — do not copy one radio's gains to the other.
+
+Then the decisive test, op25 on the One at 773.05625 for 75 s:
+
+```
+NAC 0x1bd   SYSID 0x1bd
+1,459 TSBK talkgroup updates
+26 distinct talkgroups
+48 distinct radio IDs
+1 control-channel timeout (at startup, before lock)
+```
+
+Compare 853.2 in §5.1, which timed out every ~1.0 s and never held. This is a
+solid lock. **§4's conclusion — that no available receiver can hold
+773.05625 — is superseded. It was true of the RTL's duck antenna, not of the
+hardware now on the desk.**
+
+### 10.4 Both radios stream simultaneously on one USB controller
+
+Both sit on **bus 001**, a single 480 Mbps root hub also carrying a `cdc_ether`
+adapter. Running Pro @ 12 Msps and One @ 8 Msps at the same time:
+
+| radio | rate | throughput | overruns |
+|---|---|---|---|
+| Pro | 12 Msps | 24.0 MB/s | **0** |
+| One | 8 Msps | 16.0 MB/s | **0** |
+| | | **40.0 MB/s = 320 Mbps** | **0** |
+
+No need to move either radio to bus 004/006.
+
+### 10.5 Revised architecture — both legs, no purchase
+
+| device | gains | rate / centre | role | channels |
+|---|---|---|---|---|
+| **HackRF One** | `AMP:0,LNA:40,VGA:20` | 8 Msps @ 771.4185 | 700 leg | 1 pinned control (773.05625) + 3 voice |
+| **HackRF Pro** | `AMP:0,LNA:40,VGA:44` | 12 Msps @ 855.725 | 800 leg | 5–6 voice |
+
+`multi_rx.py` takes several devices in one config and `tk_p25.py` pools
+receivers per *system*, not per device, so one config covers both legs with a
+single control receiver feeding the whole pool. Expected: **~92% of calls plus a
+100% grant census**, from hardware already present.
+
+### 10.6 One thing this makes load-bearing: the cross-band trap
+
+With receivers on both legs, §3's sharp edge stops being avoidable. A 700-leg
+receiver can be handed an 851–860 grant, and `tk_p25.py:2300 tune_voice`
+**ignores** the `False` that `multi_rx.py change_freq` returns for an
+out-of-window frequency — the talkgroup is already claimed, so that receiver
+records nothing and stays occupied for the call. With ~73% of grants on the 800
+leg and 3 of 9 receivers on the 700 leg, this would fire constantly.
+
+Fix is small and local: have `tune_voice` honour the return value and release
+the claim so an in-window receiver can take the call. The repo already carries
+op25 patches (README gotcha #4). This becomes a required task, not a caveat.
+
+---
+
+## 11. Built and measured: two-radio multi_rx (2026-08-31)
+
+Implemented on branch `feat/multirx-two-radio`. Config: HackRF One 8 Msps @
+771.4185 (1 receiver pinned to 773.05625 + 3 voice), HackRF Pro 12 Msps @
+855.725 (5 voice). 9 channels, one trunked system, `crypt_behavior 1`.
+Launcher: `scripts/lwin_listen_multi.sh`.
+
+### 11.1 Result: concurrent capture works
+
+300 s run, `--pd-all --include-partial`:
+
+| | |
+|---|---|
+| calls recorded | **70** |
+| calls overlapping an earlier call in time | **45 of 70** |
+| frequencies | all 19 distinct values are real site-13 channels |
+| leg split | 6 on 700 MHz, 64 on 800 MHz |
+| cross-attributed metadata | none |
+
+45 concurrent calls out of 70 is the whole point: with `rx.py` that figure is
+structurally **always 0**. Against the census rate of 111 calls / 359 s
+(≈93 calls per 300 s), 70 is **75%** — matching the ~73% predicted in §2.
+
+Both devices opened the serial they were configured for, all 9 UDP
+destinations came up, no channel was refused, and the demodulator built no
+`arb_resampler` on either device (`xlator if_rate=25000, input_rate=8000000,
+decim=320, resampled_rate=25000` and `24000/12000000/500/24000`).
+
+The pinned control receiver never took voice — zero `[0] voice update` and zero
+`releasing control channel` lines — so the pin works as designed.
+
+### 11.2 The tk_p25 patch fired 1,243 times, and it is load-bearing
+
+`Unable to tune`: 1,243. `leaving it unclaimed`: 1,243. Every out-of-window
+grant was matched by a release, so no call was silently eaten. Without
+`patches/op25-tk_p25-release-unreachable-grant.patch` those 1,243 grants would
+each have occupied a receiver recording silence for the length of a call.
+
+### 11.3 NOT delivered: the grant census
+
+§10.5 claimed "audio plus a 100% grant census". **The audio half is delivered;
+the census half is not.** Two independent causes:
+
+1. **At `-v 2`, multi_rx logs no grant primitives at all.** Counted in the run's
+   log: `TSBK: op=` 0, `set tgid=` 0, `new tgid=` 0, `rfss_sts_bcst` 0. Only
+   `voice update` (1,758). The reference CDR run used `-v 10`.
+2. **`import_grants.py:42` parses `set tgid=(\d+), srcaddr=(\d+)`** — which is
+   `trunking.py`'s format, i.e. the `rx.py` path. `tk_p25.py` never emits it.
+   This is the *same* two-module trap that the old `FREQPAT` fell into, in a
+   different script.
+
+There is also a design question, not just a bug: under `multi_rx` the
+`voice update` line is emitted by the *tuning* receiver, not by the control
+receiver, so there is no single-receiver grant stream to import. **The same
+grant was announced to up to 7 different receivers** (TG 17171 on 852.9125),
+so any census built from these lines must dedupe on (tgid, freq, time) rather
+than counting lines.
+
+### 11.4 New finding: cross-band churn is costing 700 MHz calls
+
+`voice update` lines per receiver:
+
+| receiver | leg | voice updates | calls landed |
+|---|---|---|---|
+| 1, 2, 3 | 700 | 409 + 440 + 451 = **1,300** | **6** |
+| 4–8 | 800 | 219 + 115 + 91 + 25 + 8 = 458 | 64 |
+
+The 700-leg receivers spent the run being handed 800 MHz grants they cannot
+reach — ~1,294 of their 1,300 attempts failed. They were therefore busy, or
+cycling, when real 700-leg grants arrived. The census says ~27% of traffic is
+on the 700 leg, which over 70 calls predicts ~19; we got **6**.
+
+`tk_p25.py find_talkgroup` (2576) has no notion of which frequencies a given
+receiver's device window can reach — it picks by priority and claim status
+only. The unclaim patch makes this survivable rather than fatal, but the fix
+that removes the waste is to make `find_talkgroup` skip talkgroups whose
+current frequency is outside this receiver's window. The receiver already
+knows its device's centre, rate and `usable_bw_pct`.
+
+**Open, not yet attempted.** Expected effect: the 700 leg recovers toward its
+~19 calls, taking the total from ~75% toward the ~92% projected in §10.5.
