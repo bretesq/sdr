@@ -540,6 +540,13 @@ across more talkgroups would firm this up.
 **No decryption was attempted and no key material was recovered** — only the cleartext
 algorithm identifier was read. Encrypted talkgroups remain excluded from recording.
 
+## Session log
+
+`docs/2026-08-31-session-log.md` — what was built, what was measured, what was
+ruled out, and where to resume. Includes the RF investigation into why the
+RTL-SDRs cannot decode the control channel, which ends at a testable hypothesis
+(the supplied antenna is resonant at 375 MHz, not 773) pending a new antenna.
+
 ## Data store
 
 Everything lives in **`sdr.db`** (SQLite): 4,163 talkgroups, 149 sites, 243
