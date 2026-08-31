@@ -1,6 +1,63 @@
+# Recordings and audio
+recordings/
 captures/
+*.wav
+*.mp3
+*.m4a
+lwin_brpd_audio.tsv
+
+# Build artifacts and compiled binaries
+adp_brute
+*.o
+*.a
+*.so
+*.out
+
+# Python cache
+__pycache__/
+scripts/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Pre-trained models and large data
+models/
+*.ckpt
+*.pth
+*.pb
+
+# Generated results and logs
+results/*.log
+results/*.txt
+
+# Secrets and credentials
+lwin_keys.json
+*.key
+*.pem
+*.env
+*.env.local
+
+# Source code and intermediate files (if applicable)
+src/
 *.cs8
 *.cfile
-src/
-recordings/
-*.wav
+
+# Web server runtime
+web/listen.pid
+web/listen.log
+web/listen.config.json
+web/listen.started
+web/server.lock
+web/server.pid
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
