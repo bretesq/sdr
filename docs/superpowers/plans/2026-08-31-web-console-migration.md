@@ -1608,7 +1608,11 @@ import { recordingsDir, referenceDir } from './paths'
 function attachTranscripts(recordings: Recording[]): Recording[] {
   const dir = recordingsDir()
   return recordings.map((rec) => {
-    if (rec.transcript) return rec
+    // The .txt file is AUTHORITATIVE — no early return on rec.transcript.
+    // calls.json has no transcript key today, but if udp_audio_record.py is
+    // ever fixed to stop clobbering stt_watch.py's merges, a `if (rec.transcript)
+    // return rec` guard here would silently flip which source wins. Read the
+    // file unconditionally; it costs ~80 ms for all 3,231.
     try {
       const txt = readFileSync(join(dir, rec.file.replace(/\.wav$/, '.txt')), 'utf-8').trim()
       return txt ? { ...rec, transcript: txt } : rec
@@ -2395,7 +2399,15 @@ function encSeverity(enc: string | null): string {
 
 - [ ] **Step 2: Verify in the browser**
 
-Confirm the table lists existing `recordings/*.wav`, search narrows it, the encryption filter works, and clicking play opens a dialog whose audio element plays **and seeks** (seeking is what exercises the Range path).
+Confirm the table lists existing `recordings/*.wav` (3232 rows), search narrows it, the encryption filter works, and clicking play opens a dialog whose audio element plays **and seeks** (seeking is what exercises the Range path).
+
+Then isolate the cross-component refresh, which is the only new shared-state machinery in this plan. Start a short session, press Stop, and in devtools watch the `recordings-refresh` state value:
+
+- **Increments on Stop, table reloads** → working.
+- **Increments, table does not reload** → the `watch()` in this component is wrong.
+- **Never increments** → `ListenControl`'s `setTimeout` or its `useState` key is wrong (the key string must match exactly in both components).
+
+Checking the counter separately from the table matters because "table didn't reload" otherwise has four indistinguishable causes — including the innocent one, that `calls.json` had nothing new to flush.
 
 - [ ] **Step 3: Commit**
 
