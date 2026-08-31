@@ -15,6 +15,16 @@
       <div v-if="configSummary" class="text-sm mt-1">{{ configSummary }}</div>
     </div>
 
+    <!--
+      op25 holds the radio but we are not tracking a session: bash died while
+      rx.py survived behind its pty. A fresh Start would contend for the HackRF,
+      so say so rather than presenting an innocent-looking idle panel.
+    -->
+    <Message v-if="!running && radioBusy" severity="warn" :closable="false" class="mb-3">
+      op25 is still using the radio although no session is being tracked.
+      Press Stop to release it before starting a new session.
+    </Message>
+
     <Message v-if="stale" severity="warn" :closable="false" class="mb-3">
       No response from the server since {{ new Date(lastOk).toLocaleTimeString() }} —
       the state shown may be out of date.
@@ -100,10 +110,10 @@
       <div class="flex gap-2">
         <Button
           v-if="!running" label="Start" icon="pi pi-play" severity="success"
-          :loading="busy" @click="start"
+          :loading="busy" :disabled="radioBusy" @click="start"
         />
         <Button
-          v-else label="Stop" icon="pi pi-stop" severity="danger"
+          v-if="running || radioBusy" label="Stop" icon="pi pi-stop" severity="danger"
           :loading="busy" @click="stop"
         />
       </div>
@@ -138,6 +148,7 @@ interface StatusPayload {
   callCount: number
   startTime: number | null
   lastUpdate: number
+  radioBusy: boolean
 }
 
 interface ApiResponse<T> { success: boolean, data?: T, error?: string }
@@ -169,6 +180,7 @@ const error = ref('')
  * and a frozen call count forever, and the first sign of trouble is Stop
  * failing for no visible reason.
  */
+const radioBusy = ref(false)
 const lastOk = ref<number>(Date.now())
 const now = ref<number>(Date.now())
 let clock: ReturnType<typeof setInterval> | null = null
@@ -248,6 +260,7 @@ async function refresh(): Promise<void> {
     callCount.value = res.data.callCount
     startTime.value = res.data.startTime
     runningConfig.value = res.data.config
+    radioBusy.value = res.data.radioBusy
     lastOk.value = Date.now()
   } catch (err) {
     // A failed poll is usually transient (dev-server reload, brief network

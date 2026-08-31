@@ -95,7 +95,7 @@ mkdir -p "$R/recordings" "$R/results"
 cleanup() {
   echo; echo "stopping..."
   [ -n "${OP25_PID:-}" ] && kill "$OP25_PID" 2>/dev/null
-  pkill -f "gr-op25_repeater/apps/rx.py" 2>/dev/null
+  pkill -f "python3 rx\.py --args" 2>/dev/null
   [ -n "${REC_PID:-}"  ] && kill -INT "$REC_PID" 2>/dev/null
   [ -n "${STT_PID:-}"  ] && kill -INT "$STT_PID" 2>/dev/null
   wait 2>/dev/null
@@ -133,7 +133,7 @@ echo "whitelist: $(wc -l < "$WL") talkgroups -> $R/recordings/"
 [ "$SECS" -eq 0 ] 2>/dev/null && echo "Ctrl-C to stop." || echo "running ${SECS}s."
 
 wait $REC_PID
-kill $OP25_PID 2>/dev/null; pkill -f "gr-op25_repeater/apps/rx.py" 2>/dev/null
+kill $OP25_PID 2>/dev/null; pkill -f "python3 rx\.py --args" 2>/dev/null
 wait 2>/dev/null
 n=$(ls -1 "$R"/recordings/TG*.wav 2>/dev/null | wc -l)
 echo "-> $n call(s) in $R/recordings/"

@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 import { readFileSync, statSync, openSync, readSync, closeSync } from 'node:fs'
 import { join } from 'node:path'
 import { scriptsDir, sdrRoot, listenLogPath } from './paths'
@@ -191,24 +191,94 @@ function signalOrAlreadyGone(target: number, signal: NodeJS.Signals): boolean {
   }
 }
 
+/**
+ * The pattern that actually matches op25's receiver.
+ *
+ * NOT 'gr-op25_repeater/apps/rx.py'. lwin_listen.sh runs it as
+ * `cd <apps dir> && exec python3 rx.py ...`, so the receiver's argv is
+ * `python3 rx.py --args soapy=...` with no path in it, and the `script` wrapper
+ * holds `.../gr-op25_repeater/apps && exec python3 rx.py`. Neither contains
+ * `/apps/rx.py` contiguously, so that pattern matches ZERO processes —
+ * including in lwin_listen.sh's own cleanup trap, where it has silently never
+ * worked. Verified against the real argv of a stranded receiver.
+ */
+const RX_PATTERN = 'python3 rx\\.py --args'
+
+/**
+ * The recorder. It does not hold the HackRF — it listens on a UDP port — but it
+ * belongs to the same session and holds that port, so a stranded one blocks the
+ * next Start just as surely.
+ */
+const RECORDER_PATTERN = 'udp_audio_record\\.py'
+
+/**
+ * Is op25 holding the radio right now, regardless of what we think we started?
+ *
+ * The contended resource is a HackRF, not a pid. `lwin_listen.sh` can die —
+ * externally killed, or SIGKILLed after ignoring SIGINT — while the rx.py it
+ * launched survives, because `script -c` puts that behind a pty in its own
+ * session. In that state the pid-based view says "no session running" and Stop
+ * answers 409 while the radio is still in use and a fresh Start would contend
+ * for it.
+ *
+ * Matched on the full argv path so this cannot collide with, say, an editor
+ * that happens to have rx.py open.
+ */
+export function isRadioBusy(): boolean {
+  try {
+    // -f matches the full argv. Both the receiver and the `script` wrapper
+    // carrying it count as busy.
+    const out = execFileSync('pgrep', ['-f', RX_PATTERN], {
+      encoding: 'utf-8',
+      timeout: 2000,
+    })
+    return out.trim().length > 0
+  } catch {
+    // pgrep exits 1 with no output when nothing matches — that is "not busy",
+    // not a failure.
+    return false
+  }
+}
+
 export async function stopListening(pid: number, procStart: number | null = null): Promise<void> {
+  // pid 0 means "no tracked session, just release the radio". Guard it
+  // explicitly: kill(0, sig) signals OUR OWN process group, and kill(-0) is
+  // the same thing — which would take down this server.
+  const havePid = pid > 0
+
   // Identity, not just liveness. Signalling -pid hits a whole process GROUP, and
   // process.kill only refuses OTHER users' processes — so a recycled pid would
   // put every process the operator owns in range of a SIGKILL.
-  if (!isOurListenSession(pid, procStart)) return
+  if (havePid && !isOurListenSession(pid, procStart)) return
+  if (!havePid && !isRadioBusy()) return
 
   // Negative pid = whole process group. If the group is already gone, fall back
   // to the bare pid in case the child was never a group leader.
-  if (!signalOrAlreadyGone(-pid, 'SIGINT')) {
+  if (havePid && !signalOrAlreadyGone(-pid, 'SIGINT')) {
     signalOrAlreadyGone(pid, 'SIGINT')
   }
 
-  for (let waited = 0; waited < 8000 && isProcessRunning(pid); waited += 200) {
+  // Wait for the RADIO to be released, not merely for bash to exit. rx.py runs
+  // behind a pty in its own session, so it can outlive the process group; the
+  // pty hangup normally takes it down, but "normally" is not a guarantee worth
+  // reporting success on.
+  for (let waited = 0; waited < 8000; waited += 200) {
+    if ((!havePid || !isProcessRunning(pid)) && !isRadioBusy()) break
     await new Promise(r => setTimeout(r, 200))
   }
 
-  if (isProcessRunning(pid)) {
-    // Group-scoped, so rx.py cannot be stranded holding the HackRF.
+  if (havePid && isProcessRunning(pid)) {
     signalOrAlreadyGone(-pid, 'SIGKILL')
+  }
+
+  // Last resort: the script's own cleanup trap does this too, but if the script
+  // never ran its trap (SIGKILLed, or killed from outside) nothing else will.
+  // SIGTERM first so udp_audio_record.py can flush the call in progress.
+  for (const pattern of [RX_PATTERN, RECORDER_PATTERN]) {
+    try {
+      execFileSync('pkill', ['-f', pattern], { timeout: 2000 })
+    } catch {
+      // pkill exits non-zero when it matched nothing, which is the goal state.
+    }
   }
 }

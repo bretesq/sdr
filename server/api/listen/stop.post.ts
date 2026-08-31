@@ -1,4 +1,4 @@
-import { stopListening } from '~/server/utils/processes'
+import { stopListening, isRadioBusy } from '~/server/utils/processes'
 import { sessionStore } from '~/server/utils/session'
 
 export default defineEventHandler(async (event) => {
@@ -14,6 +14,16 @@ export default defineEventHandler(async (event) => {
 
   const session = sessionStore.get()
   if (!session) {
+    // No tracked session, but op25 may still hold the radio — bash can die
+    // while the rx.py behind its pty survives. Answering 409 here would leave
+    // the operator with a busy HackRF and no way to release it from the UI.
+    if (isRadioBusy()) {
+      await stopListening(0)          // no pid to signal; releases the radio
+      return {
+        success: true,
+        data: { message: 'No tracked session; released the radio op25 was holding.' },
+      }
+    }
     setResponseStatus(event, 409)
     return { success: false, error: 'No listening session is running' }
   }
