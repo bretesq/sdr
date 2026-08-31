@@ -92,11 +92,83 @@ CREATE TABLE IF NOT EXISTS calls (
   tgid       INTEGER,
   start      REAL    NOT NULL,      -- unix seconds, local-clock derived
   dur        REAL    NOT NULL DEFAULT 0,
+  ended_at   REAL,                  -- from TDU/TDULC (DUID 0x3 / 0xf)
   transcript TEXT,
-  session_id INTEGER REFERENCES sessions(id)
+  session_id INTEGER REFERENCES sessions(id),
+
+  -- ---- P25 per-call metadata -------------------------------------------
+  -- All nullable: none of it is guaranteed present on a given call, and a
+  -- column that is null 86% of the time must not be modelled as required.
+
+  -- The transmitting radio (24-bit Source ID / SUID). NOT the DUID: that is a
+  -- 4-bit Data Unit ID identifying the FRAME TYPE (HDU 0x0, LDU1 0x5,
+  -- LDU2 0xa, TDU 0x3, TSBK 0x7, TDULC 0xf), which is why p25p1_fdma.cc tests
+  -- `framer->duid == 0x3 || framer->duid == 0xf` to detect voice termination.
+  -- Measured on a real 6-minute capture: 3,765 grants carried srcaddr, but
+  -- 3,223 of those were 0 — only 542 populated, across 101 distinct radios.
+  src_addr   INTEGER,
+
+  -- ESS, read in the clear from the LDU2 frame (p25p1_fdma.cc:348). This is
+  -- how the cipher is identified WITHOUT any decryption.
+  --   algid 0x80 = unencrypted, 0xAA = ADP/RC4, 0x81/0x83 = DES,
+  --   0x84 = AES-256, 0x85 = AES-128
+  algid      INTEGER,
+  keyid      INTEGER,
+  mi         TEXT,                  -- 9-byte message indicator, lowercase hex
+
+  -- Serving site and channel. (rfss, site) joins to sites.
+  rfss       INTEGER,
+  site       INTEGER,
+  freq       INTEGER,               -- voice channel, Hz
+
+  -- System identity. Constant for LWIN (NAC 0x1bd, WACN 0xbee00) but recorded
+  -- per call so a capture from another system is not silently mislabelled.
+  nac        INTEGER,
+  wacn       INTEGER,
+  sysid      INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_calls_start ON calls(start DESC);
 CREATE INDEX IF NOT EXISTS idx_calls_tgid  ON calls(tgid);
+CREATE INDEX IF NOT EXISTS idx_calls_src   ON calls(src_addr) WHERE src_addr IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_calls_algid ON calls(algid);
+CREATE INDEX IF NOT EXISTS idx_calls_site  ON calls(rfss, site);
+
+-- --------------------------------------------------------------- grants
+-- Every grant seen on the control channel, including ones no audio was
+-- recorded for. This is the "widest view" of README section 7: a radio parked
+-- on the control channel sees every call but hears none, while a radio
+-- following calls hears audio but misses grants issued while it is away. A
+-- 6-minute control-channel run logged 3,765 grants across 33 talkgroups
+-- against the 9 seen while recording audio.
+CREATE TABLE IF NOT EXISTS grants (
+  id         INTEGER PRIMARY KEY,
+  ts         REAL    NOT NULL,
+  tgid       INTEGER,
+  src_addr   INTEGER,
+  freq       INTEGER,
+  rfss       INTEGER,
+  site       INTEGER,
+  opcode     INTEGER,               -- TSBK opcode
+  call_id    INTEGER REFERENCES calls(id)   -- set if audio was captured
+);
+CREATE INDEX IF NOT EXISTS idx_grants_ts   ON grants(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_grants_tgid ON grants(tgid);
+CREATE INDEX IF NOT EXISTS idx_grants_src  ON grants(src_addr) WHERE src_addr IS NOT NULL;
+
+-- --------------------------------------------------------- P25 algorithms
+-- So a report can say "ADP" rather than "170", without hardcoding the mapping
+-- in three different places.
+CREATE TABLE IF NOT EXISTS algorithms (
+  algid INTEGER PRIMARY KEY,
+  name  TEXT NOT NULL
+);
+INSERT OR IGNORE INTO algorithms (algid, name) VALUES
+  (128, 'Unencrypted'),        -- 0x80
+  (129, 'DES-OFB'),            -- 0x81
+  (131, 'DES-XL'),             -- 0x83
+  (132, 'AES-256'),            -- 0x84
+  (133, 'AES-128'),            -- 0x85
+  (170, 'ADP / RC4');          -- 0xaa
 
 -- Full-text over transcripts. The web app was doing String.includes across
 -- 3,220 transcripts on every keystroke; this makes it an indexed lookup.
