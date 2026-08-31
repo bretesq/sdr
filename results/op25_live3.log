@@ -1,222 +1,0 @@
-CPU Features: SSE2+ SSE4.1+ AVX+ FMA+
-Using avx for xtrxdsp_iq16_sc32
-Using avx for xtrxdsp_iq8_ic16
-Using avx for xtrxdsp_iq16_ic16i
-Using avx for xtrxdsp_iq8_ic8i
-Using avx for xtrxdsp_sc32i_iq16
-Using avx for xtrxdsp_iq8_sc32
-Using avx for xtrxdsp_iq8_sc32i
-Using avx for xtrxdsp_iq16_sc32i
-Using avx for xtrxdsp_sc32_iq16
-Using avx for xtrxdsp_ic16i_iq16
-gr-osmosdr 0.2.0.0 (0.2.0) gnuradio 3.10.12.0
-built-in source types: file fcd rtl rtl_tcp miri hackrf bladerf rfspace airspy airspyhf soapy redpitaya freesrp xtrx 
-Using HackRF Pro with firmware 2026.01.3
-gain: name: RF range: start 0 stop 14 step 14
-gain: name: IF range: start 0 stop 40 step 8
-gain: name: BB range: start 0 stop 62 step 2
-setting gain RF to 14
-setting gain IF to 40
-setting gain BB to 62
-supported sample rates 8000000-20000000 step 2000000
-demodulator: xlator if_rate=24000, input_rate=8000000, decim=333, if taps=[1605,49], resampled_rate=24024, sps=5
-fll_band_edge_cc :warning: Using legacy FLL loop filter. Consider updating to the improved loop filter, which requires a change in the bandwidth setting. See https://github.com/gnuradio/gnuradio/pull/7890 for more information.
-p25_frame_assembler_impl: do_imbe[0], do_output[0], do_audio_output[0], do_phase2_tdma[1], do_nocrypt[0]
-08/30/26 14:57:16.866123 set control channel=773.056250
-[?1049h[22;0;0t[1;24r(B[m[4l[?7h[?1h=[?1h=[H[2Jmetadata update not enabled
-(B[0;7m                                      OP25                                     (B[m[24d(B[0;7m    (f)req (h)old (s)kip (l)ock (W)list (B)list (q)uit (1-6)plot (,.<>)tune    (B[m[2dNAC 0x0 WACN 0x-1 SYSID 0x-1 0.000000/0.000000 tsbks 0python version detected: 3.14.4 (main, Jun 18 2026, 14:25:02) [GCC 15.2.0]
-[3d[22;66H[2d[22dFrequency 773.056250(0)(0Hz)[23d[2d[2;55H[3d[22;66H[2d[22;29H[23d[2d08/30/26 14:57:17.871943 control channel timeout
-[2;55H[3d[22;66H[2d[22;29H[23d[2d[2;55H[3d[22;66H[2d[22;29H[23d[2d[2;55H[3d[22;66H[2d[22;29H[23d[2d08/30/26 14:57:18.887794 control channel timeout
-[2;55H[3d[22;66H[2d[22;29H[23d[2d[2;55H[3d[22;66H[2d[22;25H1Hz)[23d[2d08/30/26 14:57:19.903701 control channel timeout
-[2;55H[3d[22;66H[2d[22;25H2Hz)[23d[2d[2;55H[3d[22;66H[2d[22;29H[23d[2d08/30/26 14:57:20.919638 control channel timeout
-[2;55H[3d[22;66H[2d[22;29H[23d[2d[2;55H[3d[22;66H[2d[22;25H4Hz)[23d[2d08/30/26 14:57:21.935545 control channel timeout
-[2;55H[3d[22;66H[2d[22;29H[23d[2d[2;55H[3d[22;66H[2d[22;25H5Hz)[23d[2d08/30/26 14:57:22.951624 control channel timeout
-08/30/26 14:57:22.951618 set control channel=769.193750
-[2;55H[3d[22;66H[2d[22;25H6Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H7Hz)[23d[2d08/30/26 14:57:23.967406 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H69.1937[22;29H[23d[2d[2;55H[3d[22;66H[2d[22;29H[23d[2d08/30/26 14:57:24.985714 control channel timeout
-[2;55H[3d[22;66H[2d[22;25H8Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H10Hz)[23d[2d08/30/26 14:57:26.001719 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H1Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H3Hz)[23d[2d08/30/26 14:57:27.017547 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H5Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H7Hz)[23d[2d08/30/26 14:57:28.033398 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H8Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H20Hz)[23d[2d08/30/26 14:57:29.049272 control channel timeout
-08/30/26 14:57:29.049264 set control channel=773.056250
-[2;55H[3d[22;66H[2d[22;26H4Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H7Hz)[23d[2d08/30/26 14:57:30.065321 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H73.0562[22;30H[23d[2d[2;55H[3d[22;66H[2d[22;26H9Hz)[23d[2d08/30/26 14:57:31.073560 control channel timeout
-[2;55H[3d[22;66H[2d[22;25H32Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H3Hz)[23d[2d08/30/26 14:57:32.089263 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H7Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H41Hz)[23d[2d08/30/26 14:57:33.105195 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H6Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H50Hz)[23d[2d08/30/26 14:57:34.121220 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H6Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H9Hz)[23d[2d08/30/26 14:57:35.137058 control channel timeout
-08/30/26 14:57:35.137052 set control channel=769.193750
-[2;55H[3d[22;66H[2d[22;25H66Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H74Hz)[23d[2d08/30/26 14:57:36.152837 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H69.1937[25G82Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H91Hz)[23d[2d08/30/26 14:57:37.171342 control channel timeout
-[2;55H[3d[22;66H[2d[22;25H101Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H12Hz)[23d[2d08/30/26 14:57:38.187544 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H25Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H39Hz)[23d[2d08/30/26 14:57:39.203393 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H54Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H73Hz)[23d[2d08/30/26 14:57:40.219466 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H92Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H212Hz)[23d[2d08/30/26 14:57:41.235461 control channel timeout
-08/30/26 14:57:41.235453 set control channel=773.056250
-[2;55H[3d[22;66H[2d[22;27H9Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H29Hz)[23d[2d08/30/26 14:57:42.251496 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H73.0562[26G31Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H48Hz)[23d[2d08/30/26 14:57:43.270153 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H67Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H85Hz)[23d[2d08/30/26 14:57:44.285896 control channel timeout
-[2;55H[3d[22;66H[2d[22;25H308Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H30Hz)[23d[2d08/30/26 14:57:45.301810 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H58Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H87Hz)[23d[2d08/30/26 14:57:46.317735 control channel timeout
-[2;55H[3d[22;66H[2d[22;25H412Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H39Hz)[23d[2d08/30/26 14:57:47.333430 control channel timeout
-08/30/26 14:57:47.333424 set control channel=769.193750
-[2;55H[3d[22;66H[2d[22;26H61Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H86Hz)[23d[2d08/30/26 14:57:48.349125 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H69.1937[25G516Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H29Hz)[23d[2d08/30/26 14:57:49.357095 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H45Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H8Hz)[23d[2d08/30/26 14:57:50.373020 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H52Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H69Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H87Hz)[23d[2d08/30/26 14:57:51.389118 control channel timeout
-[2;55H[3d[22;66H[2d[22;25H603Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H597Hz)[23d[2d08/30/26 14:57:52.405294 control channel timeout
-[2;55H[3d[22;66H[2d[22;25H602Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H3Hz)[23d[2d08/30/26 14:57:53.421158 control channel timeout
-08/30/26 14:57:53.421154 set control channel=773.056250
-[2;55H[3d[22;66H[2d[22;27H7Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H18Hz)[23d[2d08/30/26 14:57:54.436958 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H73.0562[26G42Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H72Hz)[23d[2d08/30/26 14:57:55.455013 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H92Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H714Hz)[23d[2d08/30/26 14:57:56.471063 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H32Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H46Hz)[23d[2d08/30/26 14:57:57.486894 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H65Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H82Hz)[23d[2d08/30/26 14:57:58.502725 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H99Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H809Hz)[23d[2d08/30/26 14:57:59.518737 control channel timeout
-08/30/26 14:57:59.518730 set control channel=769.193750
-[2;55H[3d[22;66H[2d[22;26H20Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H33Hz)[23d[2d08/30/26 14:58:00.534601 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H69.1937[22;27H1Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H24Hz)[23d[2d08/30/26 14:58:01.552765 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H6Hz)[23d[2d[2;55H[3d[22;66H[2d[22;31H[23d[2d08/30/26 14:58:02.568629 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H8Hz)[23d[2d[2;55H[3d[22;66H[2d[22;31H[23d[2d08/30/26 14:58:03.584395 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H4Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H18Hz)[23d[2d08/30/26 14:58:04.600310 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H06Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H798Hz)[23d[2d08/30/26 14:58:05.616196 control channel timeout
-08/30/26 14:58:05.616190 set control channel=773.056250
-[2;55H[3d[22;66H[2d[22;27H2Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H0Hz)[23d[2d08/30/26 14:58:06.632076 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H73.0562[22;27H4Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H806Hz)[23d[2d08/30/26 14:58:07.641256 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H17Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H25Hz)[23d[2d08/30/26 14:58:08.657212 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H34Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H9Hz)[23d[2d08/30/26 14:58:09.673063 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H41Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H4Hz)[23d[2d08/30/26 14:58:10.688904 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H51Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H7Hz)[23d[2d08/30/26 14:58:11.704734 control channel timeout
-08/30/26 14:58:11.704727 set control channel=769.193750
-[2;55H[3d[22;66H[2d[22;31H[23d[2d[2;55H[3d[22;66H[2d[22;27H8Hz)[23d[2d08/30/26 14:58:12.720718 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H69.1937[26G61Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H55Hz)[23d[2d08/30/26 14:58:13.739989 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H46Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H37Hz)[23d[2d08/30/26 14:58:14.756388 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H28Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H2Hz)[23d[2d08/30/26 14:58:15.773329 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H10Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H796Hz)[23d[2d08/30/26 14:58:16.790007 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H78Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H9Hz)[23d[2d08/30/26 14:58:17.806268 control channel timeout
-08/30/26 14:58:17.806261 set control channel=773.056250
-[2;55H[3d[22;66H[2d[22;27H8Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H88Hz)[23d[2d08/30/26 14:58:18.822518 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H73.0562[22;27H0Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H95Hz)[23d[2d08/30/26 14:58:19.831155 control channel timeout
-[2;55H[3d[22;66H[2d[22;25H805Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H13Hz)[23d[2d08/30/26 14:58:20.848077 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H8Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H26Hz)[23d[2d08/30/26 14:58:21.854577 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H34Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H40Hz)[23d[2d08/30/26 14:58:22.871526 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H8Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H54Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H9Hz)[23d[2d08/30/26 14:58:23.877714 control channel timeout
-08/30/26 14:58:23.877708 set control channel=769.193750
-[2;55H[3d[22;66H[2d[22;26H62Hz)[23d[2d[2;55H[3d[22;66H[2d[22;31H[23d[2d08/30/26 14:58:24.893609 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H69.1937[26G54Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H48Hz)[23d[2d08/30/26 14:58:25.912464 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H6Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H7Hz)[23d[2d08/30/26 14:58:26.928542 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H0Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H33Hz)[23d[2d08/30/26 14:58:27.944291 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H19Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H8Hz)[23d[2d08/30/26 14:58:28.960042 control channel timeout
-[2;55H[3d[22;66H[2d[22;31H[23d[2d[2;55H[3d[22;66H[2d[22;27H9Hz)[23d[2d08/30/26 14:58:29.976016 control channel timeout
-08/30/26 14:58:29.976010 set control channel=773.056250
-[2;55H[3d[22;66H[2d[22;26H03Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H791Hz)[23d[2d08/30/26 14:58:30.991825 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H73.0562[22;27H7Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H812Hz)[23d[2d08/30/26 14:58:32.010450 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H21Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H30Hz)[23d[2d08/30/26 14:58:33.026284 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H1Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H4Hz)[23d[2d08/30/26 14:58:34.042119 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H8Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H46Hz)[23d[2d08/30/26 14:58:35.058122 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H9Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H52Hz)[23d[2d08/30/26 14:58:36.074309 control channel timeout
-08/30/26 14:58:36.074304 set control channel=769.193750
-[2;55H[3d[22;66H[2d[22;27H7Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H62Hz)[23d[2d08/30/26 14:58:37.070137 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H69.1937[26G53Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H47Hz)[23d[2d08/30/26 14:58:38.088238 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H5Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H37Hz)[23d[2d08/30/26 14:58:39.104066 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H4Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H19Hz)[23d[2d08/30/26 14:58:40.119900 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H08Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H7Hz)[23d[2d08/30/26 14:58:41.135834 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H1Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H12Hz)[23d[2d08/30/26 14:58:42.151551 control channel timeout
-08/30/26 14:58:42.151546 set control channel=773.056250
-[2;55H[3d[22;66H[2d[22;26H08Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H783Hz)[23d[2d08/30/26 14:58:43.167300 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H73.0562[22;27H4Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H96Hz)[23d[2d08/30/26 14:58:44.185957 control channel timeout
-[2;55H[3d[22;66H[2d[22;25H808Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H20Hz)[23d[2d08/30/26 14:58:45.201609 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H9Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H36Hz)[23d[2d08/30/26 14:58:46.217284 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H41Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H2Hz)[23d[2d08/30/26 14:58:47.233255 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H9Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H51Hz)[23d[2d08/30/26 14:58:48.249189 control channel timeout
-08/30/26 14:58:48.249183 set control channel=769.193750
-[2;55H[3d[22;66H[2d[22;27H0Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H6Hz)[23d[2d08/30/26 14:58:49.265189 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H69.1937[26G61Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H51Hz)[23d[2d08/30/26 14:58:50.276022 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H43Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H37Hz)[23d[2d08/30/26 14:58:51.291921 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H07Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H781Hz)[23d[2d08/30/26 14:58:52.307969 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H65Hz)[23d[2d[2;55H[3d[22;66H[2d[22;31H[23d[2d08/30/26 14:58:53.323790 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H8Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H5Hz)[23d[2d08/30/26 14:58:54.339547 control channel timeout
-08/30/26 14:58:54.339541 set control channel=773.056250
-[2;55H[3d[22;66H[2d[22;26H59Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H43Hz)[23d[2d08/30/26 14:58:55.355497 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H73.0562[26G37Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H53Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H68Hz)[23d[2d08/30/26 14:58:56.373829 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H85Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H98Hz)[23d[2d08/30/26 14:58:57.389784 control channel timeout
-[2;55H[3d[22;66H[2d[22;25H811Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H9Hz)[23d[2d08/30/26 14:58:58.405903 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H28Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H35Hz)[23d[2d08/30/26 14:58:59.421939 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H8Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H43Hz)[23d[2d08/30/26 14:59:00.438123 control channel timeout
-08/30/26 14:59:00.438118 set control channel=769.193750
-[2;55H[3d[22;66H[2d[22;27H9Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H54Hz)[23d[2d08/30/26 14:59:01.453833 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H69.1937[26G48Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H2Hz)[23d[2d08/30/26 14:59:02.462530 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H26Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H10Hz)[23d[2d08/30/26 14:59:03.478429 control channel timeout
-[2;55H[3d[22;66H[2d[22;25H781Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H63Hz)[23d[2d08/30/26 14:59:04.494358 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H55Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H35Hz)[23d[2d08/30/26 14:59:05.510181 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H28Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H3Hz)[23d[2d08/30/26 14:59:06.525906 control channel timeout
-08/30/26 14:59:06.525900 set control channel=773.056250
-[2;55H[3d[22;66H[2d[22;26H15Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H06Hz)[23d[2d08/30/26 14:59:07.541519 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H73.0562[26G15Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H36Hz)[23d[2d08/30/26 14:59:08.559477 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H55Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H67Hz)[23d[2d08/30/26 14:59:09.575473 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H75Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H92Hz)[23d[2d08/30/26 14:59:10.591471 control channel timeout
-[2;55H[3d[22;66H[2d[22;25H804Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H3Hz)[23d[2d08/30/26 14:59:11.607354 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H9Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H20Hz)[23d[2d08/30/26 14:59:12.623353 control channel timeout
-08/30/26 14:59:12.623348 set control channel=769.193750
-[2;55H[3d[22;66H[2d[22;27H8Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H36Hz)[23d[2d08/30/26 14:59:13.639449 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H69.1937[26G40Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H32Hz)[23d[2d08/30/26 14:59:14.658482 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H26Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H11Hz)[23d[2d08/30/26 14:59:15.674489 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H02Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H791Hz)[23d[2d08/30/26 14:59:16.690432 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H77Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H5Hz)[23d[2d08/30/26 14:59:17.706061 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H68Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H71Hz)[23d[2d08/30/26 14:59:18.721716 control channel timeout
-08/30/26 14:59:18.721710 set control channel=773.056250
-[2;55H[3d[22;66H[2d[22;26H68Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H0Hz)[23d[2d08/30/26 14:59:19.737844 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H73.0562[22;27H5Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H85Hz)[23d[2d08/30/26 14:59:20.756324 control channel timeout
-[2;55H[3d[22;66H[2d[22;25H801Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H16Hz)[23d[2d08/30/26 14:59:21.762311 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H29Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H40Hz)[23d[2d08/30/26 14:59:22.778211 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H51Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H60Hz)[23d[2d08/30/26 14:59:23.794305 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H4Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H59Hz)[23d[2d08/30/26 14:59:24.800270 control channel timeout
-08/30/26 14:59:24.800264 set control channel=769.193750
-[2;55H[3d[22;66H[2d[22;26H61Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H6Hz)[23d[2d08/30/26 14:59:25.816272 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H69.1937[22;31H[23d[2d[2;55H[3d[22;66H[2d[22;26H55Hz)[23d[2d08/30/26 14:59:26.825093 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H42Hz)[23d[2d[2;55H[3d[22;66H[2d[22;31H[23d[2d08/30/26 14:59:27.841077 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H38Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H2Hz)[23d[2d08/30/26 14:59:28.856858 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H28Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H4Hz)[23d[2d08/30/26 14:59:29.872907 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H19Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H3Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H04Hz)[23d[2d08/30/26 14:59:30.888784 control channel timeout
-08/30/26 14:59:30.888779 set control channel=773.056250
-[2;55H[3d[22;66H[2d[22;25H796Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H7Hz)[23d[2d08/30/26 14:59:31.904637 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H73.0562[25G809Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H19Hz)[23d[2d08/30/26 14:59:32.922899 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H29Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H36Hz)[23d[2d08/30/26 14:59:33.938636 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H41Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H4Hz)[23d[2d08/30/26 14:59:34.954444 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H8Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H56Hz)[23d[2d08/30/26 14:59:35.970415 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H9Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H62Hz)[23d[2d08/30/26 14:59:36.986286 control channel timeout
-08/30/26 14:59:36.986280 set control channel=769.193750
-[2;55H[3d[22;66H[2d[22;27H5Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H9Hz)[23d[2d08/30/26 14:59:38.002202 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H69.1937[22;27H1Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H54Hz)[23d[2d08/30/26 14:59:39.020901 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H8Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H1Hz)[23d[2d08/30/26 14:59:40.036898 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H43Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H25Hz)[23d[2d08/30/26 14:59:41.052839 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H15Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H02Hz)[23d[2d08/30/26 14:59:42.068707 control channel timeout
-[2;55H[3d[22;66H[2d[22;25H780Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H47Hz)[23d[2d08/30/26 14:59:43.084805 control channel timeout
-08/30/26 14:59:43.084799 set control channel=773.056250
-[2;55H[3d[22;66H[2d[22;26H09Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H665Hz)[23d[2d08/30/26 14:59:44.100672 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H73.0562[26G26Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H9Hz)[23d[2d08/30/26 14:59:45.119131 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H1Hz)[23d[2d[2;55H[3d[22;66H[2d[22;31H[23d[2d08/30/26 14:59:46.114771 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H34Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H63Hz)[23d[2d08/30/26 14:59:47.130730 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H90Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H711Hz)[23d[2d08/30/26 14:59:48.149417 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H31Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H53Hz)[23d[2d08/30/26 14:59:49.165540 control channel timeout
-08/30/26 14:59:49.165535 set control channel=769.193750
-[2;55H[3d[22;66H[2d[22;26H71Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H90Hz)[23d[2d08/30/26 14:59:50.181606 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H69.1937[25G805Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H0Hz)[23d[2d08/30/26 14:59:51.189626 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H3Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H10Hz)[23d[2d08/30/26 14:59:52.206103 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H05Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H797Hz)[23d[2d08/30/26 14:59:53.222453 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H5Hz)[23d[2d[2;55H[3d[22;66H[2d[22;25H801Hz)[23d[2d08/30/26 14:59:54.238896 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H5Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H6Hz)[23d[2d08/30/26 14:59:55.254631 control channel timeout
-08/30/26 14:59:55.254624 set control channel=773.056250
-[2;55H[3d[22;66H[2d[22;26H14Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H3Hz)[23d[2d08/30/26 14:59:56.270511 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H73.0562[26G07Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H20Hz)[23d[2d08/30/26 14:59:57.290727 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H7Hz)[23d[2d[2;55H[3d[22;66H[2d[22;31H[23d[2d08/30/26 14:59:58.306439 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H8Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H37Hz)[23d[2d08/30/26 14:59:59.322422 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H42Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H51Hz)[23d[2d08/30/26 15:00:00.338294 control channel timeout
-[2;55H[3d[22;66H[2d[22;27H7Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H60Hz)[23d[2d08/30/26 15:00:01.354098 control channel timeout
-08/30/26 15:00:01.354091 set control channel=769.193750
-[2;55H[3d[22;66H[2d[22;27H4Hz)[23d[2d[2;55H[3d[22;66H[2d[22;27H7Hz)[23d[2d08/30/26 15:00:02.369908 control channel timeout
-[2;55H[3d[22;66H[2d[22;12H69.1937[22;27H9Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H54Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H45Hz)[23d[2d08/30/26 15:00:03.378378 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H31Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H24Hz)[23d[2d08/30/26 15:00:04.394164 control channel timeout
-[2;55H[3d[22;66H[2d[22;26H10Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H01Hz)[23d[2d08/30/26 15:00:05.410049 control channel timeout
-[2;55H[3d[22;66H[2d[22;25H783Hz)[23d[2d[2;55H[3d[22;66H[2d[22;26H69Hz)[23d[2d08/30/26 15:00:06.425932 control channel timeout
-[24;1H[?1049l[23;0;0t[?1l>[?1h=

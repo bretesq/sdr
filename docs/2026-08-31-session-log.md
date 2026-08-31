@@ -127,18 +127,23 @@ can be tested hold up.
 
 ### What was found
 
-The antenna is **resonant at 375 MHz, not 773**. Five-band sweep on dongle 1:
+The antenna is **resonant at 375 MHz, not 773**. This rests on geometry alone.
+An earlier band sweep appeared to confirm it and did not — see the spur comb
+below; its UHF figures were the dongle's own 460.8 MHz spur. Re-measured in
+spur-free windows:
 
 | band | excess over floor |
 |---|---|
-| FM 88–108 | +22.3 dB |
-| VHF / NOAA 155–165 | +18.1 dB |
-| **UHF business 460–470** | **+24.2 dB** ← best band |
-| LWIN 700 control | +5.8 dB |
-| LWIN 800 voice | +8.3 dB |
+| FM 88-108 | +18.4 dB |
+| UHF 465-473 (clean) | +12.0 dB |
+| LWIN 800 voice | +9.0 dB |
+| UHF 421-429 (clean) | +8.2 dB |
+| LWIN 700 control | +6.0 dB |
+| VHF 155-162 | +4.3 dB |
 
-It is not deaf at UHF — 460 MHz is its strongest band of the five. The length
-explains it:
+Excess-over-floor cannot measure antenna response across bands anyway — FM
+broadcast is 100 kW nearby while LWIN is a distant simulcast, so this mostly
+reflects transmitter power and distance. The length is the actual argument:
 
 | | quarter wave |
 |---|---|
