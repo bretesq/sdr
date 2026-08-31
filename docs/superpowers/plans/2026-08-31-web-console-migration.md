@@ -599,7 +599,6 @@ Timestamps in filenames are **local wall-clock** from `udp_audio_record.py`, and
 
 ```typescript
 import { readFileSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
 
 /**
  * Encryption label as it appears in the reference DB and calls.json.
@@ -777,7 +776,8 @@ Expected: FAIL — `mergeCalls` is not exported.
 - [ ] **Step 3: Implement `mergeCalls` in `server/utils/files.ts`**
 
 ```typescript
-type CallRecord = Partial<Recording> & { file?: string }
+// Partial<Recording> already yields `file?: string` — no intersection needed.
+type CallRecord = Partial<Recording>
 
 /**
  * Merge metadata from calls.json into scanned recordings.

@@ -1,3 +1,26 @@
 {
-  "extends": "./.nuxt/tsconfig.json"
+  "extends": "./.nuxt/tsconfig.json",
+  // .nuxt/tsconfig.json includes '../**/*', which sweeps in the whole repo.
+  // That repo contains 71 CMake-generated *.ts files (compiler_depend.ts —
+  // "timestamp", not TypeScript) under src/ and tools/, plus the 221 MB
+  // recordings tree. Exclude everything that is not the web app.
+  //
+  // This mirrors nuxt.config.ts's `ignore` list, which covers the dev-server
+  // file watcher but has no effect on the typechecker's include scope.
+  "exclude": [
+    "dist",
+    ".data",
+    ".output",
+    "node_modules",
+    "src",
+    "tools",
+    "recordings",
+    "results",
+    "captures",
+    "models",
+    "reference",
+    "web",
+    "adp_brute",
+    "docs"
+  ]
 }
