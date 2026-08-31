@@ -314,6 +314,25 @@ database (17086).
 
 ---
 
+## 7.4 Local patch to op25's `tk_p25.py` (2026-08-31)
+
+`tune_voice()` ignored the return value of `frequency_set`. Under `multi_rx.py`
+that is `change_freq`, which returns `False` when the granted frequency lies
+outside the device's usable window — but the talkgroup was claimed anyway at
+tk_p25.py:2345, so the receiver recorded silence and stayed occupied for the
+whole call, and no other receiver could take it.
+
+This matters because site 13's voice is split across 769–772 and 851–860 MHz,
+87 MHz apart, which no HackRF sample rate spans (see
+`docs/2026-08-31-wideband-multichannel.md`). Voice receivers therefore sit on
+two devices covering different bands, and ~73% of grants land on the 800 MHz
+leg — so without the fix most cross-band grants are lost calls.
+
+Patched to return before the claim, leaving the grant for a receiver that can
+reach it. **`src/` is gitignored, so this change is not tracked by git.** The
+patch and re-application instructions are in `patches/`; re-apply after any
+op25 re-clone or reset.
+
 ## 8. Limitations
 
 - Single-site, single-location, short observation windows (4–8 minutes each).
