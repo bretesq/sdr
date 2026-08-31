@@ -37,6 +37,15 @@ export default defineNuxtConfig({
       //
       // Prefer naming hosts over `true`, which disables the check entirely for
       // any host that can be made to resolve to this box.
+      //
+      // SCOPE — this is a DEV-SERVER setting only. Nitro's production server
+      // (`node .output/server/index.mjs`) performs no Host check at all, so in
+      // production this key is inert and every hostname reaches the app. Do not
+      // treat it as a security control: it exists so that reaching the dev
+      // server by name works, and the real protection against a hostile page
+      // driving this console is the same-origin guard in server/utils/guards.ts,
+      // which applies in both dev and production. Vite's own check would not
+      // have helped anyway — it passes any bare IPv4 literal unconditionally.
       allowedHosts: (process.env.NUXT_ALLOWED_HOSTS ?? '')
         .split(',')
         .map(h => h.trim())

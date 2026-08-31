@@ -440,11 +440,13 @@ pnpm install
 > aborts every script run with `ERR_PNPM_IGNORED_BUILDS` for esbuild, whose
 > platform binaries are in fact installed. `pnpm install` itself is fine.
 >
-> Reaching the dev server **by hostname** needs that host in
-> `vite.server.allowedHosts` (`nuxt.config.ts`) — Vite refuses unrecognised
-> Host headers as a DNS-rebinding guard, and bare IPs are exempt but names are
-> not. `monarch.esquivel.io` and `.esquivel.io` are allowed; add others there.
-> Prefer naming hosts over `allowedHosts: true`, which disables the check.
+> Reaching the **dev server** by hostname needs that host in
+> `NUXT_ALLOWED_HOSTS` (see `.env.example`) — Vite refuses unrecognised Host
+> headers as a DNS-rebinding guard, and bare IPs are exempt but names are not.
+> This is **dev-only**: Nitro's production server performs no Host check, so the
+> variable is inert under `node .output/server/index.mjs`. It is a convenience,
+> not a security control — protection against a hostile page driving the console
+> is the same-origin guard in `server/utils/guards.ts`, which applies to both.
 
 Open **http://10.56.1.77:3000/** (or **http://127.0.0.1:3000/**) — three panels:
 
