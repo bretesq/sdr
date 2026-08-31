@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """Tests for the op25 stderr log parser.
 
-Every fixture is copied VERBATIM from a real op25 log in results/, or built from
-the exact format string in op25's source when we have no capture yet
-(tk_p25.py:2623). Inventing log lines is how the FREQPAT bug survived: op25 has
-two trunking modules whose `voice update` lines differ in three ways, and the
-regex only ever matched one of them.
+Fixture line SHAPES are copied verbatim from a real op25 log in results/, or
+built from the exact format string in op25's source where we have no capture
+yet (tk_p25.py:2623). Guessing at the shape is how the FREQPAT bug survived:
+op25 has two trunking modules whose `voice update` lines differ in three ways,
+and the regex only ever matched one of them.
+
+Radio unit IDs (`rid`, `srcaddr`) are the one thing NOT copied: they are real
+24-bit identifiers of real radios, this is a public repo, and they have leaked
+once already — it cost a history rewrite plus a repo recreate to purge (see
+.gitignore:31 and the privacy note in README.md). Those values are invented
+here. The parsers do not care what the number is.
 """
 from __future__ import annotations
 
@@ -37,16 +43,20 @@ ESS_RX0 = (
 RFSS = ('08/31/26 13:38:30.000000 rfss_sts_bcst: '
         'syid: 1bd rfid: 1 stid: 13 ch1: 16e8(773.056250)\n')
 
+# NO REAL UNIT IDs: rid() carries a real 24-bit radio unit ID and this is a
+# public repo (see .gitignore:31). The values below are invented; only the line
+# SHAPE comes from op25.
+#
 # Built from the exact format string at tk_p25.py:2623 --
 #   "%s [%d] voice update:  tg(%d), rid(%d), freq(%f), slot(%s), prio(%d)\n"
 # with freq passed as freq/1e6 (so MHz, not Hz) and get_slot(None) == '-'.
 MULTI_RX2 = (
     '08/31/26 14:15:04.747731 [2] voice update:  '
-    'tg(6848), rid(2601234), freq(769.593750), slot(-), prio(3)\n'
+    'tg(6848), rid(1234567), freq(769.593750), slot(-), prio(3)\n'
 )
 MULTI_RX3 = (
     '08/31/26 14:15:05.100000 [3] voice update:  '
-    'tg(17165), rid(9999999), freq(772.681250), slot(-), prio(2)\n'
+    'tg(17165), rid(7654321), freq(772.681250), slot(-), prio(2)\n'
 )
 ESS_RX3 = (
     '08/31/26 14:15:05.200000 [3] NAC 0x1bd LDU2: '
@@ -106,7 +116,7 @@ class TestMultiRxFormat(unittest.TestCase):
         self.assertEqual(tail_over(MULTI_RX2).metadata()['freq'], 769593750)
 
     def test_rid_becomes_src_addr(self):
-        self.assertEqual(tail_over(MULTI_RX2).metadata()['src_addr'], 2601234)
+        self.assertEqual(tail_over(MULTI_RX2).metadata()['src_addr'], 1234567)
 
     def test_talkgroup_is_read_despite_the_rid_field(self):
         self.assertEqual(tail_over(MULTI_RX2).current(), 6848)

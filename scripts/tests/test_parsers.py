@@ -155,7 +155,12 @@ class TestGrantLineParsing(unittest.TestCase):
     705 grants in a real multi_rx log — an 87% silent loss of the census.
     """
 
-    # Verbatim from results/lwin_cdr.log (rx.py -> trunking.py).
+    # NO REAL UNIT IDs IN FIXTURES. srcaddr / rid carry real 24-bit radio unit
+    # IDs, this is a public repo, and they have leaked once already — it needed
+    # a history rewrite plus a repo recreate to purge (see .gitignore:31 and the
+    # privacy note in README.md). Line SHAPES are copied from real logs;
+    # every srcaddr and rid value below is invented. The parsers do not care
+    # what the number is.
     RX_PY = '08/30/26 15:44:45.212814 set tgid=17169, srcaddr=1234567'
     # Verbatim from results/op25_multi.log (multi_rx.py -> tk_p25.py). The
     # prefix is the SYSNAME, not a receiver id: the system emits one of these
@@ -163,7 +168,7 @@ class TestGrantLineParsing(unittest.TestCase):
     MULTI_NONE = ('08/31/26 15:06:59.070324 [LWIN-BR] '
                   'set tgid=17088, srcaddr=None, svcopts=None')
     MULTI_NUM = ('08/31/26 15:06:59.453039 [LWIN-BR] '
-                 'set tgid=17063, srcaddr=2601234, svcopts=None')
+                 'set tgid=17063, srcaddr=7654321, svcopts=None')
 
     @classmethod
     def setUpClass(cls):
@@ -178,7 +183,7 @@ class TestGrantLineParsing(unittest.TestCase):
     def test_matches_the_multi_rx_form_with_a_numeric_srcaddr(self):
         m = self.M.GRANT.search(self.MULTI_NUM)
         self.assertIsNotNone(m)
-        self.assertEqual((m.group(2), m.group(3)), ('17063', '2601234'))
+        self.assertEqual((m.group(2), m.group(3)), ('17063', '7654321'))
 
     def test_matches_the_multi_rx_form_with_srcaddr_None(self):
         """The regression: this line used not to match at all."""
