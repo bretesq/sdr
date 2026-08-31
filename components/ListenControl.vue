@@ -244,7 +244,9 @@ const census = ref(true)
 const essImplied = computed(() => mode.value === 'multi' && census.value)
 
 const modeHint = computed(() =>
-  mode.value === 'multi'
+  running.value
+    ? 'Mode is fixed for the life of a session; stop to change it.'
+    : mode.value === 'multi'
     ? 'Both HackRFs, one receiver pinned to the control channel. Records several '
       + 'simultaneous calls and a complete grant census in one run.'
     : 'One HackRF. Leaves the control channel to hear each call, so simultaneous '
@@ -300,6 +302,15 @@ const configSummary = computed(() => {
   const c = runningConfig.value
   if (!c) return ''
   const bits: string[] = []
+  // Mode first: it changes what every other field means, and a reloaded page
+  // has no other way to tell a 9-receiver two-radio session from a 1-receiver
+  // one.
+  if (c.mode === 'multi') {
+    const rx = [c.nVoice700, c.nVoice800].filter(n => n !== undefined).join('+')
+    bits.push(`2 radios${rx ? ` (1cc+${rx} voice)` : ''}`)
+    if (c.legs) bits.push(`${c.legs} MHz`)
+    if (c.census) bits.push('census')
+  }
   if (c.preset) bits.push(c.preset)
   if (c.talkgroups) bits.push(`tg ${c.talkgroups}`)
   if (c.tag) bits.push(`tag "${c.tag}"`)
@@ -358,6 +369,17 @@ async function refresh(): Promise<void> {
     callCount.value = res.data.callCount
     startTime.value = res.data.startTime
     runningConfig.value = res.data.config
+    // Adopt the RUNNING session's mode. The toggle is :disabled while running,
+    // so without this a page reloaded mid-session (or a second browser opening
+    // the console) sits on 'single' and modeHint reads "One HackRF... simultaneous
+    // calls are missed" while a two-radio, nine-receiver session with a full
+    // census is what is actually on the air.
+    if (res.data.running && res.data.config?.mode) {
+      mode.value = res.data.config.mode
+      if (res.data.config.nVoice700 !== undefined) nVoice700.value = res.data.config.nVoice700
+      if (res.data.config.nVoice800 !== undefined) nVoice800.value = res.data.config.nVoice800
+      if (res.data.config.census !== undefined) census.value = res.data.config.census
+    }
     radioBusy.value = res.data.radioBusy
     lastOk.value = Date.now()
   } catch (err) {

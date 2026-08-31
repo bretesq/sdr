@@ -1,0 +1,154 @@
+diff --git a/op25/gr-op25_repeater/apps/tk_p25.py b/op25/gr-op25_repeater/apps/tk_p25.py
+index 8da8d4c..7368008 100644
+--- a/op25/gr-op25_repeater/apps/tk_p25.py
++++ b/op25/gr-op25_repeater/apps/tk_p25.py
+@@ -2203,6 +2203,21 @@ class p25_receiver(object):
+         self.system = system
+         self.meta_q = meta_q
+         self.meta_stream = from_dict(self.config, 'meta_stream_name', "")
++        # Frequencies this receiver's DEVICE can actually reach, in Hz.
++        #
++        # find_talkgroup() below picks by priority and claim status alone, with
++        # no idea that a non-tunable device only covers
++        # centre +/- ((rate * usable_bw)/2 - if_rate/2). With voice receivers on
++        # two devices covering bands 87 MHz apart, receivers on one band kept
++        # claiming grants on the other, failing to tune, releasing, and being
++        # unavailable when a reachable grant arrived: measured 6 of 12 grants
++        # captured on the narrow band against ~100% on the wide one, from 1,300
++        # tune attempts that produced 6 calls.
++        #
++        # Both default to 0, which disables the check and restores the original
++        # behaviour, so this is inert for any config that does not set them.
++        self.freq_min = int(from_dict(self.config, 'freq_min', 0))
++        self.freq_max = int(from_dict(self.config, 'freq_max', 0))
+         self.tuned_frequency = freq
+         self.tuner_idle = False
+         self.talkgroups = self.system.get_talkgroups()
+@@ -2298,8 +2313,17 @@ class p25_receiver(object):
+         self.current_slot = None
+ 
+     def tune_voice(self, freq, tgid, slot):
++        """Returns True if this receiver is now on freq for tgid, else False.
++
++        Callers MUST check: scan_for_talkgroups used to log a "voice update"
++        line, call log_call() and call meta_update() unconditionally around
++        this, so a failed tune produced a logged call the receiver never took —
++        and udp_audio_record.py latched that tgid/freq for the receiver id,
++        mislabelling any audio still arriving on its UDP port from the previous
++        frequency.
++        """
+         if freq is None or int(freq) == 0:
+-            return
++            return False
+ 
+         self.tune_ts = time.time()                                                          # save timestamp at start of tuning
+ 
+@@ -2319,7 +2343,7 @@ class p25_receiver(object):
+             nac, wacn, sysid, valid = self.system.get_tdma_params()
+             if slot is not None and not valid:                   # Can only tune tdma voice channel if nac/wacn/sysid are known
+                 sys.stderr.write("%s [%d] cannot tune voice channel; wacn/sysid not yet known\n" % (log_ts.get(), self.msgq_id))
+-                return
++                return False
+ 
+             tune_params = {'tuner':   self.msgq_id,
+                            'sigtype': "P25",
+@@ -2332,7 +2356,25 @@ class p25_receiver(object):
+                            'nac':     nac,
+                            'wacn':    wacn,
+                            'sysid':   sysid}
+-            self.frequency_set(tune_params)
++            if self.frequency_set(tune_params) is False:
++                # This receiver's device window does not reach freq. multi_rx's
++                # change_freq already logged "Unable to tune".
++                #
++                # Return BEFORE the talkgroup is claimed at the end of this
++                # method, so the grant stays unclaimed and a receiver on the
++                # other band can take it. Previously the claim happened
++                # regardless: the receiver recorded silence and stayed occupied
++                # for the whole call, which is worse than not covering the band
++                # at all. With voice receivers on two bands 87 MHz apart, that
++                # fired on most grants.
++                #
++                # `is False` rather than a truth test: only multi_rx.change_freq
++                # returns a bool. A frequency_set that returns None must keep
++                # the old behaviour.
++                if self.debug > 0:
++                    sys.stderr.write("%s [%d] cannot reach %f for tg(%d); leaving it unclaimed\n"
++                                     % (log_ts.get(), self.msgq_id, (get_frequency(freq)/1e6), tgid))
++                return False
+             self.tuned_frequency = freq
+ 
+         self.vc_retries = 0
+@@ -2343,6 +2385,7 @@ class p25_receiver(object):
+             self.hold_until = time.time()
+         with self.system.talkgroups_mutex:
+             self.talkgroups[tgid]['receiver'] = self
++        return True
+ 
+     def ui_command(self, cmd, data, curr_time):
+         if self.debug > 10:
+@@ -2573,13 +2616,28 @@ class p25_receiver(object):
+             if self.debug > 1:
+                 sys.stderr.write("%s [%d] removing expired skiplist: tg(%d)\n" % (log_ts.get(), self.msgq_id, tg));
+ 
++    def can_reach(self, tgid):
++        """Is this talkgroup's current voice frequency inside our device window?
++
++        True when the range is unconfigured (freq_min/freq_max both 0), or when
++        the talkgroup has no frequency yet -- in that case the old behaviour of
++        letting tune_voice find out is correct, and tune_voice now releases the
++        claim rather than recording silence.
++        """
++        if not self.freq_min or not self.freq_max:
++            return True
++        f = self.talkgroups[tgid].get('frequency')
++        if not f:
++            return True
++        return self.freq_min <= get_frequency(f) <= self.freq_max
++
+     def find_talkgroup(self, start_time, tgid=None, hold=False):
+         tgt_tgid = None
+         self.skiplist_update(start_time)
+         self.blacklist_update(start_time)
+ 
+         with self.system.talkgroups_mutex:
+-            if (tgid is not None) and (tgid in self.talkgroups) and ((self.talkgroups[tgid]['receiver'] is None) or (self.talkgroups[tgid]['receiver'] == self)):
++            if (tgid is not None) and (tgid in self.talkgroups) and ((self.talkgroups[tgid]['receiver'] is None) or (self.talkgroups[tgid]['receiver'] == self)) and self.can_reach(tgid):
+                 tgt_tgid = tgid
+ 
+             for active_tgid in self.talkgroups:
+@@ -2593,6 +2651,8 @@ class p25_receiver(object):
+                     continue
+                 if self.whitelist and active_tgid not in self.whitelist:
+                     continue
++                if not self.can_reach(active_tgid):
++                    continue
+                 if (self.crypt_behavior > 1) and ((self.talkgroups[active_tgid]['svcopts'] & 0x40) == 0x40):
+                     continue
+                 if tgt_tgid is None:
+@@ -2618,16 +2678,23 @@ class p25_receiver(object):
+         if tgid is None or freq is None:                                                        # no call
+             return
+ 
++        # The "voice update" line, log_call() and meta_update() are all
++        # deliberately AFTER a successful tune_voice. They used to bracket it
++        # unconditionally, so an unreachable grant logged a call this receiver
++        # never took and left udp_audio_record.py latched on the wrong
++        # tgid/freq for this receiver id.
+         if self.current_tgid is None:
++            if not self.tune_voice(freq, tgid, slot):
++                return
+             if self.debug > 0:
+                 sys.stderr.write("%s [%d] voice update:  tg(%d), rid(%d), freq(%f), slot(%s), prio(%d)\n" % (log_ts.get(), self.msgq_id, tgid, self.talkgroups[tgid]['srcaddr'], (freq/1e6), get_slot(slot), self.talkgroups[tgid]['prio']))
+-            self.tune_voice(freq, tgid, slot)
+             self.log_call(freq, slot, self.talkgroups[tgid]['prio'], tgid, self.talkgroups[tgid]['srcaddr'])
+         else:
+             if self.debug > 0:
+                 sys.stderr.write("%s [%d] voice preempt: tg(%d), rid(%d), freq(%f), slot(%s), prio(%d)\n" % (log_ts.get(), self.msgq_id, tgid, self.talkgroups[tgid]['srcaddr'], (freq/1e6), get_slot(slot), self.talkgroups[tgid]['prio']))
+             self.expire_talkgroup(update_meta=False, reason="preempt")
+-            self.tune_voice(freq, tgid, slot)
++            if not self.tune_voice(freq, tgid, slot):
++                return
+             self.log_call(freq, slot, self.talkgroups[tgid]['prio'], tgid, self.talkgroups[tgid]['srcaddr'])
+ 
+         meta_update(self.meta_q, tgid=tgid, tag=self.talkgroups[tgid]['tag'], rid=self.talkgroups[tgid]['srcaddr'], rtag=self.system.get_rid_tag(self.talkgroups[tgid]['srcaddr']), msgq_id=self.msgq_id, debug=self.debug)

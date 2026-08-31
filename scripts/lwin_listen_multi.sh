@@ -105,12 +105,12 @@ check_patch() {   # <marker> <patch name> <why>
 }
 PATCHES_OK=1
 check_patch "leaving it unclaimed" \
-  "op25-tk_p25-release-unreachable-grant.patch" \
-  "Without it a receiver handed a grant on the other band claims the call and records silence." \
+  "op25-tk_p25-multiband-receiver-pool.patch" \
+  "Without it a receiver handed a grant on the other band claims the call, records silence, and blocks anyone else from taking it." \
   || PATCHES_OK=0
 check_patch "def can_reach" \
-  "op25-tk_p25-window-aware-find-talkgroup.patch" \
-  "Without it receivers keep claiming grants on the band they cannot reach; measured 6 of 12 grants captured on the 700 leg." \
+  "op25-tk_p25-multiband-receiver-pool.patch" \
+  "Without it receivers keep claiming grants on the band they cannot reach: measured 1,300 tune attempts for 6 calls on the 700 leg." \
   || PATCHES_OK=0
 [ "$PATCHES_OK" -eq 1 ] || exit 1
 
@@ -155,7 +155,20 @@ cleanup() {
   wait 2>/dev/null
   if [ "$CENSUS" -eq 1 ]; then
     echo
-    python3 "$R/scripts/import_grants.py" "$LOG" || \
+    # setsid puts the import in its OWN process group.
+    #
+    # The console's Stop path (server/utils/processes.ts stopListening) SIGINTs
+    # this script's whole group, then waits for the radio to be released, then
+    # SIGKILLs the group after 8 s. By the time we get here we have already
+    # pkill-ed multi_rx, so the radio reads as free — but bash is still inside
+    # this trap, so the wait loop never breaks and burns the full budget before
+    # SIGKILLing the group, which would take the import with it.
+    #
+    # Measured, the import is ~0.12 s for a 26,738-line log (the link query
+    # uses idx_calls_tgid), so today it finishes ~67x inside the budget and
+    # this is insurance rather than a live bug. It stops being insurance on a
+    # long unbounded session, which is the console's default (RUN=99999).
+    setsid python3 "$R/scripts/import_grants.py" "$LOG" || \
       echo "  (grant import failed; the log is still at $LOG)"
   fi
   n=$(ls -1 "$R"/recordings/TG*.wav 2>/dev/null | wc -l)
