@@ -34,9 +34,14 @@ capture saw 33 talkgroups against the 9 seen while recording audio.
 
 USE
 ---
-Run it once now for a baseline, swap the good antenna onto the dongle, run it
-again. If the second number clears about +15 dB, the dedicated control-channel
-receiver is viable and section 7's conclusion should be revised.
+Note the Skyfall has ONE BNC input split internally to both receivers, so there
+is no per-dongle antenna to swap: both always see the same feed, minus the
+split. That split costs 3.5 dB if reactive and 6 dB if resistive, which is
+loss no measurement here has accounted for.
+
+Run it once now for a baseline, then move the HackRF's antenna to the Skyfall's
+BNC and run it again. If the second number clears about +15 dB, the dedicated
+control-channel receiver is viable and section 7's conclusion should be revised.
 
     python3 scripts/cc_snr.py                  # default: dongle 0 and 1
     python3 scripts/cc_snr.py -d 1 -i 30

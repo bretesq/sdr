@@ -348,11 +348,46 @@ variable section 7 named and never changed — the antenna. The HackRF reads
 +28.3 dB on this same channel, and a 26 dB gap between an R820T2 and a HackRF
 is not a front-end difference.
 
-Swap the good antenna onto a dongle and re-run `scripts/cc_snr.py`, then retry
-the decode with `--tuner-bw 300000`. If it clears ~15 dB the dedicated receiver
-is viable and this section should be rewritten — the prize is measured directly
-above: 33 talkgroups seen on the control channel against 9 while following
-voice.
+### The antenna constraint, and what it implies
+
+The Skyfall unit has **one BNC input, split internally** to both RTL receivers.
+There is no per-receiver antenna connector, and the only antenna it has is the
+supplied 8" duck. So "swap the antenna onto one dongle" is not a thing that can
+be done — both receivers always see the same antenna, minus the splitter.
+
+That split is itself a loss nobody has accounted for: a passive 2-way costs
+**3.5 dB if reactive, 6 dB if resistive**, and a unit at this price is as likely
+to be the latter. Each RTL receiver is therefore working 3.5-6 dB below whatever
+the antenna actually delivers, on top of the duck being a duck.
+
+Which makes the arithmetic more encouraging than it looks. The HackRF reads
+**+28.3 dB** on this channel with its own antenna. Feed that same antenna to the
+Skyfall and each receiver should see roughly **+22 to +25 dB** after the
+internal split — comfortably past the ~15 dB P25 needs, with the `--tuner-bw`
+clamp worth another 1.6 on top.
+
+**The decisive test** (needs only an adapter, and takes the HackRF offline for a
+minute): move the HackRF's antenna to the Skyfall's BNC, then
+
+```bash
+python3 scripts/cc_snr.py -d 1
+cd src/op25/op25/gr-op25_repeater/apps
+python3 rx.py --args rtl=1 -N LNA:40 -S 1024000 --tuner-bw 300000 \
+  -T ~/rtl/lwin_cdr.tsv -V -v 2
+```
+
+TSBK above zero means the dedicated control-channel receiver works and this
+section should be rewritten — the prize is measured directly above: 33
+talkgroups seen on the control channel against 9 while following voice.
+
+**For permanent dual operation** the cheapest fix is not a better dongle, it is
+a second UHF antenna so the HackRF keeps its own. At 773 MHz a quarter wave is
+**9.7 cm**; a quarter-wave ground plane — one 9.7 cm vertical element and four
+9.7 cm radials sloping down at 45 degrees, on any panel-mount connector — costs
+almost nothing and will beat an 8" duck substantially, because the duck has no
+ground plane to work against. Failing that, an external splitter feeding both
+radios from the good antenna costs another 3.5 dB on the HackRF path, which it
+can afford at +28 dB.
 
 (Both dongles are well calibrated: re-measured, each lands within 0.2 kHz of
 nominal on the control channel, -0.3 ppm. Use `-p 0` for both.)
