@@ -9,7 +9,37 @@ import { scriptsDir, sdrRoot, listenLogPath } from './paths'
  * These two booleans are independent listen-scope switches; conflating them
  * into one enum makes "partial AND full" unreachable.
  */
+export type ListenMode = 'single' | 'multi'
+
+/** Which LWIN band(s) the multi-receiver mode covers. */
+export type ListenLegs = '700' | '800' | '700,800'
+
 export interface ListenOptions {
+  /**
+   * 'single' runs scripts/lwin_listen.sh — op25 rx.py, ONE receiver that must
+   * leave the control channel to hear a call. ~25% of calls, partial census.
+   *
+   * 'multi' runs scripts/lwin_listen_multi.sh — op25 multi_rx.py across BOTH
+   * HackRFs: one receiver pinned to 773.05625 plus a voice pool on each band.
+   * Measured 64-70 calls per 300 s with 24-45 of them overlapping in time,
+   * plus a complete grant census in the same run.
+   *
+   * Defaults to 'single' so an existing client's request behaves exactly as
+   * before.
+   */
+  mode?: ListenMode
+  /** multi only. Default '700,800'. */
+  legs?: ListenLegs
+  /** multi only. Voice receivers on the HackRF One (700 MHz leg). */
+  nVoice700?: number
+  /** multi only. Voice receivers on the HackRF Pro (800 MHz leg). */
+  nVoice800?: number
+  /**
+   * multi only. The grant census needs op25 at -v 10 and an import at exit;
+   * both are on by default in the script. Set false to pass --no-census, which
+   * drops to -v 2 and cuts log volume ~10x.
+   */
+  census?: boolean
   preset?: string
   talkgroups?: string
   tag?: string
@@ -30,6 +60,16 @@ export interface ListenOptions {
 
 export function buildListenArgs(opts: ListenOptions): string[] {
   const args: string[] = []
+
+  // Multi-only flags. lwin_listen.sh does not accept these and exits 1 on an
+  // unknown option, so they are gated on the mode rather than emitted whenever
+  // present.
+  if (opts.mode === 'multi') {
+    if (opts.legs)                       args.push('--legs', opts.legs)
+    if (opts.nVoice700 !== undefined)    args.push('--n-voice-700', String(opts.nVoice700))
+    if (opts.nVoice800 !== undefined)    args.push('--n-voice-800', String(opts.nVoice800))
+    if (opts.census === false)           args.push('--no-census')
+  }
 
   if (opts.preset)           args.push('--preset', opts.preset)
   if (opts.tag)              args.push('--tag', opts.tag)
@@ -121,9 +161,12 @@ export function isOurListenSession(pid: number, expectedStartTime: number | null
   }
 
   try {
-    // cmdline is NUL-separated; lwin_listen.sh appears as a bash argument.
+    // cmdline is NUL-separated; the launcher appears as a bash argument.
+    // BOTH launchers must be recognised: a multi-mode session whose pid is not
+    // matched here is invisible to Stop, which then answers 409 while two
+    // HackRFs are still recording.
     const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf-8')
-    return cmdline.includes('lwin_listen.sh')
+    return LAUNCHERS.some(name => cmdline.includes(name))
   } catch {
     return false
   }
@@ -151,11 +194,21 @@ export function isProcessRunning(pid: number): boolean {
  * session. server.py used 'ab', which made the count cumulative across every
  * session ever (3,150 distinct .wav names in the current file).
  */
+/**
+ * The launcher script per mode. Exported so the API layer and the tests use the
+ * same mapping rather than restating the filenames.
+ */
+export const LAUNCHERS = ['lwin_listen.sh', 'lwin_listen_multi.sh'] as const
+
+export function scriptFor(mode: ListenMode | undefined): string {
+  return mode === 'multi' ? 'lwin_listen_multi.sh' : 'lwin_listen.sh'
+}
+
 export function startListening(
   opts: ListenOptions,
   sessionId?: number,
 ): { pid: number; config: ListenOptions } {
-  const script = join(scriptsDir(), 'lwin_listen.sh')
+  const script = join(scriptsDir(), scriptFor(opts.mode))
   const fd = openSync(listenLogPath(), 'w')
   try {
     const child = spawn('bash', [script, ...buildListenArgs(opts)], {
@@ -171,7 +224,7 @@ export function startListening(
     })
     child.unref()
 
-    if (!child.pid) throw new Error('failed to spawn lwin_listen.sh')
+    if (!child.pid) throw new Error(`failed to spawn ${scriptFor(opts.mode)}`)
     return { pid: child.pid, config: opts }
   } finally {
     closeSync(fd)                   // the child holds its own dup; not closing leaks an fd per session
@@ -214,6 +267,20 @@ function signalOrAlreadyGone(target: number, signal: NodeJS.Signals): boolean {
 const RX_PATTERN = 'python3 rx\\.py --args'
 
 /**
+ * The multi-receiver equivalent, and the reason this is a separate constant.
+ *
+ * `rx\.py` does NOT match `multi_rx.py --args`: lwin_listen_multi.sh runs op25
+ * as `cd <apps dir> && exec python3 multi_rx.py -c <config> -v 10`, so there is
+ * no `--args` in its argv at all. Left unmatched, a stranded multi_rx holding
+ * BOTH HackRFs reads as "radio free": Stop returns early without pkill-ing it,
+ * and the next Start contends for two radios instead of one.
+ */
+const MULTI_RX_PATTERN = 'python3 multi_rx\\.py'
+
+/** Every op25 receiver pattern that means "a radio is in use". */
+const RADIO_PATTERNS = [RX_PATTERN, MULTI_RX_PATTERN]
+
+/**
  * The recorder. It does not hold the HackRF — it listens on a UDP port — but it
  * belongs to the same session and holds that port, so a stranded one blocks the
  * next Start just as surely.
@@ -234,19 +301,21 @@ const RECORDER_PATTERN = 'udp_audio_record\\.py'
  * that happens to have rx.py open.
  */
 export function isRadioBusy(): boolean {
-  try {
-    // -f matches the full argv. Both the receiver and the `script` wrapper
-    // carrying it count as busy.
-    const out = execFileSync('pgrep', ['-f', RX_PATTERN], {
-      encoding: 'utf-8',
-      timeout: 2000,
-    })
-    return out.trim().length > 0
-  } catch {
-    // pgrep exits 1 with no output when nothing matches — that is "not busy",
-    // not a failure.
-    return false
-  }
+  // -f matches the full argv. Both the receiver and the `script` wrapper
+  // carrying it count as busy. Either launcher's receiver counts.
+  return RADIO_PATTERNS.some((pattern) => {
+    try {
+      const out = execFileSync('pgrep', ['-f', pattern], {
+        encoding: 'utf-8',
+        timeout: 2000,
+      })
+      return out.trim().length > 0
+    } catch {
+      // pgrep exits 1 with no output when nothing matches — that is "not busy",
+      // not a failure.
+      return false
+    }
+  })
 }
 
 export async function stopListening(pid: number, procStart: number | null = null): Promise<void> {
@@ -283,7 +352,7 @@ export async function stopListening(pid: number, procStart: number | null = null
   // Last resort: the script's own cleanup trap does this too, but if the script
   // never ran its trap (SIGKILLed, or killed from outside) nothing else will.
   // SIGTERM first so udp_audio_record.py can flush the call in progress.
-  for (const pattern of [RX_PATTERN, RECORDER_PATTERN]) {
+  for (const pattern of [...RADIO_PATTERNS, RECORDER_PATTERN]) {
     try {
       execFileSync('pkill', ['-f', pattern], { timeout: 2000 })
     } catch {

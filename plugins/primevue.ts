@@ -11,6 +11,7 @@ import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import Select from 'primevue/select'
+import SelectButton from 'primevue/selectbutton'
 import Tag from 'primevue/tag'
 
 export default defineNuxtPlugin((nuxtApp) => {
@@ -28,5 +29,6 @@ export default defineNuxtPlugin((nuxtApp) => {
   nuxtApp.vueApp.component('Message', Message)
   nuxtApp.vueApp.component('ProgressSpinner', ProgressSpinner)
   nuxtApp.vueApp.component('Select', Select)
+  nuxtApp.vueApp.component('SelectButton', SelectButton)
   nuxtApp.vueApp.component('Tag', Tag)
 })

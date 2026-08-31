@@ -9,6 +9,20 @@ const PRESETS = new Set([
 ])
 const TG_LIST = /^\d+(,\d+)*$/
 
+const MODES = new Set(['single', 'multi'])
+// Verified against make_multirx_cfg.py's LEGS dict.
+const LEGS = new Set(['700', '800', '700,800'])
+/**
+ * Upper bound on voice receivers per band.
+ *
+ * Not arbitrary: each channel adds a decimating FIR running at the device's
+ * full sample rate, and each needs its own udp_audio_record.py process and a
+ * UDP port two above the last. 8 per band is roughly double what the measured
+ * traffic needs (5 receivers took 81/83 of the 800 leg's calls in the census)
+ * and keeps the port block inside 23460-23492.
+ */
+const MAX_VOICE = 8
+
 /**
  * Is this a regex `scripts/make_whitelist.py` will accept?
  *
@@ -93,6 +107,59 @@ export default defineEventHandler(async (event) => {
         + 'Use a simple substring or alternation, e.g. BRPD or Fire|EMS.',
     }
   }
+  if (body.mode !== undefined && !MODES.has(body.mode)) {
+    setResponseStatus(event, 400)
+    return { success: false, error: `Unknown mode: ${body.mode}` }
+  }
+
+  // The multi-only knobs are rejected outright in single mode rather than
+  // ignored: buildListenArgs drops them, so honouring the request silently
+  // would start a session shaped differently from the one asked for.
+  const multiOnly = ['legs', 'nVoice700', 'nVoice800', 'census'] as const
+  if (body.mode !== 'multi') {
+    const used = multiOnly.filter(k => body[k] !== undefined)
+    if (used.length) {
+      setResponseStatus(event, 400)
+      return {
+        success: false,
+        error: `${used.join(', ')} require mode "multi" (two-radio, multi-receiver capture)`,
+      }
+    }
+  }
+
+  if (body.legs !== undefined && !LEGS.has(body.legs)) {
+    setResponseStatus(event, 400)
+    return { success: false, error: `Unknown legs: ${body.legs}. Use 700, 800, or 700,800` }
+  }
+  // The 800 MHz leg has no live control channel — 851.0375 and 851.4875 both
+  // measured +0.5 dB with 0% continuity — so a session confined to it would
+  // never see a grant and never record anything.
+  if (body.legs === '800') {
+    setResponseStatus(event, 400)
+    return {
+      success: false,
+      error: 'The 800 MHz leg has no live control channel; it must be paired '
+        + 'with 700. Use legs "700,800".',
+    }
+  }
+  for (const key of ['nVoice700', 'nVoice800'] as const) {
+    const v = body[key]
+    if (v !== undefined && (!Number.isInteger(v) || v < 1 || v > MAX_VOICE)) {
+      setResponseStatus(event, 400)
+      return { success: false, error: `${key} must be an integer from 1 to ${MAX_VOICE}` }
+    }
+  }
+  if (body.census !== undefined && typeof body.census !== 'boolean') {
+    setResponseStatus(event, 400)
+    return { success: false, error: 'census must be a boolean' }
+  }
+  // Asking for 700-only receivers while covering only 800, or vice versa, is a
+  // config the generator would reject after the radio was already claimed.
+  if (body.mode === 'multi' && body.legs === '700' && body.nVoice800 !== undefined) {
+    setResponseStatus(event, 400)
+    return { success: false, error: 'nVoice800 has no effect with legs "700"' }
+  }
+
   if (body.duration !== undefined && (!Number.isInteger(body.duration) || body.duration < 1)) {
     setResponseStatus(event, 400)
     return { success: false, error: 'Duration must be a positive integer' }
