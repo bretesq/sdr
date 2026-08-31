@@ -31,6 +31,61 @@
     </Message>
 
     <div class="flex flex-column gap-3">
+      <!--
+        Capture mode. 'single' is op25 rx.py on one HackRF: it must leave the
+        control channel to hear a call, so it catches roughly a quarter of them
+        and its grant census is incomplete. 'multi' is op25 multi_rx.py across
+        both HackRFs, with one receiver pinned to the control channel and a
+        voice pool per band — measured 64-70 calls per 300 s with 24-45 of them
+        overlapping in time, plus a complete census in the same run.
+      -->
+      <div>
+        <span id="mode-label" class="block mb-1 text-sm">Capture mode</span>
+        <SelectButton
+          v-model="mode" aria-labelledby="mode-label" :options="modes"
+          option-label="label" option-value="value" :allow-empty="false"
+          :disabled="running" class="w-full"
+        />
+        <small class="block mt-1 text-color-secondary">{{ modeHint }}</small>
+      </div>
+
+      <!-- Multi-only. Hidden in single mode because lwin_listen.sh exits 1 on
+           an unknown option, and the API rejects these fields without mode. -->
+      <template v-if="mode === 'multi'">
+        <div class="grid">
+          <div class="col-6">
+            <label for="nv700" class="block mb-1 text-sm">
+              700 MHz voice receivers
+            </label>
+            <InputNumber
+              v-model="nVoice700" input-id="nv700" :min="1" :max="8"
+              :disabled="running" class="w-full" show-buttons
+            />
+          </div>
+          <div class="col-6">
+            <label for="nv800" class="block mb-1 text-sm">
+              800 MHz voice receivers
+            </label>
+            <InputNumber
+              v-model="nVoice800" input-id="nv800" :min="1" :max="8"
+              :disabled="running" class="w-full" show-buttons
+            />
+          </div>
+        </div>
+        <small class="block -mt-2 text-color-secondary">
+          The control channel (773.05625) always gets its own pinned receiver on
+          top of these. 3 and 5 match the measured traffic; the 800 MHz leg
+          carries about three quarters of the calls.
+        </small>
+
+        <div class="flex align-items-center gap-2">
+          <Checkbox v-model="census" input-id="census" binary :disabled="running" />
+          <label for="census" class="text-sm">
+            Import the grant census at exit (op25 -v 10, ~10x log volume)
+          </label>
+        </div>
+      </template>
+
       <div>
         <span id="preset-label" class="block mb-1 text-sm">Preset</span>
         <Select
@@ -129,6 +184,11 @@
 interface PresetOption { value: string, label: string }
 
 interface ListenConfig {
+  mode?: 'single' | 'multi'
+  legs?: '700' | '800' | '700,800'
+  nVoice700?: number
+  nVoice800?: number
+  census?: boolean
   preset?: string
   talkgroups?: string
   tag?: string
@@ -152,6 +212,27 @@ interface StatusPayload {
 }
 
 interface ApiResponse<T> { success: boolean, data?: T, error?: string }
+
+// Defaults to 'single' so the console behaves exactly as before until the
+// operator opts in. Multi mode needs BOTH HackRFs present.
+const mode = ref<'single' | 'multi'>('single')
+const modes = [
+  { value: 'single', label: '1 radio' },
+  { value: 'multi', label: '2 radios, many receivers' },
+]
+// 3 and 5 are the measured optima: 3 receivers took 28/28 of the 700 leg's
+// calls in the census and 5 took 81/83 of the 800 leg's.
+const nVoice700 = ref<number>(3)
+const nVoice800 = ref<number>(5)
+const census = ref(true)
+
+const modeHint = computed(() =>
+  mode.value === 'multi'
+    ? 'Both HackRFs, one receiver pinned to the control channel. Records several '
+      + 'simultaneous calls and a complete grant census in one run.'
+    : 'One HackRF. Leaves the control channel to hear each call, so simultaneous '
+      + 'calls are missed and the grant census is incomplete.',
+)
 
 // Defaults to 'all', matching make_whitelist.py's own --preset default and the
 // old console. Starting at null meant a fresh page + Start returned a 400.
@@ -279,6 +360,19 @@ async function start(): Promise<void> {
     const res = await $fetch<ApiResponse<unknown>>('/api/listen/start', {
       method: 'POST',
       body: {
+        // The multi-only fields must be ABSENT, not false/undefined-valued, in
+        // single mode: the API rejects them outright rather than ignoring
+        // them, so that a request never starts a differently-shaped session
+        // than the one asked for.
+        ...(mode.value === 'multi'
+          ? {
+              mode: 'multi' as const,
+              legs: '700,800' as const,
+              nVoice700: nVoice700.value,
+              nVoice800: nVoice800.value,
+              census: census.value,
+            }
+          : {}),
         preset: preset.value ?? undefined,
         talkgroups: talkgroups.value || undefined,
         tag: tag.value || undefined,

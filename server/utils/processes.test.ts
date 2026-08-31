@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildListenArgs, countCalls } from './processes'
+import { buildListenArgs, countCalls, scriptFor, LAUNCHERS } from './processes'
 
 describe('buildListenArgs', () => {
   it('maps a preset to --preset', () => {
@@ -35,6 +35,71 @@ describe('buildListenArgs', () => {
     const args = buildListenArgs({ preset: 'pd', stt: true, duration: 600 })
     expect(args[args.length - 1]).toBe('600')
     expect(args).toContain('--stt')
+  })
+})
+
+describe('multi-receiver mode', () => {
+  it('defaults to the single-receiver launcher when no mode is given', () => {
+    // An existing client sends no `mode`; it must behave exactly as before.
+    expect(scriptFor(undefined)).toBe('lwin_listen.sh')
+    expect(scriptFor('single')).toBe('lwin_listen.sh')
+  })
+
+  it('selects the multi launcher for mode multi', () => {
+    expect(scriptFor('multi')).toBe('lwin_listen_multi.sh')
+  })
+
+  it('lists both launchers so the pid identity check recognises either', () => {
+    // isOurListenSession matches /proc/<pid>/cmdline against this list. A
+    // multi-mode session missing from it is invisible to Stop, which then
+    // answers 409 while two HackRFs are still recording.
+    expect(LAUNCHERS).toContain('lwin_listen.sh')
+    expect(LAUNCHERS).toContain('lwin_listen_multi.sh')
+  })
+
+  it('emits NO multi-only flags in single mode', () => {
+    // lwin_listen.sh exits 1 on an unknown option, so leaking --legs into a
+    // single-mode run would fail the session outright rather than degrade it.
+    const args = buildListenArgs({
+      preset: 'pd', legs: '700,800', nVoice700: 3, nVoice800: 5, census: false,
+    })
+    expect(args).toEqual(['--preset', 'pd'])
+  })
+
+  it('emits the multi-only flags in multi mode', () => {
+    const args = buildListenArgs({
+      mode: 'multi', preset: 'pd-all', legs: '700,800',
+      nVoice700: 3, nVoice800: 5,
+    })
+    expect(args).toContain('--legs')
+    expect(args[args.indexOf('--legs') + 1]).toBe('700,800')
+    expect(args[args.indexOf('--n-voice-700') + 1]).toBe('3')
+    expect(args[args.indexOf('--n-voice-800') + 1]).toBe('5')
+    expect(args).toContain('--preset')
+  })
+
+  it('passes --no-census only when census is explicitly false', () => {
+    // The script defaults to running the census, so absent means "leave it on".
+    expect(buildListenArgs({ mode: 'multi', preset: 'pd' })).not.toContain('--no-census')
+    expect(buildListenArgs({ mode: 'multi', preset: 'pd', census: true }))
+      .not.toContain('--no-census')
+    expect(buildListenArgs({ mode: 'multi', preset: 'pd', census: false }))
+      .toContain('--no-census')
+  })
+
+  it('accepts zero as a receiver count rather than dropping it', () => {
+    // `if (opts.nVoice700)` would swallow 0. The script rejects 0 with a clear
+    // error; silently omitting it would start a differently-shaped session.
+    const args = buildListenArgs({ mode: 'multi', preset: 'pd', nVoice700: 0 })
+    expect(args[args.indexOf('--n-voice-700') + 1]).toBe('0')
+  })
+
+  it('still puts duration last in multi mode', () => {
+    // It is positional in lwin_listen_multi.sh too.
+    const args = buildListenArgs({
+      mode: 'multi', preset: 'pd', legs: '700', nVoice700: 3, duration: 300,
+    })
+    expect(args[args.length - 1]).toBe('300')
   })
 })
 
