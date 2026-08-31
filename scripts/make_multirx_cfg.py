@@ -8,7 +8,7 @@ SILENTLY when it is wrong.
     op25's tk_p25.py used to claim the talkgroup anyway and record silence for
     the whole call (fixed by patches/op25-tk_p25-release-unreachable-grant.patch,
     but a config that needs the fix is still a config that loses coverage).
-  * An if_rate that does not match get_decim's second stage costs an
+  * An if_rate that does not divide its device's sample rate exactly costs an
     arb_resampler per channel and never says so. With two devices at different
     rates it is easy to give a channel the other device's if_rate.
   * A device centre landing on a real channel puts the DC spike in its
@@ -32,12 +32,43 @@ import json
 import sys
 
 # ---------------------------------------------------------------------------
-# Copied from op25's p25_demodulator_dev.get_decim -- the module multi_rx.py:62
-# actually imports. NOT p25_demodulator.py, whose set_relative_frequency bound
-# differs (if1/2 rather than if_rate/2). Duplicated rather than imported because
-# op25 lives outside this package and importing it drags in GNU Radio.
+# multi_rx.py:62 imports p25_demodulator_dev, and its p25_demod_cb builds a
+# SINGLE-STAGE freq_xlating chain:
+#
+#     decimation     = int(input_rate / if_rate)
+#     resampled_rate = input_rate / decimation
+#     if self.if_rate != resampled_rate: <insert arb_resampler>
+#
+# So the rule that avoids a per-channel resampler is simply that **if_rate must
+# divide input_rate exactly**. p25_demodulator_dev does NOT call get_decim --
+# that is the two-stage chain in the non-_dev p25_demodulator.py, which
+# multi_rx never imports. get_decim is kept below only as a cross-check,
+# because it always returns an exact divisor and is therefore always safe, just
+# needlessly strict: it refuses odd quotients that _dev handles fine.
+#
+# Confirmed against a live 9-channel run (results/op25_multi.log):
+#     xlator if_rate=25000, input_rate=8000000,  decim=320, resampled_rate=25000
+#     xlator if_rate=24000, input_rate=12000000, decim=500, resampled_rate=24000
+# Both equal, so no arb_resampler was built on either device.
+#
+# Duplicated rather than imported because op25 lives outside this package and
+# importing it drags in GNU Radio.
 # ---------------------------------------------------------------------------
+
+# op25's own candidate order, from get_decim's if_freqs list. Order matters:
+# it keeps 8 Msps on 25000 and 12 Msps on 24000, which is the pairing verified
+# on the air. Preferring the largest divisor instead would silently move both
+# to 32000.
+IF_RATE_CANDIDATES = (24000, 25000, 32000)
+
+
 def get_decim(speed: int) -> tuple[int, int] | None:
+    """p25_demodulator.py's two-stage rule. NOT what multi_rx uses.
+
+    Kept as a cross-check and as documentation of the other module: whatever it
+    returns is always an exact divisor, so it is always safe, but it refuses odd
+    quotients (1_025_000 = 25000 x 41) that _dev handles without a resampler.
+    """
     s = int(speed)
     for i_f in (24000, 25000, 32000):
         if s % i_f != 0:
@@ -52,14 +83,18 @@ def get_decim(speed: int) -> tuple[int, int] | None:
 
 
 def if_rate_for(rate: int) -> int:
-    """The if2 get_decim lands on -- the only if_rate that avoids a resampler."""
-    d = get_decim(rate)
-    if d is None:
-        raise ValueError(
-            f'op25 cannot two-stage decimate {rate} Hz; pick a rate divisible '
-            f'by 24000, 25000 or 32000 with an even quotient')
-    decim, decim2 = d
-    return rate // decim // decim2
+    """The first candidate if_rate that divides `rate` exactly.
+
+    Exact division is the whole requirement: p25_demodulator_dev inserts an
+    arb_resampler per channel when if_rate != input_rate/int(input_rate/if_rate).
+    """
+    for i_f in IF_RATE_CANDIDATES:
+        if rate % i_f == 0:
+            return i_f
+    raise ValueError(
+        f'no supported if_rate divides {rate} Hz exactly (tried '
+        f'{", ".join(str(i) for i in IF_RATE_CANDIDATES)}); every channel would '
+        f'pay an arb_resampler')
 
 
 def usable_half_span(rate: int, usable_bw: float, if_rate: int) -> float:
@@ -266,8 +301,8 @@ def validate(cfg: dict, legs: list[dict]) -> None:
         if ch['if_rate'] != want:
             raise ValueError(
                 f"channel {ch['name']} has if_rate {ch['if_rate']} but its "
-                f"device {dev['name']} runs {dev['rate']} Hz, where get_decim "
-                f"lands on {want}; every such channel pays an arb_resampler")
+                f"device {dev['name']} runs {dev['rate']} Hz, which wants "
+                f"{want}; every such channel pays an arb_resampler")
 
     for name, dev in by_name.items():
         leg = leg_by_radio[name]

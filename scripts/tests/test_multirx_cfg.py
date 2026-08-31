@@ -4,8 +4,8 @@
 These are the assertions that would otherwise be discovered on the air as
 "Unable to tune", as a channel silently paying an arb_resampler, or as a DC
 spike sitting in a voice channel's passband. The numbers come from
-docs/2026-08-31-wideband-multichannel.md and from op25's own
-p25_demodulator_dev.get_decim / set_relative_frequency.
+docs/2026-08-31-wideband-multichannel.md and from p25_demodulator_dev, the
+demodulator module multi_rx.py actually imports.
 """
 from __future__ import annotations
 
@@ -19,45 +19,57 @@ sys.path.insert(0, SCRIPTS)
 import make_multirx_cfg as M
 
 
-class TestDecimationAgreesWithOp25(unittest.TestCase):
-    """A wrong if_rate is silent: every channel just gets an extra resampler."""
+class TestIfRateAvoidsAResampler(unittest.TestCase):
+    """A wrong if_rate is silent: every channel just gets an extra resampler.
 
-    def test_8_msps_resolves_via_25000(self):
-        self.assertEqual(M.get_decim(8_000_000), (80, 4))
+    multi_rx.py:62 imports p25_demodulator_dev, whose p25_demod_cb does
+
+        decimation     = int(input_rate / if_rate)
+        resampled_rate = input_rate / decimation
+        if self.if_rate != resampled_rate: <arb_resampler>
+
+    so the requirement is exactly that if_rate DIVIDES input_rate. _dev does
+    not call get_decim; that is the two-stage chain in the non-_dev
+    p25_demodulator.py, which multi_rx never imports.
+    """
+
+    def test_the_pairing_verified_on_the_air(self):
+        """From results/op25_multi.log, a live 9-channel two-device run:
+            xlator if_rate=25000, input_rate=8000000,  decim=320, resampled=25000
+            xlator if_rate=24000, input_rate=12000000, decim=500, resampled=24000
+        """
         self.assertEqual(M.if_rate_for(8_000_000), 25000)
-
-    def test_12_msps_resolves_via_24000(self):
-        self.assertEqual(M.get_decim(12_000_000), (125, 4))
         self.assertEqual(M.if_rate_for(12_000_000), 24000)
 
-    def test_16_msps_resolves_via_25000(self):
-        self.assertEqual(M.if_rate_for(16_000_000), 25000)
+    def test_every_returned_if_rate_divides_its_rate_exactly(self):
+        """The actual invariant. If this holds, no arb_resampler is built."""
+        for rate in (2_000_000, 8_000_000, 10_000_000, 12_000_000,
+                     16_000_000, 20_000_000, 1_025_000):
+            with self.subTest(rate=rate):
+                ifr = M.if_rate_for(rate)
+                self.assertEqual(rate % ifr, 0)
+                self.assertEqual(rate // int(rate / ifr), ifr)
 
-    def test_2_msps_matches_what_rx_py_uses_today(self):
-        self.assertEqual(M.get_decim(2_000_000), (20, 4))
+    def test_an_odd_quotient_is_accepted_because_dev_handles_it(self):
+        """1_025_000 = 25000 x 41. get_decim refuses it; _dev does not.
 
-    def test_an_odd_quotient_is_refused(self):
-        """25000 x 41: divisible, but get_decim skips odd quotients (`q & 1`).
-
-        This is the branch that actually rejects rates, and it is easy to
-        assume divisibility is sufficient.
+        Regression guard: an earlier version of this module used get_decim for
+        if_rate and would have rejected a rate the demodulator handles fine.
         """
-        self.assertIsNone(M.get_decim(1_025_000))
-        with self.assertRaises(ValueError):
-            M.if_rate_for(1_025_000)
+        self.assertIsNone(M.get_decim(1_025_000))       # the other module refuses
+        self.assertEqual(M.if_rate_for(1_025_000), 25000)
 
-    def test_a_rate_divisible_by_nothing_is_refused(self):
-        self.assertIsNone(M.get_decim(7_000_001))
+    def test_a_rate_no_candidate_divides_is_refused(self):
         with self.assertRaises(ValueError):
             M.if_rate_for(7_000_001)
 
-    def test_7_msps_is_supported_despite_looking_odd(self):
-        """Pinned because it surprised us: 7e6/25000 = 280, even -> (70, 4).
-
-        Most round rates pass. Do not assume an unusual-looking rate fails;
-        ask get_decim.
-        """
-        self.assertEqual(M.get_decim(7_000_000), (70, 4))
+    def test_get_decim_is_retained_only_as_a_cross_check(self):
+        """Whatever get_decim returns is an exact divisor, so it is always safe."""
+        for rate in (2_000_000, 8_000_000, 12_000_000, 7_000_000):
+            with self.subTest(rate=rate):
+                d = M.get_decim(rate)
+                self.assertIsNotNone(d)
+                self.assertEqual(rate % (d[0] * d[1]), 0)
 
 
 class TestUsableHalfSpan(unittest.TestCase):
@@ -145,7 +157,10 @@ class TestTwoDeviceConfig(unittest.TestCase):
         self.assertEqual(devs, {'one', 'pro'})
 
     def test_every_channel_uses_ITS_OWN_devices_if_rate(self):
-        """The whole point of two devices at different rates."""
+        """The whole point of two devices at different rates.
+
+        Verified on the air: no arb_resampler was built on either device.
+        """
         rate_by_dev = {d['name']: d['rate'] for d in self.CFG['devices']}
         for ch in self.CFG['channels']:
             with self.subTest(chan=ch['name']):
