@@ -47,7 +47,7 @@ rx.py       -> trunking.py:1874
    no receiver id | frequency in Hz (int) | no radio id
 
 multi_rx.py -> tk_p25.py:2623
-  "[2] voice update:  tg(6848), rid(2601234), freq(769.593750), slot(-), prio(3)"
+  "[2] voice update:  tg(6848), rid(1234567), freq(769.593750), slot(-), prio(3)"
    receiver id     | frequency in MHz (float) | radio id present
 ```
 
@@ -188,7 +188,7 @@ op25 has TWO trunking modules with DIFFERENT log formats:
      no receiver id | frequency in Hz | no radio id
 
   multi_rx.py -> tk_p25.py:2623
-    "[2] voice update:  tg(6848), rid(2601234), freq(769.593750), slot(-), prio(3)"
+    "[2] voice update:  tg(6848), rid(1234567), freq(769.593750), slot(-), prio(3)"
      receiver id    | frequency in MHz | radio id present
 
 Assuming either one alone silently loses metadata rather than erroring, so both
@@ -426,11 +426,11 @@ Append to `scripts/tests/test_op25_log.py`:
 # with freq passed as freq/1e6 (MHz) and get_slot(None) == '-'.
 MULTI_RX2 = (
     '08/31/26 14:15:04.747731 [2] voice update:  '
-    'tg(6848), rid(2601234), freq(769.593750), slot(-), prio(3)\n'
+    'tg(6848), rid(1234567), freq(769.593750), slot(-), prio(3)\n'
 )
 MULTI_RX3 = (
     '08/31/26 14:15:05.100000 [3] voice update:  '
-    'tg(17165), rid(9999999), freq(772.681250), slot(-), prio(2)\n'
+    'tg(17165), rid(7654321), freq(772.681250), slot(-), prio(2)\n'
 )
 ESS_RX3 = (
     '08/31/26 14:15:05.200000 [3] NAC 0x1bd LDU2: '
@@ -445,7 +445,7 @@ class TestMultiRxFormat(unittest.TestCase):
         self.assertEqual(tail_over(MULTI_RX2).metadata()['freq'], 769593750)
 
     def test_rid_becomes_src_addr(self):
-        self.assertEqual(tail_over(MULTI_RX2).metadata()['src_addr'], 2601234)
+        self.assertEqual(tail_over(MULTI_RX2).metadata()['src_addr'], 1234567)
 
     def test_talkgroup_is_read_despite_the_rid_field(self):
         self.assertEqual(tail_over(MULTI_RX2).current(), 6848)
