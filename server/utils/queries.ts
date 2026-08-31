@@ -234,3 +234,55 @@ export function listCategories(): string[] {
   ).all() as unknown as { cat: string }[]
   return rows.map(r => r.cat)
 }
+
+/**
+ * A cheap fingerprint of the recordings corpus, for the live SSE stream.
+ *
+ * Three aggregates over `calls`, no join and no scan of transcript text, so it
+ * is cheap enough to evaluate on every change tick. `transcripts` counts
+ * non-NULL, which is what stt_watch.py writes — it skips empty text, so an
+ * empty string never lands.
+ *
+ * `latest` lets a client tell "a new call arrived" from "an existing call
+ * gained a transcript" without shipping any rows.
+ */
+export interface RecordingsSummary {
+  calls: number
+  transcripts: number
+  latest: number | null
+}
+
+export function recordingsSummary(): RecordingsSummary {
+  const db = getDb()
+  const row = db.prepare(
+    `SELECT COUNT(*)          AS calls,
+            COUNT(transcript) AS transcripts,
+            MAX(start)        AS latest
+       FROM calls`,
+  ).get() as unknown as { calls: number, transcripts: number, latest: number | null }
+  return {
+    calls: Number(row.calls),
+    transcripts: Number(row.transcripts),
+    latest: row.latest === null ? null : Number(row.latest),
+  }
+}
+
+/**
+ * SQLite's own cross-connection change counter.
+ *
+ * `PRAGMA data_version` is unchanged for commits made on the SAME connection
+ * and changes when ANY OTHER connection commits — which is exactly our case:
+ * udp_audio_record.py and stt_watch.py write from separate processes while this
+ * one reads. Verified on this database: stable across re-reads on our
+ * connection, 2 -> 3 after a python process committed.
+ *
+ * This is the whole reason the SSE stream needs no polling of the corpus
+ * itself. SQLite has no cross-process change notification (sqlite3_update_hook
+ * fires only for the connection that made the change), so the alternative was
+ * re-running an aggregate every tick.
+ */
+export function dataVersion(): number {
+  const db = getDb()
+  const row = db.prepare('PRAGMA data_version').get() as unknown as { data_version: number }
+  return Number(row.data_version)
+}

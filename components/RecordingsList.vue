@@ -2,7 +2,30 @@
   <section class="p-4 border-round surface-card">
     <div class="flex align-items-center justify-content-between mb-3">
       <h2 class="text-xl font-bold m-0">Recordings</h2>
-      <Button icon="pi pi-refresh" text rounded aria-label="Reload recordings" :loading="loading" @click="load" />
+      <div class="flex align-items-center gap-2">
+        <!--
+          Frozen rather than paused: the SSE connection stays open either way,
+          so unfreezing shows the current state immediately. This exists because
+          the table is a VIRTUAL SCROLLER, not a paginator — a reload replaces
+          the rows and jumps to the top, which yanks the operator away from
+          whatever they were reading. Live is the default because watching calls
+          land is the point.
+        -->
+        <Button
+          v-if="pending > 0 && !live"
+          :label="`${pending} new`" icon="pi pi-arrow-down" size="small" text
+          :aria-label="`Load ${pending} new recordings`" @click="load"
+        />
+        <span v-if="live" class="text-xs text-color-secondary" aria-live="polite">
+          {{ streamOk ? 'live' : 'live (reconnecting)' }}
+        </span>
+        <Button
+          :icon="live ? 'pi pi-pause' : 'pi pi-play'" text rounded
+          :aria-label="live ? 'Freeze the table' : 'Resume live updates'"
+          @click="toggleLive"
+        />
+        <Button icon="pi pi-refresh" text rounded aria-label="Reload recordings" :loading="loading" @click="load" />
+      </div>
     </div>
 
     <Message v-if="error" severity="error" :closable="false" class="mb-3">
@@ -233,11 +256,70 @@ onUnmounted(() => {
   if (searchTimer) clearTimeout(searchTimer)
 })
 
-// Bumped by ListenControl 1.5 s after Stop, when calls.json has been flushed.
+// Still bumped by ListenControl after Stop. Kept even though the SSE stream
+// now covers the same ground: Stop is the one moment the operator definitely
+// wants the final state, and it costs one reload.
 const recordingsRefresh = useState<number>('recordings-refresh', () => 0)
 watch(recordingsRefresh, load)
 
-onMounted(load)
+/**
+ * Live updates, over /api/recordings/stream.
+ *
+ * The server pushes a summary — `{ calls, transcripts, latest }` — whenever the
+ * corpus changes, and never rows: this component re-runs its own query so the
+ * search box, encryption filter and sort keep working, and there is one place
+ * that knows how to build a recordings query.
+ *
+ * Transcripts arrive well after their call (Whisper on CPU), so a row appears
+ * first and gains its transcript seconds to minutes later. That is why the
+ * summary carries a transcript count and not just a call count — otherwise
+ * transcripts would only ever show up on a manual refresh.
+ */
+const live = ref(true)
+const streamOk = ref(false)
+const pending = ref(0)
+let seen: { calls: number, transcripts: number } | null = null
+let es: EventSource | null = null
+
+function onSummary(next: { calls: number, transcripts: number }): void {
+  if (seen === null) {                       // first frame: just a baseline
+    seen = next
+    return
+  }
+  const changed = next.calls !== seen.calls || next.transcripts !== seen.transcripts
+  if (!changed) return
+  pending.value += Math.max(0, next.calls - seen.calls)
+  seen = next
+  if (live.value) load()
+}
+
+function toggleLive(): void {
+  live.value = !live.value
+  if (live.value) load()
+}
+
+onMounted(() => {
+  load()
+  // EventSource reconnects on its own after a drop, which is most of why this
+  // is SSE and not a hand-rolled fetch loop.
+  es = new EventSource('/api/recordings/stream')
+  es.onopen = () => { streamOk.value = true }
+  es.onerror = () => { streamOk.value = false }
+  es.onmessage = (ev) => {
+    streamOk.value = true
+    try {
+      onSummary(JSON.parse(ev.data) as { calls: number, transcripts: number })
+    } catch {
+      // A frame we cannot parse is not worth breaking the table over; the next
+      // change will carry the same counts.
+    }
+  }
+})
+
+onUnmounted(() => {
+  es?.close()
+  es = null
+})
 
 /**
  * Guards against a slow earlier request landing after a faster later one and
@@ -260,6 +342,7 @@ async function load(): Promise<void> {
     if (seq !== requestSeq) return          // superseded; drop it
     if (res.success && res.data) {
       recordings.value = res.data
+      pending.value = 0
       if (typeof res.total === 'number' && !search.value.trim() && encFilter.value === 'all') {
         total.value = res.total
       }

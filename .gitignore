@@ -1,5 +1,14 @@
 # Recordings and audio
-recordings/
+# Anchored with a leading slash. A bare `recordings/` matches at ANY depth, so
+# it also swallowed server/api/recordings/ — list.get.ts and [name].get.ts were
+# untracked for their whole existence, and a fresh clone of this repo got a Nuxt
+# app with no recordings API at all. @nuxt/eslint reads .gitignore, so they were
+# silently unlinted too.
+#
+# Other bare patterns below (captures/, models/, dist/, src/) currently shadow
+# nothing that matters, but note src/ is the ONLY thing keeping the 73 MB
+# tools/whisper.cpp tree out of `git add -A` — tools/ itself has no rule.
+/recordings/
 captures/
 *.wav
 *.mp3
