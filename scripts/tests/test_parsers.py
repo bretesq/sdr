@@ -145,3 +145,60 @@ class TestGrantParsing(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class TestGrantLineParsing(unittest.TestCase):
+    """import_grants.py's GRANT regex, against BOTH op25 trunking modules.
+
+    op25 has two, and rx.py and multi_rx.py use different ones. trunking.py
+    always prints a numeric srcaddr; tk_p25.py formats it with %s and passes
+    None when the grant TSBK carried no source. Requiring \\d+ matched 95 of
+    705 grants in a real multi_rx log — an 87% silent loss of the census.
+    """
+
+    # Verbatim from results/lwin_cdr.log (rx.py -> trunking.py).
+    RX_PY = '08/30/26 15:44:45.212814 set tgid=17169, srcaddr=1234567'
+    # Verbatim from results/op25_multi.log (multi_rx.py -> tk_p25.py). The
+    # prefix is the SYSNAME, not a receiver id: the system emits one of these
+    # per announced grant regardless of pool size.
+    MULTI_NONE = ('08/31/26 15:06:59.070324 [LWIN-BR] '
+                  'set tgid=17088, srcaddr=None, svcopts=None')
+    MULTI_NUM = ('08/31/26 15:06:59.453039 [LWIN-BR] '
+                 'set tgid=17063, srcaddr=2601234, svcopts=None')
+
+    @classmethod
+    def setUpClass(cls):
+        import import_grants
+        cls.M = import_grants
+
+    def test_matches_the_rx_py_form(self):
+        m = self.M.GRANT.search(self.RX_PY)
+        self.assertIsNotNone(m)
+        self.assertEqual((m.group(2), m.group(3)), ('17169', '1234567'))
+
+    def test_matches_the_multi_rx_form_with_a_numeric_srcaddr(self):
+        m = self.M.GRANT.search(self.MULTI_NUM)
+        self.assertIsNotNone(m)
+        self.assertEqual((m.group(2), m.group(3)), ('17063', '2601234'))
+
+    def test_matches_the_multi_rx_form_with_srcaddr_None(self):
+        """The regression: this line used not to match at all."""
+        m = self.M.GRANT.search(self.MULTI_NONE)
+        self.assertIsNotNone(m)
+        self.assertEqual((m.group(2), m.group(3)), ('17088', 'None'))
+
+    def test_the_sysname_prefix_is_not_mistaken_for_a_receiver_id(self):
+        """[LWIN-BR] must not be read as [N]; the tgid is what matters."""
+        m = self.M.GRANT.search(self.MULTI_NONE)
+        self.assertEqual(m.group(2), '17088')
+
+    def test_srcaddr_None_and_zero_both_become_None_never_radio_zero(self):
+        for raw in ('None', '0'):
+            with self.subTest(raw=raw):
+                src = None if raw == 'None' else (int(raw) or None)
+                self.assertIsNone(src)
+
+    def test_the_timestamp_parses_in_both_forms(self):
+        for line in (self.RX_PY, self.MULTI_NONE):
+            with self.subTest(line=line[:30]):
+                m = self.M.GRANT.search(line)
+                self.assertIsInstance(self.M.parse_ts(m.group(1)), float)

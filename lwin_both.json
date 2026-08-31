@@ -3,6 +3,8 @@
         {
             "name": "CC",
             "device": "one",
+            "freq_min": 768031000,
+            "freq_max": 774806000,
             "trunking_sysname": "LWIN-BR",
             "demod_type": "cqpsk",
             "filter_type": "rc",
@@ -22,6 +24,8 @@
         {
             "name": "VC700_0",
             "device": "one",
+            "freq_min": 768031000,
+            "freq_max": 774806000,
             "trunking_sysname": "LWIN-BR",
             "demod_type": "cqpsk",
             "filter_type": "rc",
@@ -41,6 +45,8 @@
         {
             "name": "VC700_1",
             "device": "one",
+            "freq_min": 768031000,
+            "freq_max": 774806000,
             "trunking_sysname": "LWIN-BR",
             "demod_type": "cqpsk",
             "filter_type": "rc",
@@ -60,6 +66,8 @@
         {
             "name": "VC700_2",
             "device": "one",
+            "freq_min": 768031000,
+            "freq_max": 774806000,
             "trunking_sysname": "LWIN-BR",
             "demod_type": "cqpsk",
             "filter_type": "rc",
@@ -79,6 +87,8 @@
         {
             "name": "VC800_0",
             "device": "pro",
+            "freq_min": 850637000,
+            "freq_max": 860813000,
             "trunking_sysname": "LWIN-BR",
             "demod_type": "cqpsk",
             "filter_type": "rc",
@@ -98,6 +108,8 @@
         {
             "name": "VC800_1",
             "device": "pro",
+            "freq_min": 850637000,
+            "freq_max": 860813000,
             "trunking_sysname": "LWIN-BR",
             "demod_type": "cqpsk",
             "filter_type": "rc",
@@ -117,6 +129,8 @@
         {
             "name": "VC800_2",
             "device": "pro",
+            "freq_min": 850637000,
+            "freq_max": 860813000,
             "trunking_sysname": "LWIN-BR",
             "demod_type": "cqpsk",
             "filter_type": "rc",
@@ -136,6 +150,8 @@
         {
             "name": "VC800_3",
             "device": "pro",
+            "freq_min": 850637000,
+            "freq_max": 860813000,
             "trunking_sysname": "LWIN-BR",
             "demod_type": "cqpsk",
             "filter_type": "rc",
@@ -155,6 +171,8 @@
         {
             "name": "VC800_4",
             "device": "pro",
+            "freq_min": 850637000,
+            "freq_max": 860813000,
             "trunking_sysname": "LWIN-BR",
             "demod_type": "cqpsk",
             "filter_type": "rc",

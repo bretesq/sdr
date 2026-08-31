@@ -208,6 +208,48 @@ class TestTwoDeviceConfig(unittest.TestCase):
     def test_no_audio_section_this_host_has_no_sound_card(self):
         self.assertNotIn('audio', self.CFG)
 
+    def test_every_channel_declares_the_range_its_device_can_reach(self):
+        """Drives patches/op25-tk_p25-window-aware-find-talkgroup.patch.
+
+        Without these keys the patch is inert and receivers on one band keep
+        claiming grants on the other: measured 6 of 12 grants captured on the
+        700 leg from 1,300 tune attempts.
+        """
+        for ch in self.CFG['channels']:
+            with self.subTest(chan=ch['name']):
+                dev = next(d for d in self.CFG['devices']
+                           if d['name'] == ch['device'])
+                half = M.usable_half_span(dev['rate'], dev['usable_bw_pct'],
+                                          M.if_rate_for(dev['rate']))
+                self.assertEqual(ch['freq_min'], int(dev['frequency'] - half))
+                self.assertEqual(ch['freq_max'], int(dev['frequency'] + half))
+
+    def test_the_two_legs_reachable_ranges_do_not_overlap(self):
+        """If they overlapped, the window check could not separate the bands."""
+        r = {}
+        for ch in self.CFG['channels']:
+            r[ch['device']] = (ch['freq_min'], ch['freq_max'])
+        (a_lo, a_hi), (b_lo, b_hi) = r['one'], r['pro']
+        self.assertLess(a_hi, b_lo)
+
+    def test_each_leg_can_reach_every_frequency_it_lists(self):
+        for leg in (M.LEG_700, M.LEG_800):
+            ch = next(c for c in self.CFG['channels']
+                      if c['device'] == leg['radio'])
+            for f in leg['voice'] + leg['control']:
+                with self.subTest(leg=leg['name'], freq=f):
+                    self.assertGreaterEqual(f, ch['freq_min'])
+                    self.assertLessEqual(f, ch['freq_max'])
+
+    def test_no_channel_can_reach_the_other_legs_frequencies(self):
+        """The whole point: a 700 receiver must not be offered an 800 grant."""
+        for leg, other in ((M.LEG_700, M.LEG_800), (M.LEG_800, M.LEG_700)):
+            ch = next(c for c in self.CFG['channels']
+                      if c['device'] == leg['radio'])
+            for f in other['voice']:
+                with self.subTest(leg=leg['name'], freq=f):
+                    self.assertFalse(ch['freq_min'] <= f <= ch['freq_max'])
+
     def test_it_validates(self):
         M.validate(self.CFG, [M.LEG_700, M.LEG_800])
 
@@ -285,6 +327,13 @@ class TestValidationCatchesRealMistakes(unittest.TestCase):
         with self.assertRaises(ValueError) as e:
             M.validate(cfg, [M.LEG_700, M.LEG_800])
         self.assertIn('serial', str(e.exception).lower())
+
+    def test_a_reachable_range_that_contradicts_the_device_is_rejected(self):
+        cfg = self._cfg([M.LEG_700])
+        cfg['channels'][1]['freq_max'] = cfg['channels'][1]['freq_min'] + 1000
+        with self.assertRaises(ValueError) as e:
+            M.validate(cfg, [M.LEG_700])
+        self.assertIn('reachable range', str(e.exception))
 
     def test_zero_voice_channels_is_rejected(self):
         leg = dict(M.LEG_700, n_voice=0)

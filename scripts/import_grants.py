@@ -39,7 +39,18 @@ ANSI = re.compile(r'\x1b\[[0-9;?]*[a-zA-Z]')
 TS = r'(\d\d/\d\d/\d\d \d\d:\d\d:\d\d\.\d+)'
 
 # op25 logs a grant as "set tgid=N, srcaddr=M" on the line it acts on it.
-GRANT = re.compile(TS + r'[^\n]*?set tgid=(\d+), srcaddr=(\d+)')
+#
+# srcaddr may be the literal string "None": tk_p25.py (the trunking module
+# multi_rx.py uses) formats the field with %s and passes None when the grant
+# TSBK carried no source address. Requiring \d+ here matched only 95 of 705
+# grants in a real multi_rx log — silently dropping 87% of the census — because
+# trunking.py (the rx.py path) always prints a number and tk_p25 usually does
+# not.
+#
+# These lines are emitted by the SYSTEM, not a receiver: the prefix is the
+# sysname ("[LWIN-BR]"), so there is exactly one per announced grant no matter
+# how many receivers are in the pool. No dedup is needed.
+GRANT = re.compile(TS + r'[^\n]*?set tgid=(\d+), srcaddr=(\d+|None)')
 # The paired talkgroup/frequency form. ch may be an unresolved channel id
 # ("ID-0x485") or a real frequency ("858.237500"); only the latter is useful.
 CHAN = re.compile(r'ga(\d): (\d+)')
@@ -90,7 +101,9 @@ def main() -> int:
         except ValueError:
             continue
         tgid = int(m.group(2))
-        src = int(m.group(3)) or None      # 0 means "not reported", not radio 0
+        # 0 and "None" both mean "not reported" — never radio 0.
+        raw_src = m.group(3)
+        src = None if raw_src == 'None' else (int(raw_src) or None)
         grants.append((ts, tgid, src, freq_for.get(tgid), rfss, stid))
 
     with_src = sum(1 for g in grants if g[2])

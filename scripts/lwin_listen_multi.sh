@@ -19,6 +19,13 @@
 # receiver handed a grant on the other band claims the call and records
 # silence. Checked at startup.
 #
+# GRANT CENSUS. The pinned receiver sees every grant, but op25 only LOGS them
+# at -v 10, so this script runs at -v 10 by default and imports them into
+# sdr.db when the run ends. That makes `calls` (what we recorded) and `grants`
+# (what was announced) available from one session — OBSERVATIONS.md §3.3
+# records those as mutually exclusive with a single receiver. Costs ~10x the
+# log volume (~24 MB/hour); --no-census drops to -v 2 and skips the import.
+#
 # See docs/2026-08-31-wideband-multichannel.md.
 #
 # Usage: lwin_listen_multi.sh [options] [seconds]
@@ -27,6 +34,7 @@
 #   --n-voice-800 N          voice receivers on the Pro (default 5)
 #   --stt                    transcribe new .wav files as they land
 #   --ess                    op25 -v 10 so ESS (algid/keyid/mi) is logged
+#   --no-census              skip the grant import at exit (see below)
 #   everything else          the same talkgroup-selection flags as
 #                            lwin_listen.sh, passed to make_whitelist.py
 #   -h, --help               this help
@@ -48,6 +56,7 @@ LEGS=700,800
 SECS=0
 STT=0
 ESS=0
+CENSUS=1
 NV700=""
 NV800=""
 GEN=()
@@ -61,6 +70,7 @@ while [ $# -gt 0 ]; do
     --n-voice-800)       NV800="$2"; shift ;;
     --stt)               STT=1 ;;
     --ess)               ESS=1 ;;
+    --no-census)         CENSUS=0 ;;
     --pd)                GEN+=(--preset pd) ;;
     --pd-all)            GEN+=(--preset pd-all) ;;
     --fire)              GEN+=(--preset fire) ;;
@@ -82,14 +92,27 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-# The op25 patch is not tracked by git (src/ is gitignored), so a re-clone or
-# reset silently removes it and cross-band grants start getting eaten.
-if ! grep -q "leaving it unclaimed" "$A/tk_p25.py" 2>/dev/null; then
-  echo "ERROR: op25 is missing patches/op25-tk_p25-release-unreachable-grant.patch." >&2
-  echo "       Without it a receiver handed a grant on the other band claims the" >&2
-  echo "       call and records silence. Re-apply per patches/README.md." >&2
-  exit 1
-fi
+# The op25 patches are not tracked by git (src/ is gitignored), so a re-clone
+# or reset silently removes them. Both matter, and both fail QUIETLY: without
+# them cross-band grants are eaten rather than erroring.
+check_patch() {   # <marker> <patch name> <why>
+  if ! grep -q "$1" "$A/tk_p25.py" 2>/dev/null; then
+    echo "ERROR: op25 is missing patches/$2" >&2
+    echo "       $3" >&2
+    echo "       Re-apply per patches/README.md." >&2
+    return 1
+  fi
+}
+PATCHES_OK=1
+check_patch "leaving it unclaimed" \
+  "op25-tk_p25-release-unreachable-grant.patch" \
+  "Without it a receiver handed a grant on the other band claims the call and records silence." \
+  || PATCHES_OK=0
+check_patch "def can_reach" \
+  "op25-tk_p25-window-aware-find-talkgroup.patch" \
+  "Without it receivers keep claiming grants on the band they cannot reach; measured 6 of 12 grants captured on the 700 leg." \
+  || PATCHES_OK=0
+[ "$PATCHES_OK" -eq 1 ] || exit 1
 
 python3 "$R/scripts/make_whitelist.py" "${GEN[@]+"${GEN[@]}"}" -o "$WL" || exit $?
 [ -n "${LIST:-}" ] && exit 0
@@ -130,6 +153,11 @@ cleanup() {
   for p in "${REC_PIDS[@]+"${REC_PIDS[@]}"}"; do kill -INT "$p" 2>/dev/null; done
   [ -n "${STT_PID:-}" ] && kill -INT "$STT_PID" 2>/dev/null
   wait 2>/dev/null
+  if [ "$CENSUS" -eq 1 ]; then
+    echo
+    python3 "$R/scripts/import_grants.py" "$LOG" || \
+      echo "  (grant import failed; the log is still at $LOG)"
+  fi
   n=$(ls -1 "$R"/recordings/TG*.wav 2>/dev/null | wc -l)
   echo "-> $n call(s) total in $R/recordings/"
   exit 0
@@ -151,7 +179,10 @@ if [ "$STT" -eq 1 ]; then
 fi
 
 # Under a pty so the log is written in real time (python3 -u breaks op25 on 3.14).
+# -v 10 is required for the grant census: at -v 2 op25 logs no grant lines at
+# all (measured: 0 `set tgid=`, 0 `TSBK: op=`). --ess wants the same level.
 VERBOSITY=2
+[ "$CENSUS" -eq 1 ] && VERBOSITY=10
 [ "$ESS" -eq 1 ] && VERBOSITY=10
 OP25_CMD="cd $A && exec python3 multi_rx.py -c $CFG -v $VERBOSITY"
 script -q -f -c "$OP25_CMD" "$LOG" >/dev/null 2>&1 &

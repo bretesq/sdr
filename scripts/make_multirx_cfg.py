@@ -197,10 +197,18 @@ def build(legs: list[dict], *, whitelist: str, cc_whitelist: str,
 
     devices, channels, port = [], [], base_port
 
-    def chan(name, radio, freq, wl, port, if_rate):
+    def chan(name, radio, freq, wl, port, if_rate, lo, hi):
         return {
             'name': name,
             'device': radio,
+            # Frequencies this channel's device can actually reach. op25's
+            # find_talkgroup picks by priority and claim status alone and would
+            # otherwise hand this receiver grants on the other band, which it
+            # cannot tune -- see
+            # patches/op25-tk_p25-window-aware-find-talkgroup.patch. Written as
+            # ints in Hz; 0/0 disables the check.
+            'freq_min': int(lo),
+            'freq_max': int(hi),
             'trunking_sysname': sysname,
             'demod_type': 'cqpsk',
             'filter_type': 'rc',
@@ -221,6 +229,11 @@ def build(legs: list[dict], *, whitelist: str, cc_whitelist: str,
     for leg in legs:
         radio = leg['radio']
         if_rate = if_rate_for(leg['rate'])
+        # The reachable range is the demodulator's own bound, not the leg's
+        # channel list: a failover control channel or a newly-announced voice
+        # channel inside the window must still be reachable.
+        half = usable_half_span(leg['rate'], usable_bw, if_rate)
+        lo, hi = leg['centre'] - half, leg['centre'] + half
         devices.append({
             'name': radio,
             'args': f"soapy=0,driver=hackrf,serial={RADIOS[radio]['serial']}",
@@ -240,12 +253,12 @@ def build(legs: list[dict], *, whitelist: str, cc_whitelist: str,
         # as impossible with a single receiver.
         if leg['control']:
             channels.append(chan('CC', radio, leg['control'][0],
-                                 cc_whitelist, port, if_rate))
+                                 cc_whitelist, port, if_rate, lo, hi))
             port += 2
         for i in range(leg['n_voice']):
             start = leg['voice'][i % len(leg['voice'])]
             channels.append(chan(f"VC{leg['name']}_{i}", radio, start,
-                                 whitelist, port, if_rate))
+                                 whitelist, port, if_rate, lo, hi))
             port += 2
 
     return {
@@ -320,6 +333,24 @@ def validate(cfg: dict, legs: list[dict]) -> None:
                     f"within {leg['dc_guard']/1e3:.0f} kHz of channel "
                     f"{f/1e6:.5f}; the DC spike would land in its passband "
                     f"(see commit cf019d4)")
+
+    for ch in cfg['channels']:
+        dev = by_name[ch['device']]
+        leg = leg_by_radio[dev['name']]
+        half = usable_half_span(dev['rate'], dev['usable_bw_pct'],
+                                if_rate_for(dev['rate']))
+        want = (int(dev['frequency'] - half), int(dev['frequency'] + half))
+        got = (ch['freq_min'], ch['freq_max'])
+        if got != want:
+            raise ValueError(
+                f"channel {ch['name']} declares reachable range {got} but its "
+                f"device window is {want}; op25 would skip grants it can tune, "
+                f"or claim grants it cannot")
+        for f in leg['voice'] + leg['control']:
+            if not (ch['freq_min'] <= f <= ch['freq_max']):
+                raise ValueError(
+                    f"channel {ch['name']} cannot reach {f/1e6:.5f} MHz, which "
+                    f"is in leg {leg['name']}'s own channel list")
 
     ports = sorted(int(ch['destination'].rsplit(':', 1)[1])
                    for ch in cfg['channels'])
