@@ -80,3 +80,10 @@ dist/
 
 # Local environment (hostnames, secrets)
 .env
+
+# SQLite database. Derived (rebuild with scripts/import_to_sqlite.py) and holds
+# transcripts of live public-safety traffic — same local-only posture as
+# recordings/ per the privacy note in README.md.
+sdr.db
+sdr.db-wal
+sdr.db-shm
