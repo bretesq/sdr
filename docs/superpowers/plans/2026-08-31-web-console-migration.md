@@ -2949,14 +2949,21 @@ scripts/    lwin_listen.sh           <- start listening (one command)
 
 - [ ] **Step 4: Remove the Python server**
 
-Delete, don't archive — it is in git history if ever needed, and a `server.py.old` next to a live Nuxt app is a trap for the next reader.
+**These files are NOT tracked by git.** `git ls-files web/` returns nothing and zero
+commits touch them — they were written but never `git add`ed. So `git rm` fails, and
+deletion is **permanent with no git recovery**. Copy them somewhere outside the repo
+first:
 
 ```bash
-git rm web/server.py web/index.html web/serve.sh
+mkdir -p ~/sdr-private-backup/python-console
+cp -p web/server.py web/index.html web/serve.sh ~/sdr-private-backup/python-console/
 
-# Untracked leftovers from the Python era
+rm -f web/server.py web/index.html web/serve.sh
 rm -rf web/__pycache__ web/server.pid web/server.lock
 ```
+
+Delete rather than rename — a `server.py.old` beside a live Nuxt app is a trap for the
+next reader, and the backup above is the real safety net.
 
 `web/` survives as the home of the four gitignored sidecar files (`listen.log`, `listen.pid`, `listen.config.json`, `listen.started`), so do not remove the directory itself.
 
