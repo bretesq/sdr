@@ -224,8 +224,9 @@ TG17167_17-BRPD-DSP2_20260830-170008.wav     Baton Rouge PD Dispatch 2   (12.1s)
 TG18000_19-EFSO-DISP_20260830-170203.wav     East Feliciana Sheriff      (15.1s)
 TG5000_SP-A-DISP1_20260830-170051.wav        State Police Troop A Disp 1
 ```
-`recordings/calls.json` carries full metadata (tgid, alpha, description, category,
-encryption flag, start time, duration).
+`sdr.db` carries full metadata per call — talkgroup, alpha, description, category,
+encryption, start time, duration, transcript, and the P25 fields below. It is written
+as each call is flushed, so a crash loses at most the call in progress.
 
 ### How the talkgroup gets into the filename
 The UDP audio stream carries **only PCM** — no talkgroup ID. `udp_audio_record.py`
@@ -424,6 +425,86 @@ across more talkgroups would firm this up.
 **No decryption was attempted and no key material was recovered** — only the cleartext
 algorithm identifier was read. Encrypted talkgroups remain excluded from recording.
 
+## Data store
+
+Everything lives in **`sdr.db`** (SQLite): 4,163 talkgroups, 149 sites, 243
+categories, every recorded call with its transcript, and the control-channel
+grant log. The JSON files under `reference/` and the `.wav`/`.txt` files under
+`recordings/` remain on disk — the database indexes them, it does not contain
+them — and `op25` still reads its whitelist and talkgroup TSV as files.
+
+```bash
+python3 scripts/import_to_sqlite.py          # (re)build from the flat files
+python3 scripts/import_grants.py results/lwin_cdr.log
+python3 scripts/list_recordings.py -n 20 --search dispatch
+```
+
+The database is gitignored: it holds transcripts of live public-safety traffic
+and per-radio identifiers, the same posture as `recordings/`. It is fully
+rebuildable from the files on disk.
+
+### Why this replaced the flat files
+
+`udp_audio_record.py` used to write `recordings/calls.json` in its `finally`
+block containing **only that session's calls** — a truncating write, so every
+run discarded the metadata for every recording before it. A 60-second session
+took the file from 2,953 entries to 7; the next one took it to 1. Transcripts
+merged in by `stt_watch.py` were clobbered a few minutes later by the same
+write, which is why no transcript ever survived there.
+
+Calls are now `INSERT`ed as they are flushed. Nothing was lost — every field is
+derivable, so `scripts/import_to_sqlite.py` reconstructed the full history from
+the filenames, the WAV headers and the reference DB.
+
+### Per-call P25 metadata
+
+Beyond the talkgroup, each call records what op25 observed for it:
+
+| Field | Source | Note |
+|---|---|---|
+| `freq` | `voice update: tg(N), freq(H)` | the voice channel that call used |
+| `algid` / `keyid` / `mi` | ESS header in the LDU2 frame | needs `--ess` (op25 `-v 10`) |
+| `nac` / `sysid` | NID / `rfss_sts_bcst` | `0x1bd` on this system |
+| `src_addr` | grant TSBK `srcaddr` | the transmitting radio |
+| `rfss` / `site` | `rfss_sts_bcst` | control-channel only, see below |
+
+**ESS is the authoritative encryption signal for a call**, and it disagrees with
+the reference DB's static per-talkgroup flag in both directions — TG 17086 is
+flagged `full` upstream but transmitted `algid 0x80` (clear) in all 23
+observations, and TG 17165 is flagged `partial` while most of its calls are
+clear. The console shows both: **Enc** is the talkgroup's label, **Observed** is
+what this call actually transmitted. `--ess` costs roughly 10x the log volume
+(~15 MB/hour against ~2.4), so it is off by default.
+
+**`rfss`/`site` are normally NULL on recorded calls, and that is structural.**
+They come from `rfss_sts_bcst`, a control-channel broadcast: 891 occurrences in
+a control-channel-only capture, zero in a voice-following log. Capturing them
+per call would need the control channel watched *while* voice is followed —
+two receivers — and both RTL-SDRs measure +2.7 dB on the control channel
+against the ~15 dB P25 needs (section 7). The `grants` table carries the site
+for control-channel captures instead.
+
+> A note on terminology, since it is easy to get wrong: **DUID is not the
+> transmitting radio.** `p25_framer.cc:101-102` extracts two fields from the
+> NID — `nac = (acc >> 52) & 0xfff` (12 bits) and `duid = (acc >> 48) & 0x00f`
+> (4 bits). DUID is a 4-bit *frame type* (HDU `0x0`, LDU1 `0x5`, LDU2 `0xa`,
+> TDU `0x3`, TSBK `0x7`, TDULC `0xf`), which is why op25 tests
+> `duid == 0x3 || duid == 0xf` to detect voice termination. The 24-bit "who
+> transmitted" field is the Source ID, logged as `srcaddr` and stored as
+> `src_addr`. It is sparse: 3,223 of 3,765 real grants carry `srcaddr=0`.
+
+## Tests
+
+```bash
+npm test                                        # both suites
+./node_modules/.bin/vitest run                  # 28 TypeScript
+python3 -m unittest discover -s scripts/tests   # 35 Python
+```
+
+The TypeScript tests run against the real `sdr.db` rather than fixtures,
+deliberately: every data bug here has been a disagreement between assumed and
+real data, and a fixture reproduces the assumption rather than the data.
+
 ## Web console
 
 A **Nuxt 3 + PrimeVue 4** app (`pages/`, `components/`, `server/api/`) replaces the
@@ -458,8 +539,8 @@ Open **http://10.56.1.77:3000/** (or **http://127.0.0.1:3000/**) — three panel
   `lwin_listen.sh`'s own `cleanup` trap turns into an orderly teardown of op25, the
   recorder and the STT watcher. Status polls every 5 s and shows the live call count,
   the pid, and what the session is following.
-- **Recordings** — every `recordings/TG*.wav` with metadata from `recordings/calls.json`
-  and the reference DB, plus its Whisper transcript. Search covers talkgroup, alpha,
+- **Recordings** — every `recordings/TG*.wav` with its metadata and Whisper
+  transcript from `sdr.db`. Search covers talkgroup, alpha,
   description, category, filename **and transcript text**; the encryption filter offers
   clear / partial / full / unlabelled. `[BLANK_AUDIO]` transcripts (a silenced encrypted
   burst, not speech) are dimmed. Audio is served with HTTP Range support — including
@@ -486,18 +567,24 @@ assertions against the live reference DB (4163 talkgroups, 601 in the Baton Roug
 
 ## Layout
 ```
+sdr.db      SQLite: talkgroups, sites, calls, transcripts, grants  [gitignored]
 pages/ components/ server/          <- Nuxt web console (port 3000), see above
 web/        listen.* runtime state  <- pid/log/config, gitignored
 scripts/    lwin_listen.sh          <- start listening (one command)
-            list_recordings.py      <- show what was recorded
+            sdr_db.py               <- schema + the writers the recorder uses
+            import_to_sqlite.py     <- (re)build sdr.db from the flat files
+            import_grants.py        <- control-channel grants -> the CDR table
+            list_recordings.py      <- show what was recorded (reads sdr.db)
             lwin_cdr_run.sh / lwin_cdr.py   <- full call-detail record
             find_signals.py         <- wideband survey (rolling baseline)
             udp_audio_record.py lwin_decode.sh annotate_lwin.py
             scan_p25band.py sweep_peaks.py find_control.py fetch_lwin_db.py
             stt_transcribe.py       <- batch-transcribe existing recordings (whisper.cpp)
             stt_watch.py            <- live STT watcher (transcribes new .wav as they land)
+            tests/                  <- 35 unittest cases over the above
 results/    sweeps, op25 logs, RDS json, SPECTRUM_REPORT.md
 reference/  lwin_talkgroups.json  lwin_sites.json  lwin_categories.json
+            (import sources for sdr.db; op25 still reads its whitelist as a file)
 captures/   raw IQ (.cs8) and op25 input (.cfile)  [large, gitignored]
 src/        op25 (patched), rtl-ais, redsea, acarsdec
 tools/       whisper.cpp (built binaries + shared libs)
@@ -513,8 +600,9 @@ Audio from `udp_audio_record.py` is 8 kHz mono S16LE PCM. Transcription is **loc
 ```bash
 python3 scripts/stt_transcribe.py --force     # transcribe all existing .wav
 ```
-Writes `recordings/TG*.txt` (one per wav) and merges transcripts into `recordings/calls.json`
-(a `transcript` field per call).
+Writes `recordings/TG*.txt` (one per wav) and indexes them in `sdr.db`, where FTS5
+makes them searchable from the console. The `.txt` beside the `.wav` stays the
+durable copy; the database only indexes it.
 
 **Live (alongside `lwin_listen.sh`):**
 ```bash
@@ -522,7 +610,7 @@ Writes `recordings/TG*.txt` (one per wav) and merges transcripts into `recording
 ```
 Launches `scripts/stt_watch.py` in the background. Every new `TG*.wav` that
 `udp_audio_record.py` saves is picked up within a few seconds and transcribed with the same
-`small.en` model, then merged into `calls.json`. `Ctrl-C` stops op25, the recorder, and the
+`small.en` model, then indexed in `sdr.db`. `Ctrl-C` stops op25, the recorder, and the
 STT watcher together.
 
 Performance on this box (32 cores): ~1.3 s per 3 s clip, ~103 s for 82 clips total. No API key,
