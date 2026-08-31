@@ -9,7 +9,12 @@ merging the transcript into calls.json.
 Usage:
   stt_watch.py [--dir recordings] [--interval 3]
 
-Idempotent: only transcribes files without an existing .txt.
+Idempotent: only transcribes files without an existing .txt. A file that
+already has a .txt still gets its transcript re-indexed into sdr.db, because
+the .txt is written before the database row is committed and a process killed
+between the two would otherwise leave that transcript permanently unindexed.
+
+Works newest-first, so live calls are transcribed ahead of any backlog.
 """
 import argparse, glob, json, os, signal, subprocess, sys, time
 
@@ -80,13 +85,56 @@ def main():
     def _sig(_s, _f): stop['flag'] = True
     signal.signal(signal.SIGINT, _sig); signal.signal(signal.SIGTERM, _sig)
 
+    # Which transcripts the database already has, read once. None means the
+    # lookup failed, in which case re-indexing is skipped entirely rather than
+    # blindly rewriting every row.
+    indexed: set[str] | None = None
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import sdr_db
+        _db = sdr_db.connect()
+        try:
+            indexed = {r['file'] for r in _db.execute(
+                'SELECT file FROM calls WHERE transcript IS NOT NULL')}
+        finally:
+            _db.close()
+    except Exception as e:                                 # noqa: BLE001
+        print(f'stt_watch: cannot read indexed transcripts ({e}); '
+              f'will not re-index orphaned .txt files', flush=True)
+
     print(f'stt_watch: tailing {a.dir} for new .wav (every {a.interval}s)', flush=True)
+    if indexed is not None:
+        print(f'stt_watch: {len(indexed)} transcripts already indexed', flush=True)
     while not stop['flag']:
-        for w in sorted(glob.glob(os.path.join(a.dir, 'TG*.wav'))):
+        # NEWEST FIRST, by mtime.
+        #
+        # This was `sorted(glob.glob(...))`, i.e. by filename — and the names are
+        # TG<id>_<alpha>_<timestamp>.wav, so that sorts by TALKGROUP ID, not by
+        # time. With any backlog, whisper ground through low-numbered talkgroups
+        # while the calls just recorded sat at the bottom of the list. Observed:
+        # +174 transcripts against +34 new calls in one session, almost all of it
+        # backfill, with the operator watching recent rows stay empty.
+        #
+        # Live calls now win; the backlog drains behind them.
+        wavs = glob.glob(os.path.join(a.dir, 'TG*.wav'))
+        for w in sorted(wavs, key=lambda p: os.path.getmtime(p), reverse=True):
             if w in seen: continue
             base = os.path.splitext(os.path.basename(w))[0]
             txt = os.path.join(a.dir, base + '.txt')
             if os.path.exists(txt):
+                # A .txt with no DB row is possible: the .txt is written first
+                # and the row committed after, so a process killed between the
+                # two leaves that transcript unindexed forever — this skip means
+                # the file is never revisited. Re-index just those, rather than
+                # requiring a separate import_to_sqlite.py run.
+                #
+                # Gated on `indexed` so this costs one query at startup instead
+                # of one connection per .txt on disk: 3,644 files here, of which
+                # 12 were actually missing from the database.
+                name = os.path.basename(w)
+                if indexed is not None and name not in indexed:
+                    merge_transcript(os.path.join(a.dir, 'calls.json'), a.dir, name)
+                    indexed.add(name)
                 seen.add(w); continue
             t0 = time.time()
             print(f'stt_watch: transcribing {os.path.basename(w)}', flush=True)

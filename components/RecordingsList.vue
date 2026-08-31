@@ -14,7 +14,7 @@
         <Button
           v-if="pending > 0 && !live"
           :label="`${pending} new`" icon="pi pi-arrow-down" size="small" text
-          :aria-label="`Load ${pending} new recordings`" @click="load"
+          :aria-label="`Load ${pending} new recordings`" @click="load()"
         />
         <span v-if="live" class="text-xs text-color-secondary" aria-live="polite">
           {{ streamOk ? 'live' : 'live (reconnecting)' }}
@@ -24,13 +24,13 @@
           :aria-label="live ? 'Freeze the table' : 'Resume live updates'"
           @click="toggleLive"
         />
-        <Button icon="pi pi-refresh" text rounded aria-label="Reload recordings" :loading="loading" @click="load" />
+        <Button icon="pi pi-refresh" text rounded aria-label="Reload recordings" :loading="loading" @click="load()" />
       </div>
     </div>
 
     <Message v-if="error" severity="error" :closable="false" class="mb-3">
       {{ error }}
-      <Button label="Retry" text size="small" class="ml-2" @click="load" />
+      <Button label="Retry" text size="small" class="ml-2" @click="load()" />
     </Message>
 
     <div class="flex gap-2 mb-3">
@@ -260,7 +260,7 @@ onUnmounted(() => {
 // now covers the same ground: Stop is the one moment the operator definitely
 // wants the final state, and it costs one reload.
 const recordingsRefresh = useState<number>('recordings-refresh', () => 0)
-watch(recordingsRefresh, load)
+watch(recordingsRefresh, () => load())   // wrapped: watch passes a value, which would land in `silent`
 
 /**
  * Live updates, over /api/recordings/stream.
@@ -290,12 +290,14 @@ function onSummary(next: { calls: number, transcripts: number }): void {
   if (!changed) return
   pending.value += Math.max(0, next.calls - seen.calls)
   seen = next
-  if (live.value) load()
+  if (live.value) load(true)
 }
 
 function toggleLive(): void {
   live.value = !live.value
-  if (live.value) load()
+  // Silent here too: resuming should slot the missed rows in, not blank the
+  // table and rebuild it.
+  if (live.value) load(true)
 }
 
 onMounted(() => {
@@ -328,9 +330,36 @@ onUnmounted(() => {
  */
 let requestSeq = 0
 
-async function load(): Promise<void> {
+/**
+ * Merge fetched rows into the displayed ones, REUSING the existing row object
+ * wherever the key matches.
+ *
+ * Replacing `recordings.value` with fresh objects gives every row a new
+ * identity, so PrimeVue's keyed diff re-creates the whole virtual scroller —
+ * the table visibly rebuilds and jumps, which reads as the page refreshing.
+ * Object.assign onto the existing row updates the fields that changed (in
+ * practice `transcript`) while the reference stays stable, so only that cell
+ * re-renders.
+ */
+function mergeRows(next: Recording[]): void {
+  const byFile = new Map(recordings.value.map(r => [r.file, r]))
+  recordings.value = next.map((row) => {
+    const existing = byFile.get(row.file)
+    if (!existing) return row
+    Object.assign(existing, row)
+    return existing
+  })
+}
+
+/**
+ * @param silent background refresh — no spinner, and rows are merged rather
+ *   than replaced. Used for every SSE-driven update: the loading overlay
+ *   flashing across the table several times a minute is worse than no
+ *   indication at all, and the operator already has the "live" label.
+ */
+async function load(silent = false): Promise<void> {
   const seq = ++requestSeq
-  loading.value = true
+  if (!silent) loading.value = true
   try {
     const res = await $fetch<ApiResponse<Recording[]> & { total?: number }>(
       '/api/recordings/list',
@@ -341,7 +370,8 @@ async function load(): Promise<void> {
     )
     if (seq !== requestSeq) return          // superseded; drop it
     if (res.success && res.data) {
-      recordings.value = res.data
+      if (silent) mergeRows(res.data)
+      else recordings.value = res.data
       pending.value = 0
       if (typeof res.total === 'number' && !search.value.trim() && encFilter.value === 'all') {
         total.value = res.total
@@ -358,7 +388,7 @@ async function load(): Promise<void> {
     // table on a transient blip. Keep the last known rows and say so.
     error.value = apiError(e, 'Could not reach the server.')
   } finally {
-    if (seq === requestSeq) loading.value = false
+    if (seq === requestSeq && !silent) loading.value = false
   }
 }
 
