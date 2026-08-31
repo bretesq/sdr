@@ -11,6 +11,8 @@
 **Spec:** `docs/superpowers/specs/2026-08-31-web-console-nuxt-migration.md`
 **Review:** `docs/superpowers/plans/2026-08-31-review-findings.md` — this revision folds in B1–B4 and M1–M19.
 
+> **If you are executing this plan with parallel agents:** each task ends with its own `git add`/`git commit` step, which is correct for a single implementer working straight through. When tasks run concurrently, those steps race on `.git/index.lock` — the coordinator should commit at wave boundaries instead, and agents should be told explicitly not to run git write commands. Tasks 3 and 4 edit the same file (`server/utils/files.ts`) and must go to the same agent.
+
 ## Global Constraints
 
 - Node.js 22 LTS (the box currently runs v24.15.0; pin to 22 if Nuxt misbehaves)
@@ -384,7 +386,7 @@ export default defineConfig({
 ```bash
 cd /home/besquivel/rtl
 pnpm install
-pnpm dev
+./node_modules/.bin/nuxt dev --host 0.0.0.0
 ```
 
 Expected: server listens on `http://0.0.0.0:3000`, no module resolution errors. Stop with Ctrl-C.
@@ -407,7 +409,7 @@ git commit -m "feat: initialize Nuxt 3 + PrimeVue 4 project"
 - Test: `server/utils/paths.test.ts`
 
 **Interfaces:**
-- Produces: `sdrRoot(): string`, `recordingsDir(): string`, `referenceDir(): string`, `scriptsDir(): string`, `listenLogPath(): string`, `whitelistPath(): string`, `safeRecordingPath(name: string): string | null`
+- Produces: `sdrRoot()`, `recordingsDir()`, `referenceDir()`, `scriptsDir()`, `whitelistPath()`, `safeRecordingPath(name: string): string | null`, and the four Nitro-owned sidecar paths `listenLogPath()`, `listenPidPath()`, `listenConfigPath()`, `listenStartedPath()` — all `(): string` except `safeRecordingPath`. Ten exports; the last three are consumed by Task 6's session store.
 
 Every later task consumes these instead of hardcoding `/home/besquivel/rtl`.
 
@@ -444,7 +446,7 @@ describe('safeRecordingPath', () => {
 - [ ] **Step 2: Run the test, confirm it fails**
 
 ```bash
-pnpm vitest run server/utils/paths.test.ts
+./node_modules/.bin/vitest run server/utils/paths.test.ts
 ```
 
 Expected: FAIL — `Cannot find module './paths'`. (Vitest and its config were installed in Task 1.)
@@ -516,7 +518,7 @@ export function safeRecordingPath(name: string): string | null {
 - [ ] **Step 4: Run the test, confirm it passes**
 
 ```bash
-pnpm vitest run server/utils/paths.test.ts
+./node_modules/.bin/vitest run server/utils/paths.test.ts
 ```
 
 Expected: 4 passed.
@@ -524,9 +526,11 @@ Expected: 4 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add server/utils/paths.ts server/utils/paths.test.ts package.json
+git add server/utils/paths.ts server/utils/paths.test.ts
 git commit -m "feat: add path resolution and filename validation utility"
 ```
+
+(Task 2 does not modify `package.json` — do not stage it here.)
 
 ---
 
@@ -584,7 +588,7 @@ describe('loadJSON', () => {
 - [ ] **Step 2: Run the test, confirm it fails**
 
 ```bash
-pnpm vitest run server/utils/files.test.ts
+./node_modules/.bin/vitest run server/utils/files.test.ts
 ```
 
 Expected: FAIL — module not found.
@@ -687,7 +691,7 @@ export function scanRecordings(
 - [ ] **Step 4: Run the test, confirm it passes**
 
 ```bash
-pnpm vitest run server/utils/files.test.ts
+./node_modules/.bin/vitest run server/utils/files.test.ts
 ```
 
 Expected: 4 passed.
@@ -765,7 +769,7 @@ describe('mergeCalls', () => {
 - [ ] **Step 2: Run, confirm failure**
 
 ```bash
-pnpm vitest run server/utils/files.test.ts
+./node_modules/.bin/vitest run server/utils/files.test.ts
 ```
 
 Expected: FAIL — `mergeCalls` is not exported.
@@ -820,7 +824,7 @@ export function mergeCalls(recordings: Recording[], calls: unknown): Recording[]
 - [ ] **Step 4: Run, confirm pass**
 
 ```bash
-pnpm vitest run server/utils/files.test.ts
+./node_modules/.bin/vitest run server/utils/files.test.ts
 ```
 
 Expected: 8 passed.
@@ -940,7 +944,7 @@ describe('filterTalkgroups', () => {
 - [ ] **Step 2: Run, confirm failure**
 
 ```bash
-pnpm vitest run server/utils/talkgroups.test.ts
+./node_modules/.bin/vitest run server/utils/talkgroups.test.ts
 ```
 
 - [ ] **Step 3: Implement `server/utils/talkgroups.ts`**
@@ -1033,7 +1037,7 @@ export function filterTalkgroups(
 - [ ] **Step 4: Run, confirm pass**
 
 ```bash
-pnpm vitest run server/utils/talkgroups.test.ts
+./node_modules/.bin/vitest run server/utils/talkgroups.test.ts
 ```
 
 Expected: **8 passed**. Three of these assert against the live DB (4163 entries, ascending tgid, 601 BR-area), so a passing run is also the real-data verification — no separate step needed.
@@ -1132,7 +1136,7 @@ describe('countCalls', () => {
 - [ ] **Step 2: Run, confirm failure**
 
 ```bash
-pnpm vitest run server/utils/processes.test.ts
+./node_modules/.bin/vitest run server/utils/processes.test.ts
 ```
 
 - [ ] **Step 3: Understand why `countCalls` counts filenames (no action — read this)**
@@ -1382,7 +1386,7 @@ All three sidecar paths are already in `.gitignore` (`web/listen.pid`, `web/list
 - [ ] **Step 6: Run, confirm pass**
 
 ```bash
-pnpm vitest run server/utils/processes.test.ts
+./node_modules/.bin/vitest run server/utils/processes.test.ts
 ```
 
 Expected: **7 passed**.
@@ -1523,7 +1527,7 @@ export default defineEventHandler(() => {
 - [ ] **Step 4: Exercise the routes end to end**
 
 ```bash
-pnpm dev &
+./node_modules/.bin/nuxt dev --host 0.0.0.0 &
 sleep 5
 curl -s localhost:3000/api/listen/status
 curl -s -X POST localhost:3000/api/listen/start \
@@ -1559,7 +1563,7 @@ Then verify the pidfile recovery path (M1), which is the whole point of the side
 curl -s -X POST localhost:3000/api/listen/start \
   -H 'Content-Type: application/json' -d '{"preset":"pd","duration":120}'
 kill %1 && sleep 1          # kill the Nitro server, NOT the recorder
-pnpm dev & sleep 5
+./node_modules/.bin/nuxt dev --host 0.0.0.0 & sleep 5
 curl -s localhost:3000/api/listen/status    # must still report running:true
 curl -s -X POST localhost:3000/api/listen/stop
 pgrep -af 'lwin_listen|rx.py|udp_audio_record|stt_watch' || echo "clean"
@@ -1709,7 +1713,7 @@ export default defineEventHandler((event) => {
 - [ ] **Step 4: Exercise the routes**
 
 ```bash
-pnpm dev &
+./node_modules/.bin/nuxt dev --host 0.0.0.0 &
 sleep 5
 
 # Count and transcript coverage — transcripts must be present, or client-side
@@ -2149,7 +2153,7 @@ async function stop(): Promise<void> {
 - [ ] **Step 2: Verify in the browser — including the CSS shim**
 
 ```bash
-pnpm dev
+./node_modules/.bin/nuxt dev --host 0.0.0.0
 ```
 
 Open `http://localhost:3000` and check, in order:
@@ -2667,7 +2671,7 @@ useHead({ title: 'SDR Console — LWIN P25' })
 - [ ] **Step 3: Full manual pass in dev**
 
 ```bash
-pnpm dev
+./node_modules/.bin/nuxt dev --host 0.0.0.0
 ```
 
 Walk every acceptance check. Numbers are the point — "it looks fine" would have passed the pre-review plan.
@@ -2699,7 +2703,7 @@ Walk every acceptance check. Numbers are the point — "it looks fine" would hav
 - [ ] **Step 4: Production build**
 
 ```bash
-pnpm build
+./node_modules/.bin/nuxt build
 node .output/server/index.mjs &
 sleep 5
 curl -s localhost:3000/api/listen/status
@@ -2714,7 +2718,7 @@ Expected: build succeeds; status answers; talkgroups returns **601**; the Range 
 - [ ] **Step 5: Full test suite**
 
 ```bash
-pnpm vitest run
+./node_modules/.bin/vitest run
 ```
 
 Expected: **4 + 8 + 8 + 7 = 27 passed** across `paths`, `files`, `talkgroups`, `processes`.
@@ -2757,10 +2761,14 @@ old Python stdlib server.
 
 ```bash
 pnpm install
-pnpm dev             # http://0.0.0.0:3000, hot reload
+./node_modules/.bin/nuxt dev --host 0.0.0.0    # http://0.0.0.0:3000, hot reload
 # or
-pnpm build && node .output/server/index.mjs
+./node_modules/.bin/nuxt build && node .output/server/index.mjs
 ```
+
+> Commands go through `./node_modules/.bin/` rather than `pnpm run`: pnpm 11.17
+> aborts every script run with `ERR_PNPM_IGNORED_BUILDS` for esbuild, whose
+> platform binaries are in fact installed. `pnpm install` itself is fine.
 
 Open **http://10.56.1.77:3000/** (or **http://127.0.0.1:3000/**) — three panels:
 
@@ -2812,12 +2820,12 @@ rm -rf web/__pycache__ web/server.pid web/server.lock
 - [ ] **Step 5: Full verification after removal**
 
 ```bash
-pnpm build
+./node_modules/.bin/nuxt build
 node .output/server/index.mjs &
 sleep 5
 curl -s localhost:3000/api/listen/status
 curl -s localhost:3000/api/recordings/list | head -c 200
-pnpm vitest run
+./node_modules/.bin/vitest run
 git status --short          # nothing stray left in web/
 ```
 
@@ -2837,8 +2845,8 @@ git commit -m "docs: document Nuxt web console and remove Python server"
 Each carries the number that makes it falsifiable. A criterion that can be satisfied by "it looks fine" is not a criterion — three of the pre-review versions of these were unreachable and passed inspection anyway.
 
 **Build and tests**
-- [ ] `pnpm build` succeeds with no TypeScript errors, and no `any` appears anywhere in `server/` or `components/`
-- [ ] `pnpm vitest run` → **27 passed**
+- [ ] `./node_modules/.bin/nuxt build` succeeds with no TypeScript errors, and no `any` appears anywhere in `server/` or `components/`
+- [ ] `./node_modules/.bin/vitest run` → **27 passed**
 
 **Rendering**
 - [ ] Panels have a resolved background colour (no unresolved `var(--surface-card)` in devtools)
