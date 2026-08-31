@@ -385,15 +385,99 @@ class TestMigrationFromLegacySchema(unittest.TestCase):
             db.execute('PRAGMA user_version').fetchone()[0], sdr_db._USER_VERSION)
         db.close()
 
-    def test_user_version_is_not_rewritten_on_a_second_connect(self):
-        """A live _migrate that keeps rebuilding FTS on every connect would
-        pass every other assertion here while quietly re-scanning the whole
-        table on each open against the real, larger database."""
+    def test_migrating_a_legacy_db_keeps_search_working_immediately(self):
+        """The dark-window regression: without seeding transcript_norm from
+        transcript before the rebuild, every pre-migration row would have
+        transcript_norm = NULL and 'rebuild' would index nothing for any of
+        them, making the whole existing corpus unsearchable until a later
+        backfill task overwrites the placeholder with normalized text."""
         db = sdr_db.connect(self.tmp.name)
+        hit = db.execute(
+            "SELECT rowid FROM calls_fts WHERE calls_fts MATCH 'Zachary'").fetchone()
+        self.assertIsNotNone(hit)
         db.close()
+
+    def test_fts_is_not_rebuilt_on_a_second_connect(self):
+        """PRAGMA user_version alone cannot prove the guard works: an
+        unguarded _migrate that re-sets user_version = 1 every time would
+        still pass an assertion on that PRAGMA's value. A 'rebuild' command
+        recomputes the FTS index purely from the content table, discarding
+        any row not backed by one — so a row inserted directly into
+        calls_fts, with no matching row in calls, is a canary: it survives
+        only if no rebuild fires on the second connect.
+        """
         db = sdr_db.connect(self.tmp.name)
-        self.assertEqual(
-            db.execute('PRAGMA user_version').fetchone()[0], sdr_db._USER_VERSION)
+        db.execute(
+            "INSERT INTO calls_fts(rowid, transcript_norm, codes_text) "
+            "VALUES (999999, 'zzzcanary', '')")
+        db.commit()
+        db.close()
+
+        db = sdr_db.connect(self.tmp.name)
+        hit = db.execute(
+            "SELECT rowid FROM calls_fts WHERE calls_fts MATCH 'zzzcanary'").fetchone()
+        self.assertIsNotNone(hit, 'a second connect rebuilt calls_fts and discarded it')
+        db.close()
+
+
+class TestMigrationFromPartiallyMigratedTriggers(unittest.TestCase):
+    """A database with the legacy single-column calls_fts but only ONE of
+    the three legacy triggers present by that name.
+
+    This is not expected on the real sdr.db (all three have existed since
+    before this feature), but SCHEMA's own `CREATE TRIGGER IF NOT EXISTS`
+    runs before _migrate on every connect, so if it ever finds a trigger
+    name missing it creates that one against the NEW column names while
+    calls_fts is still old-shaped underneath it. If _migrate's own seeding
+    UPDATE ran before dropping the mismatched trigger, that trigger would
+    fire on the UPDATE and fail with "table calls_fts has no column named
+    transcript_norm" — a real failure hit and fixed while adding the
+    seeding step, not a hypothetical.
+    """
+
+    _PARTIAL_LEGACY_SCHEMA = """
+        CREATE TABLE calls (
+          id         INTEGER PRIMARY KEY,
+          file       TEXT NOT NULL UNIQUE,
+          tgid       INTEGER,
+          start      REAL NOT NULL,
+          dur        REAL NOT NULL DEFAULT 0,
+          transcript TEXT,
+          src_addr   INTEGER,
+          algid      INTEGER,
+          rfss       INTEGER,
+          site       INTEGER
+        );
+        CREATE VIRTUAL TABLE calls_fts USING fts5(
+          transcript, content = 'calls', content_rowid = 'id'
+        );
+        CREATE TRIGGER calls_ai AFTER INSERT ON calls BEGIN
+          INSERT INTO calls_fts(rowid, transcript) VALUES (new.id, new.transcript);
+        END;
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+        self.tmp.close()
+        legacy = sqlite3.connect(self.tmp.name)
+        legacy.executescript(self._PARTIAL_LEGACY_SCHEMA)
+        legacy.execute(
+            "INSERT INTO calls (file, start, dur, transcript) VALUES "
+            "('old.wav', 0, 0, 'hello world')")
+        legacy.commit()
+        legacy.close()
+
+    def tearDown(self):
+        os.unlink(self.tmp.name)
+
+    def test_migration_does_not_crash_and_keeps_search_working(self):
+        db = sdr_db.connect(self.tmp.name)
+        row = db.execute(
+            "SELECT transcript_norm FROM calls WHERE file = 'old.wav'").fetchone()
+        self.assertEqual(row['transcript_norm'], 'hello world')
+        hit = db.execute(
+            "SELECT rowid FROM calls_fts WHERE calls_fts MATCH 'hello'").fetchone()
+        self.assertIsNotNone(hit)
         db.close()
 
 

@@ -280,11 +280,41 @@ def _migrate(db: sqlite3.Connection) -> None:
     # `calls`. Indexing transcript_norm rather than transcript is deliberate:
     # normalization only ever rewrites code tokens, and codes_text carries the
     # raw forms too, so nothing becomes unsearchable.
-    db.executescript("""
+    #
+    # Everything below runs inside one BEGIN IMMEDIATE .. COMMIT: dropping and
+    # recreating calls_fts as separate autocommitted statements leaves a
+    # window where a concurrent reader (the recording pipeline is always
+    # live) sees "no such table: calls_fts" — a SQLITE_ERROR that
+    # busy_timeout does nothing for, since that only retries SQLITE_BUSY.
+    #
+    # The UPDATE seeds transcript_norm from the existing raw transcript
+    # BEFORE the rebuild. Without it, every pre-migration row has
+    # transcript_norm = NULL, so 'rebuild' would index nothing for any of
+    # them and search on the whole existing corpus would go dark from the
+    # moment this migration lands until a later backfill task overwrites
+    # these placeholder values with normalized text. Seeding first means
+    # search keeps working (over raw text) the instant the migration runs.
+    #
+    # The UPDATE runs AFTER the DROP TRIGGERs/TABLE, not before: SCHEMA above
+    # uses `CREATE TRIGGER IF NOT EXISTS` for all three triggers, so on a
+    # database where SCHEMA's own run left any one of the three legacy
+    # triggers missing (by name) while calls_fts itself still exists old-
+    # shaped, SCHEMA would have just (re)created that one trigger against the
+    # NEW column names — a trigger that would then fire on this UPDATE
+    # against the OLD, not-yet-recreated calls_fts and fail with "table
+    # calls_fts has no column named transcript_norm". Dropping first removes
+    # every trigger before anything touches `calls`, so the UPDATE can never
+    # be caught between two mismatched schema generations.
+    db.executescript(f"""
+        BEGIN IMMEDIATE;
+
         DROP TRIGGER IF EXISTS calls_ai;
         DROP TRIGGER IF EXISTS calls_au;
         DROP TRIGGER IF EXISTS calls_ad;
         DROP TABLE IF EXISTS calls_fts;
+
+        UPDATE calls SET transcript_norm = transcript
+          WHERE transcript_norm IS NULL AND transcript IS NOT NULL;
 
         CREATE VIRTUAL TABLE calls_fts USING fts5(
           transcript_norm, codes_text,
@@ -307,9 +337,11 @@ def _migrate(db: sqlite3.Connection) -> None:
         END;
 
         INSERT INTO calls_fts(calls_fts) VALUES('rebuild');
+
+        PRAGMA user_version = {_USER_VERSION};
+
+        COMMIT;
     """)
-    db.execute(f'PRAGMA user_version = {_USER_VERSION}')
-    db.commit()
 
 
 def connect(path: str = DB_PATH) -> sqlite3.Connection:
