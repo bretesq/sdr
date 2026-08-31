@@ -74,7 +74,20 @@
       </Column>
       <Column field="enc" header="Enc" sortable style="width: 7rem">
         <template #body="{ data }">
+          <!-- The reference DB's static per-talkgroup label. -->
           <Tag :value="data.enc ?? 'unknown'" :severity="encSeverity(data.enc)" />
+        </template>
+      </Column>
+      <Column field="algid" header="Observed" sortable style="width: 8rem">
+        <template #body="{ data }">
+          <!-- What the ESS header said for THIS call. Blank when op25 was not
+               run with --ess, which is the default. -->
+          <Tag
+            v-if="data.algid !== null"
+            :value="data.algid === 128 ? 'clear' : (data.algorithm ?? 'enc')"
+            :severity="essSeverity(data.algid)"
+          />
+          <span v-else class="text-color-secondary">—</span>
         </template>
       </Column>
       <Column header="" style="width: 4rem">
@@ -103,6 +116,31 @@
           <div><strong>Category:</strong> {{ selected.cat ?? '—' }}</div>
           <div><strong>Encryption:</strong> {{ selected.enc ?? 'unknown' }}</div>
           <div><strong>Recorded:</strong> {{ formatTime(selected.start) }}</div>
+          <div><strong>Voice channel:</strong> {{ formatFreq(selected.freq) }}</div>
+          <div v-if="selected.site"><strong>Site:</strong> {{ selected.site }}</div>
+          <div v-if="selected.srcAddr">
+            <strong>Transmitting unit:</strong> {{ selected.srcAddr }}
+          </div>
+        </div>
+
+        <!--
+          The per-call encryption header, shown against the reference DB's
+          static flag. When they disagree the ESS is the one to believe: it is
+          read in the clear from this call's own LDU2 frame, whereas the DB
+          label describes the talkgroup in general.
+        -->
+        <div v-if="essLabel(selected)" class="p-2 border-round surface-100 text-sm">
+          <div>
+            <strong>Encryption observed on this call:</strong>
+            {{ essLabel(selected) }}
+          </div>
+          <div class="text-color-secondary mt-1">
+            Reference DB labels this talkgroup
+            <em>{{ selected.enc ?? 'unknown' }}</em>.
+            <span v-if="selected.algid === 128 && selected.enc !== 'clear'">
+              This call transmitted in the clear despite that label.
+            </span>
+          </div>
         </div>
 
         <div>
@@ -131,6 +169,14 @@ interface Recording {
   start: number
   dur: number
   transcript: string | null
+  // P25 metadata read from op25's own output, per call. All optional: a null
+  // means "not observed for this call", never zero or unknown-as-a-value.
+  srcAddr: number | null
+  algid: number | null
+  algorithm: string | null
+  keyid: number | null
+  site: string | null
+  freq: number | null
 }
 
 interface ApiResponse<T> { success: boolean, data?: T, error?: string }
@@ -260,6 +306,28 @@ function formatDuration(sec: number): string {
  */
 function isBlank(t: string): boolean {
   return t.startsWith('[BLANK_AUDIO]')
+}
+
+function formatFreq(hz: number | null): string {
+  return hz ? `${(hz / 1e6).toFixed(4)} MHz` : '—'
+}
+
+/**
+ * What the ESS header said for THIS call, which is the authoritative signal.
+ * The `enc` column beside it is the reference DB's static per-talkgroup label,
+ * and the two genuinely disagree: TG 17086 is flagged 'full' upstream but
+ * transmitted algid 0x80 (clear) in all 23 observations, and TG 17165 is
+ * flagged 'partial' while most of its calls transmit clear.
+ */
+function essLabel(r: Recording): string | null {
+  if (r.algid === null) return null
+  const hex = `0x${r.algid.toString(16).padStart(2, '0')}`
+  return r.keyid ? `${r.algorithm ?? hex} (key 0x${r.keyid.toString(16)})` : (r.algorithm ?? hex)
+}
+
+function essSeverity(algid: number | null): string {
+  if (algid === null) return 'secondary'
+  return algid === 0x80 ? 'success' : 'danger'   // 0x80 is the only clear value
 }
 
 function encSeverity(enc: string | null): string {

@@ -117,6 +117,16 @@ CREATE TABLE IF NOT EXISTS calls (
   mi         TEXT,                  -- 9-byte message indicator, lowercase hex
 
   -- Serving site and channel. (rfss, site) joins to sites.
+  --
+  -- rfss/site are NULL on essentially every recorded call, and that is
+  -- structural rather than a gap to fill. They come from rfss_sts_bcst, a
+  -- CONTROL-channel broadcast: 891 occurrences in a control-channel-only
+  -- capture, 0 in a voice-following log. Populating them per call would need
+  -- the control channel watched WHILE voice is followed, i.e. two receivers —
+  -- and README section 7 measures both RTL-SDRs at +2.7 dB on the control
+  -- channel against the ~15 dB P25 needs. The grants table carries the site
+  -- for control-channel captures; do not backfill it onto calls from a
+  -- constant, because "observed" and "assumed" must not look identical.
   rfss       INTEGER,
   site       INTEGER,
   freq       INTEGER,               -- voice channel, Hz
