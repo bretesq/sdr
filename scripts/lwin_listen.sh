@@ -115,9 +115,18 @@ sleep 2
 
 # Optional: launch the STT watcher so new .wav files are transcribed on arrival.
 if [ "$STT" -eq 1 ]; then
-  python3 "$R/scripts/stt_watch.py" --dir "$R/recordings" &
-  STT_PID=$!
-  echo "STT watcher started (whisper small.en on CPU)"
+  # Do not start a SECOND watcher. One may already be running independently of
+  # any session (the console can start it, and it is the recommended way — see
+  # server/utils/transcriber.ts). Two would double CPU and race each other on
+  # the same .txt writes. A watcher we did not start is also not ours to kill,
+  # so STT_PID stays unset and cleanup leaves it alone.
+  if pgrep -f "stt_watch\.py" >/dev/null 2>&1; then
+    echo "STT watcher already running; leaving it alone"
+  else
+    python3 "$R/scripts/stt_watch.py" --dir "$R/recordings" &
+    STT_PID=$!
+    echo "STT watcher started (whisper small.en on CPU)"
+  fi
 fi
 
 # op25 under a pty so its log is written in real time (python3 -u breaks op25 on 3.14).

@@ -14,23 +14,44 @@
         <Button
           v-if="pending > 0 && !live"
           :label="`${pending} new`" icon="pi pi-arrow-down" size="small" text
-          :aria-label="`Load ${pending} new recordings`" @click="load"
+          :aria-label="`Load ${pending} new recordings`" @click="load()"
         />
         <span v-if="live" class="text-xs text-color-secondary" aria-live="polite">
           {{ streamOk ? 'live' : 'live (reconnecting)' }}
         </span>
+        <!--
+          The transcriber is a process independent of any recording session, so
+          it gets its own control. It used to be started only by a --stt session
+          and killed when that session ended, which is why transcription fell
+          behind: stop recording and it stopped mid-backlog.
+        -->
+        <span
+          v-if="untranscribed > 0" class="text-xs"
+          :class="sttRunning ? 'text-color-secondary' : 'text-orange-500'"
+          :title="sttRunning
+            ? 'Transcribing; some may be silence, which stays blank'
+            : 'Not transcribing — start the transcriber to work through these'"
+        >{{ untranscribed }} untranscribed</span>
+        <Button
+          :icon="sttRunning ? 'pi pi-microphone' : 'pi pi-microphone'"
+          :severity="sttRunning ? 'success' : 'secondary'"
+          text rounded :loading="sttBusy"
+          :aria-label="sttRunning ? 'Stop the transcriber' : 'Start the transcriber'"
+          :title="sttRunning ? 'Transcriber running — click to stop' : 'Transcriber stopped — click to start'"
+          @click="toggleStt"
+        />
         <Button
           :icon="live ? 'pi pi-pause' : 'pi pi-play'" text rounded
           :aria-label="live ? 'Freeze the table' : 'Resume live updates'"
           @click="toggleLive"
         />
-        <Button icon="pi pi-refresh" text rounded aria-label="Reload recordings" :loading="loading" @click="load" />
+        <Button icon="pi pi-refresh" text rounded aria-label="Reload recordings" :loading="loading" @click="load()" />
       </div>
     </div>
 
     <Message v-if="error" severity="error" :closable="false" class="mb-3">
       {{ error }}
-      <Button label="Retry" text size="small" class="ml-2" @click="load" />
+      <Button label="Retry" text size="small" class="ml-2" @click="load()" />
     </Message>
 
     <div class="flex gap-2 mb-3">
@@ -260,7 +281,7 @@ onUnmounted(() => {
 // now covers the same ground: Stop is the one moment the operator definitely
 // wants the final state, and it costs one reload.
 const recordingsRefresh = useState<number>('recordings-refresh', () => 0)
-watch(recordingsRefresh, load)
+watch(recordingsRefresh, () => load())   // wrapped: watch passes a value, which would land in `silent`
 
 /**
  * Live updates, over /api/recordings/stream.
@@ -278,10 +299,49 @@ watch(recordingsRefresh, load)
 const live = ref(true)
 const streamOk = ref(false)
 const pending = ref(0)
+
+/**
+ * Transcriber state, independent of any recording session.
+ *
+ * `untranscribed` comes free from the SSE summary — calls minus transcripts —
+ * so it needs no extra query. Note it never reaches zero: a call whose audio is
+ * silence (or whose encrypted bursts op25 silenced) produces an empty .txt and
+ * is deliberately left NULL rather than storing an empty string. Measured 12
+ * such calls out of 3,686, which is why this is shown as a count rather than as
+ * a "caught up" flag.
+ */
+const sttRunning = ref(false)
+const sttBusy = ref(false)
+const untranscribed = ref(0)
+
+async function refreshStt(): Promise<void> {
+  try {
+    const res = await $fetch<ApiResponse<{ running: boolean }>>('/api/transcribe/status')
+    if (res.success && res.data) sttRunning.value = res.data.running
+  } catch {
+    // Leave the last known state rather than claiming it stopped.
+  }
+}
+
+async function toggleStt(): Promise<void> {
+  sttBusy.value = true
+  const path = sttRunning.value ? '/api/transcribe/stop' : '/api/transcribe/start'
+  try {
+    await $fetch(path, { method: 'POST', body: {} })
+  } catch (e) {
+    error.value = apiError(e, 'Could not change the transcriber state')
+  } finally {
+    // It finishes the file it is on before exiting, so poll rather than
+    // assuming the new state took effect immediately.
+    await refreshStt()
+    sttBusy.value = false
+  }
+}
 let seen: { calls: number, transcripts: number } | null = null
 let es: EventSource | null = null
 
 function onSummary(next: { calls: number, transcripts: number }): void {
+  untranscribed.value = Math.max(0, next.calls - next.transcripts)
   if (seen === null) {                       // first frame: just a baseline
     seen = next
     return
@@ -290,16 +350,25 @@ function onSummary(next: { calls: number, transcripts: number }): void {
   if (!changed) return
   pending.value += Math.max(0, next.calls - seen.calls)
   seen = next
-  if (live.value) load()
+  if (live.value) load(true)
 }
 
 function toggleLive(): void {
   live.value = !live.value
-  if (live.value) load()
+  // Silent here too: resuming should slot the missed rows in, not blank the
+  // table and rebuild it.
+  if (live.value) load(true)
 }
+
+let sttTimer: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
   load()
+  refreshStt()
+  // Its state changes for reasons outside this page — a --stt session starting
+  // one, or the watcher exiting on its own — so it is polled rather than
+  // assumed. 10 s: it is one pgrep, and nothing here is time-critical.
+  sttTimer = setInterval(refreshStt, 10_000)
   // EventSource reconnects on its own after a drop, which is most of why this
   // is SSE and not a hand-rolled fetch loop.
   es = new EventSource('/api/recordings/stream')
@@ -319,6 +388,7 @@ onMounted(() => {
 onUnmounted(() => {
   es?.close()
   es = null
+  if (sttTimer) clearInterval(sttTimer)
 })
 
 /**
@@ -328,9 +398,36 @@ onUnmounted(() => {
  */
 let requestSeq = 0
 
-async function load(): Promise<void> {
+/**
+ * Merge fetched rows into the displayed ones, REUSING the existing row object
+ * wherever the key matches.
+ *
+ * Replacing `recordings.value` with fresh objects gives every row a new
+ * identity, so PrimeVue's keyed diff re-creates the whole virtual scroller —
+ * the table visibly rebuilds and jumps, which reads as the page refreshing.
+ * Object.assign onto the existing row updates the fields that changed (in
+ * practice `transcript`) while the reference stays stable, so only that cell
+ * re-renders.
+ */
+function mergeRows(next: Recording[]): void {
+  const byFile = new Map(recordings.value.map(r => [r.file, r]))
+  recordings.value = next.map((row) => {
+    const existing = byFile.get(row.file)
+    if (!existing) return row
+    Object.assign(existing, row)
+    return existing
+  })
+}
+
+/**
+ * @param silent background refresh — no spinner, and rows are merged rather
+ *   than replaced. Used for every SSE-driven update: the loading overlay
+ *   flashing across the table several times a minute is worse than no
+ *   indication at all, and the operator already has the "live" label.
+ */
+async function load(silent = false): Promise<void> {
   const seq = ++requestSeq
-  loading.value = true
+  if (!silent) loading.value = true
   try {
     const res = await $fetch<ApiResponse<Recording[]> & { total?: number }>(
       '/api/recordings/list',
@@ -341,7 +438,8 @@ async function load(): Promise<void> {
     )
     if (seq !== requestSeq) return          // superseded; drop it
     if (res.success && res.data) {
-      recordings.value = res.data
+      if (silent) mergeRows(res.data)
+      else recordings.value = res.data
       pending.value = 0
       if (typeof res.total === 'number' && !search.value.trim() && encFilter.value === 'all') {
         total.value = res.total
@@ -358,7 +456,7 @@ async function load(): Promise<void> {
     // table on a transient blip. Keep the last known rows and say so.
     error.value = apiError(e, 'Could not reach the server.')
   } finally {
-    if (seq === requestSeq) loading.value = false
+    if (seq === requestSeq && !silent) loading.value = false
   }
 }
 
