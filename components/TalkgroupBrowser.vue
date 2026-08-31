@@ -20,25 +20,36 @@
       <InputText v-model="search" placeholder="Search TG, alpha, desc, category, tag" class="flex-1" />
     </div>
 
+    <!--
+      Virtual scrolling over all 4,163 rows rather than a 12-row pager. Every
+      column sorts; removable-sort lets a third click return to the natural
+      tgid order. Rows are single-line here, so a 40px itemSize is safe.
+    -->
     <DataTable
-      :value="filtered" :loading="loading" paginator :rows="12"
-      data-key="tgid" size="small" striped-rows :row-class="rowClass"
+      :value="filtered" :loading="loading"
+      data-key="tgid" size="small" striped-rows removable-sort
+      :row-class="rowClass"
+      scrollable scroll-height="60vh"
+      :virtual-scroller-options="{ itemSize: 40 }"
     >
-      <template #empty>No talkgroups match.</template>
+      <template #empty>
+        <span v-if="talkgroups.length === 0">No talkgroups loaded.</span>
+        <span v-else>No talkgroups match these filters.</span>
+      </template>
 
-      <Column field="tgid" header="TG" style="width: 6rem" />
-      <Column field="alpha" header="Alpha" style="width: 12rem" />
-      <Column field="desc" header="Description" />
-      <Column field="cat" header="Category" style="width: 14rem" />
-      <Column field="tag" header="Tag" style="width: 9rem" />
-      <Column header="Enc" style="width: 7rem">
+      <Column field="tgid" header="TG" sortable style="width: 6rem" />
+      <Column field="alpha" header="Alpha" sortable style="width: 12rem" />
+      <Column field="desc" header="Description" sortable />
+      <Column field="cat" header="Category" sortable style="width: 14rem" />
+      <Column field="tag" header="Tag" sortable style="width: 9rem" />
+      <Column field="enc" header="Enc" sortable style="width: 7rem">
         <template #body="{ data }">
           <Tag :value="data.enc" :severity="encSeverity(data.enc)" />
           <!-- mode is "D enc" for encrypted talkgroups, "D" otherwise -->
-          <div class="text-sm text-color-secondary">{{ data.mode }}</div>
+          <span class="text-color-secondary ml-1">{{ data.mode }}</span>
         </template>
       </Column>
-      <Column header="Whitelist" style="width: 7rem">
+      <Column field="inWhitelist" header="Whitelist" sortable style="width: 7rem">
         <template #body="{ data }">
           <Tag v-if="whitelist.has(data.tgid)" value="active" severity="info" />
         </template>
@@ -68,6 +79,7 @@ interface Talkgroup {
   enc: 'clear' | 'partial' | 'full'
   tag: string
   mode: string
+  inWhitelist?: boolean
 }
 
 interface Option { value: string, label: string }
@@ -99,7 +111,9 @@ const encOptions: Option[] = [
   { value: 'full',    label: 'Full' },
 ]
 
-const filtered = computed(() => {
+// `inWhitelist` is derived onto each row rather than read from a Set in the
+// template, so the Whitelist column has a real field for PrimeVue to sort on.
+const filtered = computed<Talkgroup[]>(() => {
   const q = search.value.trim().toLowerCase()
   return talkgroups.value.filter((t) => {
     if (category.value && t.cat !== category.value) return false
@@ -111,7 +125,7 @@ const filtered = computed(() => {
       || (t.desc ?? '').toLowerCase().includes(q)
       || (t.cat ?? '').toLowerCase().includes(q)
       || (t.tag ?? '').toLowerCase().includes(q)
-  })
+  }).map(t => ({ ...t, inWhitelist: whitelist.value.has(t.tgid) }))
 })
 
 onMounted(async () => {

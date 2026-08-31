@@ -6,52 +6,79 @@
     </div>
 
     <div class="flex gap-2 mb-3">
-      <InputText v-model="search" placeholder="Search TG, alpha, description" class="flex-1" />
+      <InputText
+        v-model="search" class="flex-1"
+        placeholder="Search talkgroup, alpha, description, category, filename or transcript text"
+      />
       <Select
         v-model="encFilter" :options="encOptions"
         option-label="label" option-value="value" class="w-10rem"
       />
     </div>
 
+    <!--
+      Virtual scrolling, not a paginator. 3,240 rows: the old console showed
+      every row in one scroll, and a fixed 10-row pager was a regression on that.
+      itemSize must be a constant for the virtualiser, so the transcript cell is
+      height-capped and scrolls internally rather than growing the row — see the
+      .transcript rule below. Median transcript is 25 chars and p90 is 103, so
+      three lines shows the great majority in full.
+    -->
     <DataTable
-      :value="filtered" :loading="loading" paginator :rows="10"
-      data-key="file" size="small" striped-rows
+      :value="filtered" :loading="loading"
+      data-key="file" size="small" striped-rows removable-sort
+      scrollable scroll-height="60vh"
+      :virtual-scroller-options="{ itemSize: 62 }"
+      sort-field="start" :sort-order="-1"
     >
-      <template #empty>No recordings yet.</template>
+      <template #empty>
+        <span v-if="recordings.length === 0">No recordings yet.</span>
+        <span v-else>No recordings match this search or filter.</span>
+      </template>
 
-      <Column field="tgid" header="TG" style="width: 6rem" />
-      <Column field="alpha" header="Talkgroup">
+      <Column field="tgid" header="TG" sortable style="width: 6rem" />
+      <Column field="alpha" header="Talkgroup" sortable style="width: 10rem">
         <template #body="{ data }">
           {{ data.alpha ?? '—' }}
         </template>
       </Column>
-      <Column header="Transcript">
+      <Column field="desc" header="Description" sortable style="width: 14rem">
         <template #body="{ data }">
-          <span
-            v-if="data.transcript"
-            class="text-sm"
-            :class="{ blank: isBlank(data.transcript) }"
-          >{{ truncate(data.transcript) }}</span>
-          <span v-else class="text-sm text-color-secondary">—</span>
+          <span class="text-color-secondary">{{ data.desc ?? '—' }}</span>
         </template>
       </Column>
-      <Column header="When" style="width: 11rem">
+      <Column field="transcript" header="Transcript" sortable>
+        <template #body="{ data }">
+          <div
+            v-if="data.transcript"
+            class="transcript"
+            :class="{ blank: isBlank(data.transcript) }"
+          >{{ data.transcript }}</div>
+          <span v-else class="text-color-secondary">—</span>
+        </template>
+      </Column>
+      <Column field="start" header="When" sortable style="width: 11rem">
         <template #body="{ data }">{{ formatTime(data.start) }}</template>
       </Column>
-      <Column header="Len" style="width: 5rem">
+      <Column field="dur" header="Len" sortable style="width: 5rem">
         <template #body="{ data }">{{ formatDuration(data.dur) }}</template>
       </Column>
-      <Column header="Enc" style="width: 7rem">
+      <Column field="enc" header="Enc" sortable style="width: 7rem">
         <template #body="{ data }">
           <Tag :value="data.enc ?? 'unknown'" :severity="encSeverity(data.enc)" />
         </template>
       </Column>
       <Column header="" style="width: 4rem">
         <template #body="{ data }">
-          <Button icon="pi pi-play" text rounded @click="open(data)" />
+          <Button icon="pi pi-play" text rounded aria-label="Play recording" @click="open(data)" />
         </template>
       </Column>
     </DataTable>
+
+    <p class="text-sm text-color-secondary mt-2 mb-0">
+      showing {{ filtered.length }} of {{ recordings.length }} recordings
+      <span v-if="filtered.length !== recordings.length">(filtered)</span>
+    </p>
 
     <Dialog
       v-model:visible="dialogOpen" modal
@@ -201,10 +228,6 @@ function isBlank(t: string): boolean {
   return t.startsWith('[BLANK_AUDIO]')
 }
 
-function truncate(t: string, n = 60): string {
-  return t.length > n ? `${t.slice(0, n)}…` : t
-}
-
 function encSeverity(enc: string | null): string {
   if (enc === 'clear') return 'success'
   if (enc === 'partial') return 'warn'   // PrimeVue 4 uses 'warn', not 'warning'
@@ -218,5 +241,20 @@ function encSeverity(enc: string | null): string {
 .blank {
   opacity: 0.5;
   font-style: italic;
+}
+
+/*
+  Full transcript, not a 60-char truncation — the old console showed it whole
+  and it is the payoff of --stt. But the virtual scroller needs a CONSTANT row
+  height, so the cell is capped and scrolls internally instead of growing the
+  row. Three lines covers p90 (103 chars); the 2.8% longer than 200 chars
+  scroll in place, and the Dialog always shows the whole thing.
+*/
+.transcript {
+  max-height: 3.9em;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  line-height: 1.3;
+  scrollbar-width: thin;
 }
 </style>
