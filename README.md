@@ -120,8 +120,8 @@ antenna is measurably worse).
 | Device | ID | Bus | Notes |
 |---|---|---|---|
 | HackRF **Pro** r1.2 fw 2026.01.3 | 977c64de2d717413 | 001 | best UHF antenna; used for all P25 work |
-| RTL-SDR #0 | SN 00000202 | 003 | **+24.6 ppm** clock error (measured); weak antenna |
-| RTL-SDR #1 | SN 00000001 | 003 | best FM antenna; only one that decoded RDS |
+| RTL-SDR #0 | SN 00000202 | 003 | PatriotWaves "Skyfall Trunker"; TCXO, measured **-0.3 ppm**; stock duck antenna |
+| RTL-SDR #1 | SN 00000001 | 003 | same unit, second receiver; best FM antenna; only one that decoded RDS |
 
 ---
 
@@ -133,8 +133,15 @@ antenna is measurably worse).
    local FM raised the whole 24–1800 MHz floor 15–20 dB (pure intermod). Later, `-g 62`
    cut the LWIN control-channel SNR from 23.9 dB to 13.1 dB and broke decoding entirely.
    **`-l 40 -g 44 -a 0` is the working setting here.**
-3. **RTL-SDR #0 needs `-p 25`.** At 772 MHz, +24.6 ppm = ~19 kHz — wider than a whole
-   12.5 kHz P25 channel. Irrelevant for FM (200 kHz channels), fatal for narrowband.
+3. **~~RTL-SDR #0 needs `-p 25`~~ — WRONG, and harmful. Use `-p 0` on both.**
+   An early calibration put dongle 0 at +24.6 ppm. Re-measured against the LWIN
+   control channel (773.056250 MHz, a commercial simulcast accurate to a small
+   fraction of a ppm), **both dongles read -0.3 ppm** — TCXO-grade, consistent
+   with the 28.8 MHz TCXO these units ship with. Applying `-p 25` therefore
+   *introduces* ~19 kHz of error at 773 MHz, wider than a whole 12.5 kHz P25
+   channel, tuning the receiver off the channel. Measured cost ~0.6 dB of SNR on
+   the stock antenna, but with a decent antenna it is the difference between a
+   lock and no lock. Verify with `python3 scripts/cc_snr.py`.
 4. **op25 vs CMake 4.2**: op25 sets `cmake_policy(SET CMP0026 OLD)` / `CMP0045 OLD`, removed
    in CMake 4. `-DCMAKE_POLICY_VERSION_MINIMUM` does **not** help. Patch both to `NEW` and
    raise `cmake_minimum_required` to 3.10.
@@ -311,15 +318,27 @@ Busiest single talkgroup was 17050 (EBR Sheriff Dispatch North, 494 grants) — 
 (EBR, WBR, Livingston, Ascension, Iberville, E/W Feliciana, Pointe Coupee, LSU, Southern,
 State Police Troop A, EMS agencies, LDWF). Zero encrypted talkgroups are in that list.
 
-### Why a dedicated control-channel receiver is not possible here (measured)
+### A dedicated control-channel receiver — untested, not impossible
 Ideal setup: park an RTL-SDR on the control channel while the HackRF follows voice.
-Measured control-channel SNR on **both** RTL-SDRs: **+2.7 dB** — far below the ~15 dB P25
-needs. Their antennas were never swapped (only the HackRF's was). Until a second decent
-UHF antenna or a coax splitter is added, single-radio retuning is the only option, and the
-CDR/audio split above is the best workaround.
+Measured control-channel SNR on **both** RTL-SDRs: **+2.5 dB** (reproduced with
+`scripts/cc_snr.py`) against the ~15 dB P25 needs.
 
-(Incidentally, RTL dongle **1** is well calibrated: its control-channel peak landed
-+2.1 kHz from nominal, versus dongle 0's +24.6 ppm. Use `-p 0` for dongle 1.)
+**But that measures the stock antenna, not the receiver.** Their antennas were
+never swapped — only the HackRF's was — and on the same channel the HackRF with
+its swapped antenna reads **+28.3 dB**. A 26 dB gap is not a front-end
+difference: the R820T2's noise figure is around 3.5 dB against the HackRF's ~8,
+so on raw sensitivity these dongles should be comparable or better. The gap is
+the antenna, which is the one variable never changed — the same trap section 1
+already fell into once, when an 850-870 MHz sweep found "nothing" partly because
+the antenna had not yet been swapped.
+
+Swap the good antenna onto a dongle and re-run `scripts/cc_snr.py`. If it clears
+~15 dB, the dedicated receiver is viable and this section should be rewritten —
+and the prize is measured directly above: 33 talkgroups seen on the control
+channel against 9 while following voice.
+
+(Both dongles are well calibrated: re-measured, each lands within 0.2 kHz of
+nominal on the control channel, -0.3 ppm. Use `-p 0` for both.)
 
 ---
 

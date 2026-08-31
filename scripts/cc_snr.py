@@ -10,15 +10,23 @@ conclusion does not follow from it, because section 7 also notes:
 
     "Their antennas were never swapped (only the HackRF's was)."
 
-So the number describes the stock antenna that shipped with a $10 generic DVB-T
-dongle, not the receiver. For comparison, on the same channel:
+So the number describes the STOCK ANTENNA, not the receiver. The hardware is a
+PatriotWaves "Skyfall Trunker": two RTL2832U receivers with R820T2/R860 tuners
+and a 28.8 MHz TCXO, shipped with an 8" 3 dBi duck. The TCXO claim checks out —
+measured against this control channel, both dongles read -0.3 ppm. For
+comparison, on the same channel:
 
     HackRF + swapped antenna    +28.3 dB
     RTL-SDR + stock antenna      +2.5 dB      (measured, reproduces section 7)
 
-An R820T is not 26 dB worse than a HackRF. Its noise figure is around 3.5 dB
+An R820T2 is not 26 dB worse than a HackRF. Its noise figure is around 3.5 dB
 against the HackRF's ~8, so on raw sensitivity the dongle should be comparable
-or better. The gap is the antenna, and that is the one variable never tested.
+or better. The gap is the antenna: an 8" duck against whatever the HackRF was
+given, and it is the one variable never tested.
+
+Note that librtlsdr cannot confirm the tuner part: `enum rtlsdr_tuner` has only
+RTLSDR_TUNER_R820T, and the R820T2 is register-compatible, so rtl_test prints
+"R820T" for both. The TCXO is the testable claim, and it holds.
 
 This matters because section 7 also measures the prize: a radio that follows
 calls misses the grants issued while it is away, and a 6-minute control-channel
@@ -53,10 +61,21 @@ P25_THRESHOLD_DB = 15.0
 # Measured on this system for reference, README sections 1 and 7.
 HACKRF_GOOD_ANTENNA_DB = 28.3
 
-# Per-dongle clock error. Dongle 0 is +24.6 ppm, which at 773 MHz is ~19 kHz —
-# wider than a whole 12.5 kHz P25 channel, so it must be corrected or the
-# receiver is tuned outside the channel entirely.
-DEFAULT_PPM = {0: 25, 1: 0}
+# Per-dongle clock correction, MEASURED against the LWIN control channel (a
+# commercial P25 simulcast, accurate to a small fraction of a ppm):
+#
+#   dongle 0   -0.3 ppm      dongle 1   -0.3 ppm
+#
+# Both are TCXO-grade, consistent with the 28.8 MHz TCXO the vendor advertises.
+# So no correction is needed on either.
+#
+# README section 4 gotcha 3 claims dongle 0 is "+24.6 ppm" and must be run with
+# `-p 25`. That is wrong, and not harmlessly: +25 ppm at 773 MHz is ~19 kHz,
+# wider than a whole 12.5 kHz P25 channel, so applying it tunes the receiver
+# OFF the channel. Measured cost here is ~0.6 dB of SNR, small only because the
+# signal is barely above the floor on the stock antenna; with a decent antenna
+# it would be the difference between a lock and no lock.
+DEFAULT_PPM = {0: 0, 1: 0}
 
 
 def measure(device: int, centre: float, ppm: int, integration: int,
