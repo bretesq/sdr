@@ -1,4 +1,4 @@
-import { startListening } from '~/server/utils/processes'
+import { startListening, processStartTime } from '~/server/utils/processes'
 import { sessionStore } from '~/server/utils/session'
 import type { ListenOptions } from '~/server/utils/processes'
 
@@ -32,10 +32,35 @@ function looksLikeValidPythonRegex(pattern: string): boolean {
   }
 }
 
+/**
+ * Reject patterns whose backtracking cost can blow up.
+ *
+ * `--match` is compiled by `make_whitelist.py:56` and `.search()`ed against
+ * every one of 4,163 talkgroups. Python's `re` is a backtracking engine with no
+ * time limit, so a nested quantifier is a denial of service: measured against a
+ * real 97-character category string, `((.*)*)*!` ran over 25 seconds before
+ * being killed, while `(a|a)+$` finished in 0.1 ms. The subprocess is spawned
+ * from inside `lwin_listen.sh`, so nothing on the Node side can time it out —
+ * it has to be refused up front.
+ *
+ * The signature is a quantifier applied to a group that itself contains one:
+ * (...*)*, (...+)+, and so on. Legitimate selections here are simple substrings
+ * and alternations ("BRPD", "DISP[0-9]", "Fire|EMS"), none of which nest.
+ */
+const NESTED_QUANTIFIER = /\([^)]*[*+][^)]*\)\s*[*+{]/
+
+function isCheapRegex(pattern: string): boolean {
+  if (pattern.length > 200) return false
+  return !NESTED_QUANTIFIER.test(pattern)
+}
+
 export default defineEventHandler(async (event) => {
-  if (sessionStore.isRunning()) {
-    setResponseStatus(event, 409)
-    return { success: false, error: 'A listening session is already running' }
+  // Must come first: this endpoint powers a radio and writes to disk, and
+  // without it any page the operator visits can start an unbounded recording.
+  const guard = assertJsonSameOrigin(event)
+  if (!guard.ok) {
+    setResponseStatus(event, guard.status)
+    return { success: false, error: guard.error }
   }
 
   // readBody returns undefined for a POST with no body. Without this default,
@@ -60,6 +85,14 @@ export default defineEventHandler(async (event) => {
     setResponseStatus(event, 400)
     return { success: false, error: `Not a valid regex: ${body.match}` }
   }
+  if (body.match && !isCheapRegex(body.match)) {
+    setResponseStatus(event, 400)
+    return {
+      success: false,
+      error: 'Regex rejected: nested quantifiers can hang the whitelist builder. '
+        + 'Use a simple substring or alternation, e.g. BRPD or Fire|EMS.',
+    }
+  }
   if (body.duration !== undefined && (!Number.isInteger(body.duration) || body.duration < 1)) {
     setResponseStatus(event, 400)
     return { success: false, error: 'Duration must be a positive integer' }
@@ -71,10 +104,28 @@ export default defineEventHandler(async (event) => {
     return { success: false, error: 'Pick a preset, or enter talkgroup IDs, a tag, or a match regex' }
   }
 
+  // The "already running" check lives HERE, not at the top of the handler.
+  //
+  // Placed before `await readBody`, it is a TOCTOU: the await yields the event
+  // loop, a second request passes the same check, and both spawn. Two op25
+  // instances then contend for the one HackRF, web/listen.log is truncated
+  // twice, and listen.pid ends up holding only the second pid — so the first
+  // process group is invisible to /api/listen/stop forever and needs a
+  // terminal to kill. A double-clicked Start button is enough to trigger it.
+  //
+  // Everything from here to sessionStore.set() is synchronous, so on Node's
+  // single thread check -> spawn -> set is atomic and needs no lock.
+  if (sessionStore.isRunning()) {
+    setResponseStatus(event, 409)
+    return { success: false, error: 'A listening session is already running' }
+  }
+
   try {
     const { pid, config } = startListening(body)
     const startTime = Date.now() / 1000
-    sessionStore.set({ pid, config, startTime })
+    // Captured immediately, while we still know this pid is ours.
+    const procStart = processStartTime(pid)
+    sessionStore.set({ pid, config, startTime, procStart })
     return { success: true, data: { pid, config, startTime } }
   } catch (err) {
     setResponseStatus(event, 500)

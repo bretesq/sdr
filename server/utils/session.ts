@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync, unlinkSync } from 'node:fs'
-import { isProcessRunning } from './processes'
+import { readFileSync, writeFileSync, unlinkSync, renameSync } from 'node:fs'
+import { isOurListenSession } from './processes'
 import { listenPidPath, listenConfigPath, listenStartedPath } from './paths'
 import type { ListenOptions } from './processes'
 
@@ -7,21 +7,53 @@ export interface Session {
   pid: number
   config: ListenOptions
   startTime: number
+  /**
+   * /proc/<pid>/stat field 22. A pid is not an identity — the kernel recycles
+   * pid numbers, and a stale sidecar survives reboots. Pairing the pid with the
+   * process's start time makes recovery verifiable, because the kernel will
+   * never reissue the same (pid, procStart) pair.
+   */
+  procStart: number | null
 }
 
 let current: Session | null = null
 
+/**
+ * Write via a temp file and rename, so a crash or a full disk cannot leave a
+ * TRUNCATED pid behind. `12345` cut short to `12` is still a valid pid pointing
+ * at something arbitrary, which is the same blast radius as recycling without
+ * needing the kernel to wrap around.
+ */
+function writeAtomic(path: string, contents: string): void {
+  const tmp = `${path}.tmp`
+  writeFileSync(tmp, contents)
+  renameSync(tmp, path)
+}
+
 function persist(s: Session): void {
-  writeFileSync(listenPidPath(), String(s.pid))
-  writeFileSync(listenConfigPath(), JSON.stringify(s.config))
-  writeFileSync(listenStartedPath(), String(s.startTime))
+  // pid and procStart travel together: a pid without its start time cannot be
+  // verified on recovery.
+  writeAtomic(listenPidPath(), `${s.pid} ${s.procStart ?? ''}`.trim())
+  writeAtomic(listenConfigPath(), JSON.stringify(s.config))
+  writeAtomic(listenStartedPath(), String(s.startTime))
 }
 
 /** Recover a session started before this server process existed. */
 function recover(): Session | null {
   try {
-    const pid = Number.parseInt(readFileSync(listenPidPath(), 'utf-8').trim(), 10)
-    if (!Number.isFinite(pid) || !isProcessRunning(pid)) return null
+    const raw = readFileSync(listenPidPath(), 'utf-8').trim().split(/\s+/)
+    const pid = Number.parseInt(raw[0], 10)
+    const procStart = raw[1] ? Number.parseInt(raw[1], 10) : null
+
+    // Verify identity, not just liveness. Without this a recycled pid means
+    // Stop SIGINTs — then SIGKILLs — an unrelated process GROUP.
+    if (!Number.isFinite(pid) || !isOurListenSession(pid, procStart)) {
+      // The recorded process is gone or is not ours. Clear the sidecars now:
+      // leaving them means the stale window never closes and we sit waiting for
+      // the kernel to recycle that pid number onto something innocent.
+      removeSidecars()
+      return null
+    }
 
     let config: ListenOptions = {}
     try {
@@ -34,7 +66,7 @@ function recover(): Session | null {
       if (Number.isFinite(t)) startTime = t
     } catch { /* fall back to now */ }
 
-    return { pid, config, startTime }
+    return { pid, config, startTime, procStart }
   } catch {
     return null
   }
@@ -63,7 +95,7 @@ export const sessionStore = {
    * Clears both when the process is gone.
    */
   get(): Session | null {
-    if (current && !isProcessRunning(current.pid)) {
+    if (current && !isOurListenSession(current.pid, current.procStart)) {
       current = null
       removeSidecars()
     }

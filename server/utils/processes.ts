@@ -70,6 +70,57 @@ export function readTail(path: string, maxBytes = 4 * 1024 * 1024): string {
   }
 }
 
+
+/**
+ * Identity of a live process: its start time, from /proc/<pid>/stat field 22.
+ *
+ * A pid alone is NOT an identity. Pids are recycled, a process group outlives
+ * its leader, and a stale web/listen.pid survives reboots. Recording the start
+ * time alongside the pid makes recovery verifiable: the kernel will never
+ * reissue the same (pid, starttime) pair.
+ *
+ * Returns null if the process is gone or /proc is unreadable.
+ */
+export function processStartTime(pid: number): number | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8')
+    // Fields after the comm field, which is parenthesised and may contain spaces.
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
+    // stat field 22 is the 20th entry after comm (fields are 1-indexed with
+    // pid=1 and comm=2, so index 19 here).
+    const started = Number(fields[19])
+    return Number.isFinite(started) ? started : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Does this pid actually belong to a listen session we started?
+ *
+ * Guards every signal. Without it, a stale pid whose number the kernel has
+ * recycled onto an unrelated process means Stop sends SIGINT — then SIGKILL
+ * eight seconds later — to that process's whole GROUP. process.kill only
+ * refuses other users' processes, so everything the operator owns is in range,
+ * including their editor and this very server.
+ */
+export function isOurListenSession(pid: number, expectedStartTime: number | null): boolean {
+  if (!isProcessRunning(pid)) return false
+
+  if (expectedStartTime !== null) {
+    const actual = processStartTime(pid)
+    if (actual === null || actual !== expectedStartTime) return false
+  }
+
+  try {
+    // cmdline is NUL-separated; lwin_listen.sh appears as a bash argument.
+    const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf-8')
+    return cmdline.includes('lwin_listen.sh')
+  } catch {
+    return false
+  }
+}
+
 export function isProcessRunning(pid: number): boolean {
   try {
     process.kill(pid, 0)
@@ -132,8 +183,11 @@ function signalOrAlreadyGone(target: number, signal: NodeJS.Signals): boolean {
   }
 }
 
-export async function stopListening(pid: number): Promise<void> {
-  if (!isProcessRunning(pid)) return
+export async function stopListening(pid: number, procStart: number | null = null): Promise<void> {
+  // Identity, not just liveness. Signalling -pid hits a whole process GROUP, and
+  // process.kill only refuses OTHER users' processes — so a recycled pid would
+  // put every process the operator owns in range of a SIGKILL.
+  if (!isOurListenSession(pid, procStart)) return
 
   // Negative pid = whole process group. If the group is already gone, fall back
   // to the bare pid in case the child was never a group leader.
