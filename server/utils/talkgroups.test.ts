@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { loadTalkgroups, filterByArea, filterTalkgroups } from './talkgroups'
-import { referenceDir } from './paths'
+import { loadTalkgroups, loadWhitelist, filterByArea, filterTalkgroups } from './talkgroups'
+import { referenceDir, whitelistPath } from './paths'
 import { join } from 'node:path'
 import type { TalkgroupEntry } from './files'
 
@@ -75,5 +75,19 @@ describe('filterTalkgroups', () => {
   it('filters by encryption label', () => {
     expect(filterTalkgroups(tgs, { enc: 'partial' })).toHaveLength(1)
     expect(filterTalkgroups(tgs, { enc: 'full' })).toHaveLength(0)
+  })
+})
+
+describe('loadWhitelist', () => {
+  it('parses the live whitelist into 601 unique tgids', () => {
+    // Feeds /api/talkgroups/whitelist. 601 also equals filterByArea(all,'br'),
+    // so a drift in either direction shows up here.
+    const ids = loadWhitelist(whitelistPath())
+    expect(ids.size).toBe(601)
+    expect(ids.has(17165)).toBe(true)   // 17-BRPD DSP1
+  })
+
+  it('returns an empty set for a missing file rather than throwing', () => {
+    expect(loadWhitelist('/nonexistent/whitelist.txt').size).toBe(0)
   })
 })

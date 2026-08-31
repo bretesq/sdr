@@ -850,7 +850,7 @@ git commit -m "feat: merge calls.json metadata into scanned recordings"
   - `loadTalkgroups(path: string): TalkgroupEntry[]`
   - `loadWhitelist(path: string): Set<number>`
   - `filterByArea(tgs: TalkgroupEntry[], area: 'br' | 'all'): TalkgroupEntry[]`
-  - `filterTalkgroups(tgs, opts: { category?: string; text?: string }): TalkgroupEntry[]`
+  - `filterTalkgroups(tgs, opts: { category?: string; text?: string; enc?: string }): TalkgroupEntry[]` — `enc` is typed `string`, not `Encryption`, so the `opts.enc !== 'all'` guard is not a TS comparison error against the union.
 
 Shape and field names were pinned in **Task 0 Step 1**. Do not re-derive them here, and do not edit Task 3's `TalkgroupEntry` — it already matches.
 
@@ -861,8 +861,8 @@ Fixture values are **copied verbatim from the real DB** — an invented category
 ```typescript
 // server/utils/talkgroups.test.ts
 import { describe, it, expect } from 'vitest'
-import { loadTalkgroups, filterByArea, filterTalkgroups } from './talkgroups'
-import { referenceDir } from './paths'
+import { loadTalkgroups, loadWhitelist, filterByArea, filterTalkgroups } from './talkgroups'
+import { referenceDir, whitelistPath } from './paths'
 import { join } from 'node:path'
 import type { TalkgroupEntry } from './files'
 
@@ -915,6 +915,20 @@ describe('filterByArea', () => {
     // either the keyword list or the DB changed.
     const all = loadTalkgroups(join(referenceDir(), 'lwin_talkgroups.json'))
     expect(filterByArea(all, 'br')).toHaveLength(601)
+  })
+})
+
+describe('loadWhitelist', () => {
+  it('parses the live whitelist into 601 unique tgids', () => {
+    // Feeds /api/talkgroups/whitelist. 601 also equals filterByArea(all,'br'),
+    // so a drift in either direction shows up here.
+    const ids = loadWhitelist(whitelistPath())
+    expect(ids.size).toBe(601)
+    expect(ids.has(17165)).toBe(true)   // 17-BRPD DSP1
+  })
+
+  it('returns an empty set for a missing file rather than throwing', () => {
+    expect(loadWhitelist('/nonexistent/whitelist.txt').size).toBe(0)
   })
 })
 
@@ -1040,7 +1054,7 @@ export function filterTalkgroups(
 ./node_modules/.bin/vitest run server/utils/talkgroups.test.ts
 ```
 
-Expected: **8 passed**. Three of these assert against the live DB (4163 entries, ascending tgid, 601 BR-area), so a passing run is also the real-data verification — no separate step needed.
+Expected: **10 passed**. Five of these assert against the live DB (4163 entries, ascending tgid, 601 BR-area), so a passing run is also the real-data verification — no separate step needed.
 
 - [ ] **Step 5: Commit**
 
@@ -2750,7 +2764,7 @@ Expected: build succeeds; status answers; talkgroups returns **601**; the Range 
 ./node_modules/.bin/vitest run
 ```
 
-Expected: **4 + 8 + 8 + 7 = 27 passed** across `paths`, `files`, `talkgroups`, `processes`.
+Expected: **4 + 8 + 10 + 7 = 29 passed** across `paths`, `files`, `talkgroups`, `processes`.
 
 - [ ] **Step 6: Commit**
 
@@ -2858,7 +2872,7 @@ curl -s localhost:3000/api/recordings/list | head -c 200
 git status --short          # nothing stray left in web/
 ```
 
-Expected: build clean, both routes answer, **27 tests pass**, and `web/` shows only gitignored sidecar files.
+Expected: build clean, both routes answer, **29 tests pass**, and `web/` shows only gitignored sidecar files.
 
 - [ ] **Step 6: Commit**
 
@@ -2875,7 +2889,7 @@ Each carries the number that makes it falsifiable. A criterion that can be satis
 
 **Build and tests**
 - [ ] `./node_modules/.bin/nuxt build` succeeds with no TypeScript errors, and no `any` appears anywhere in `server/` or `components/`
-- [ ] `./node_modules/.bin/vitest run` → **27 passed**
+- [ ] `./node_modules/.bin/vitest run` → **29 passed**
 
 **Rendering**
 - [ ] Panels have a resolved background colour (no unresolved `var(--surface-card)` in devtools)
