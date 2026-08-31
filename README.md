@@ -332,10 +332,27 @@ the antenna, which is the one variable never changed — the same trap section 1
 already fell into once, when an 850-870 MHz sweep found "nothing" partly because
 the antenna had not yet been swapped.
 
-Swap the good antenna onto a dongle and re-run `scripts/cc_snr.py`. If it clears
-~15 dB, the dedicated receiver is viable and this section should be rewritten —
-and the prize is measured directly above: 33 talkgroups seen on the control
-channel against 9 while following voice.
+**Everything except the antenna has now been eliminated as the cause:**
+
+| tested | result |
+|---|---|
+| clock error | -0.3 ppm on both, TCXO-grade. The old "+24.6 ppm, use `-p 25`" was wrong and was *injecting* 19 kHz of error |
+| receiver health | 33.3 dB SNR on 104.1 MHz FM — the front end is fine |
+| `[R82XX] PLL not locked!` | cosmetic; it fires at 104 MHz too, where SNR is 33 dB |
+| tuner IF bandwidth | clamping to 300 kHz is worth **+1.6 dB** (`scripts/tuner_bw_test.py`), now available as op25's `--tuner-bw` |
+| real decode attempt | **0 TSBK** with the tuner both wide and narrow, parked on the control channel for 60 s each |
+
+So the tuner clamp is real but does not bridge the gap: ~7.4 dB against the
+~15 dB P25 needs, still ~8 dB short. What has *not* been tried is the one
+variable section 7 named and never changed — the antenna. The HackRF reads
++28.3 dB on this same channel, and a 26 dB gap between an R820T2 and a HackRF
+is not a front-end difference.
+
+Swap the good antenna onto a dongle and re-run `scripts/cc_snr.py`, then retry
+the decode with `--tuner-bw 300000`. If it clears ~15 dB the dedicated receiver
+is viable and this section should be rewritten — the prize is measured directly
+above: 33 talkgroups seen on the control channel against 9 while following
+voice.
 
 (Both dongles are well calibrated: re-measured, each lands within 0.2 kHz of
 nominal on the control channel, -0.3 ppm. Use `-p 0` for both.)
