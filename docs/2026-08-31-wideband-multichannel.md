@@ -792,3 +792,73 @@ op25 to `-v 10`, so `--ess` changed nothing while the census was on — yet both
 checkboxes advertised "~10x log volume", letting the operator untick ESS and
 still pay it. It is now disabled in that state and says why, and the request
 reports `ess: true` rather than storing a config claiming it was off.
+
+---
+
+## 14. RETRACTION: the "% of calls captured" figures were not measurable that way
+
+A code review of PR #1 flagged that `grants` rows are grant **TSBK events**, not
+announced calls. Checking that led to a worse problem in my own numbers.
+
+### 14.1 What was wrong
+
+Every "X% of calls captured" figure in §2, §11 and §12 compared rows in `calls`
+against a call count derived from `grants`. **Those two denominators are not
+commensurable:**
+
+- `grants` were grouped on `(tgid, freq)` with a **3 s** gap (§2's method).
+- `calls` rows are cut by `udp_audio_record.py`'s **2 s** audio gap (`GAP = 2.0`),
+  so one announced call routinely becomes several `.wav` files.
+- Grants with a NULL frequency were excluded from the grouping but their calls
+  were still recorded.
+- The grant census covers **all 4,163 talkgroups**; a session follows only the
+  whitelist (184 for `--pd-all --include-partial`).
+
+Measured consequence: on one window the "capture rate" computes to **175%** — 35
+recorded against 20 announced-and-whitelisted. A number over 100% is the proof
+that the comparison was meaningless, not that capture improved.
+
+**Retracted:** "~25% → ~75% of calls", "700-leg capture 6 of 12 (50%) → 10 of 12
+(83%)", and the "98% at 6 receivers" projection in §2's table. The *direction* of
+all of them is right; the arithmetic was not.
+
+Also corrected: `grants` COUNT(\*) is ~31x the number of distinct calls (10,019
+rows → 320). This is the table's long-standing meaning — the pre-existing `rx.py`
+census had the same ratio (3,765 rows for ~111 calls) — so the `srcaddr=None` fix
+did not change it. But §12.2's "4,351 grants" and §13's "1,586 grants" are
+event counts, not call censuses. `import_grants.py` now prints the grouped
+distinct-call figure next to the raw count so the two cannot be confused again.
+
+### 14.2 What the evidence actually supports
+
+Two classes of claim survive, both measured from a single source with a single
+segmentation rule.
+
+**Calls recorded per minute** — same table, same whitelist, same segmentation:
+
+| configuration | calls | window | rate | vs single |
+|---|---|---|---|---|
+| single, `lwin_listen.sh` | 8 | 90 s | 5.3/min | 1.0x |
+| multi, run A | 70 | 300 s | 14.0/min | **2.6x** |
+| multi, run B | 64 | 300 s | 12.8/min | **2.4x** |
+| multi, web-driven | 31 | 150 s | 12.4/min | **2.3x** |
+
+So **roughly 2.4x the calls per minute**, consistent across three runs. The
+single-mode baseline is one 90 s sample and traffic varies between windows, so
+treat 2.4x as approximate — but it is a like-for-like ratio, which the
+percentages were not.
+
+**Concurrency**, which needs no denominator at all: 38 of 110 calls in the last
+hour overlap another call in time. With `rx.py` that figure is **structurally
+always 0** — one receiver cannot be on two voice channels. This is the claim the
+whole change rests on, and it is unaffected by any of the above.
+
+**Also unaffected**, being direct counts of log lines rather than ratios:
+`Unable to tune` 1,243 → **0**, and 700-leg tune attempts 1,300 → **60**.
+
+### 14.3 A defensible capture-rate measurement, if wanted
+
+Compare like with like: run `lwin_cdr_run.sh` for a fixed window to get the
+census, restrict it to the session's whitelist, group it with the **same 2 s**
+gap `udp_audio_record.py` uses, then run the same whitelist in each mode for the
+same duration at a comparable time of day. Not done here.

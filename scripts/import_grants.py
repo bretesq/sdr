@@ -47,9 +47,28 @@ TS = r'(\d\d/\d\d/\d\d \d\d:\d\d:\d\d\.\d+)'
 # trunking.py (the rx.py path) always prints a number and tk_p25 usually does
 # not.
 #
-# These lines are emitted by the SYSTEM, not a receiver: the prefix is the
-# sysname ("[LWIN-BR]"), so there is exactly one per announced grant no matter
-# how many receivers are in the pool. No dedup is needed.
+# WHAT A ROW IN `grants` ACTUALLY IS
+#
+# One decoded grant TSBK EVENT -- not one announced call. `set tgid=` is written
+# from update_voice_frequency (tk_p25.py:1637), which is reached from ~19
+# TSBK/LCW handlers including the GRANT_UPDATE opcodes that repeat for the whole
+# life of a call, and the multi-channel forms (tk_p25.py:1170, 1209) emit 2-3
+# lines per single TSBK.
+#
+# Measured: 10,019 rows collapse to 320 calls when grouped on (tgid, freq) with
+# a 3 s gap -- a 31x ratio. The pre-existing rx.py census had the same shape
+# (3,765 rows for ~111 calls), so this is the table's long-standing meaning, not
+# something the srcaddr=None fix changed. But it means a raw COUNT(*) is NOT a
+# count of announced calls, and `call_id` is set per event, so one recorded call
+# legitimately collects dozens of grant rows.
+#
+# Group before comparing "announced" against "captured". See
+# docs/2026-08-31-wideband-multichannel.md section 2 for the grouping used
+# there.
+#
+# The sysname prefix ("[LWIN-BR]") does mean these come from the SYSTEM rather
+# than a receiver, so pool size does not multiply them -- that part needs no
+# dedup.
 GRANT = re.compile(TS + r'[^\n]*?set tgid=(\d+), srcaddr=(\d+|None)')
 # The paired talkgroup/frequency form. ch may be an unresolved channel id
 # ("ID-0x485") or a real frequency ("858.237500"); only the latter is useful.
@@ -114,6 +133,16 @@ def main() -> int:
     print(f'grants         {len(grants)}')
     print(f'  with srcaddr {with_src}  ({distinct_src} distinct radios)')
     print(f'  talkgroups   {distinct_tg}')
+    # Reported alongside the raw count because the raw count is ~31x the number
+    # of announced calls and has been read as a call census more than once.
+    grouped, seen = 0, {}
+    for ts, tgid, _src, freq, _rf, _st in grants:
+        key = (tgid, freq)
+        if key not in seen or ts - seen[key] > 3.0:
+            grouped += 1
+        seen[key] = ts
+    print(f'  ^ these are grant TSBK EVENTS; grouped into distinct calls '
+          f'(tgid+freq, 3 s gap): {grouped}')
     print(f'  site         rfss {rfss} site {stid} sysid 0x{sysid:x}' if site_m else '  site         not in this log')
     print(f'  voice freqs  {len(freq_for)}')
 
