@@ -1,0 +1,8 @@
+allowBuilds:
+  esbuild: set this to true or false
+# esbuild's postinstall only symlinks its platform binary, and both
+# @esbuild/linux-x64 packages (0.21.5, 0.28.2) are already installed by pnpm as
+# optional deps. Acknowledging the skip here silences pnpm's hard failure on
+# every subsequent `pnpm run <script>`.
+ignoredBuiltDependencies:
+  - esbuild

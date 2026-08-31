@@ -1,0 +1,20 @@
+/* Bridge PrimeFlex 3's theme classes onto PrimeVue 4 Aura design tokens.
+   PrimeFlex 3 resolves unprefixed vars (--surface-card, --surface-100,
+   --text-color-secondary, --border-radius) that Aura does not define; it emits
+   --p-prefixed tokens instead. Without this shim every panel loses its
+   background and radius, and whitelist row highlighting silently does nothing. */
+:root {
+  --surface-card: var(--p-content-background);
+  --surface-100: var(--p-surface-100);
+  --surface-border: var(--p-content-border-color);
+  --text-color: var(--p-text-color);
+  --text-color-secondary: var(--p-text-muted-color);
+  --border-radius: var(--p-content-border-radius);
+}
+
+/* Nuxt + PrimeVue 4 style no <body> at all. Required either way. */
+body {
+  margin: 0;
+  background: var(--p-content-background);
+  color: var(--p-text-color);
+}

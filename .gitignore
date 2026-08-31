@@ -71,3 +71,9 @@ web/server.pid
 # OS
 .DS_Store
 Thumbs.db
+
+# Node / Nuxt
+node_modules/
+.nuxt/
+.output/
+dist/

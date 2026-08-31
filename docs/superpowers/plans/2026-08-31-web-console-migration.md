@@ -15,6 +15,12 @@
 
 - Node.js 22 LTS (the box currently runs v24.15.0; pin to 22 if Nuxt misbehaves)
 - **Package manager: pnpm** (no lockfile exists, and per CLAUDE.md that means pnpm). Commit `pnpm-lock.yaml`, never `package-lock.json`.
+- **Invoke tools through `./node_modules/.bin/`, not `pnpm run`.** pnpm 11.17.0 fails every `pnpm run <script>` with `ERR_PNPM_IGNORED_BUILDS` for `esbuild@0.21.5` / `esbuild@0.28.2`, because its pre-run `runDepsStatusCheck` re-runs `install` and treats the unapproved build scripts as fatal. `onlyBuiltDependencies` / `ignoredBuiltDependencies` in `pnpm-workspace.yaml`, the same keys in `package.json`, and `verify-deps-before-run=false` in `.npmrc` were all tried and none silence it. It is cosmetic — both `@esbuild/linux-x64` platform packages are installed and `esbuild --version` works — so the workaround is to call the binaries directly:
+  - tests: `./node_modules/.bin/vitest run`
+  - dev: `./node_modules/.bin/nuxt dev --host 0.0.0.0`
+  - build: `./node_modules/.bin/nuxt build`
+  - `pnpm install` itself works, and its `postinstall: nuxt prepare` hook runs.
+- **`nuxt prepare` must have run** before any test executes: `tsconfig.json` extends `./.nuxt/tsconfig.json`, and without it vitest dies with `TSConfckParseError`. The `postinstall` script handles this; re-run `./node_modules/.bin/nuxt prepare` if `.nuxt/` is ever cleaned.
 - Serve on `0.0.0.0:3000` (or configured PORT) — must be LAN-accessible
 - Recordings and metadata stay in `/home/besquivel/rtl/recordings/`; reference DB in `/home/besquivel/rtl/reference/`
 - API response format: `{ success: boolean, data?: T, error?: string }`
