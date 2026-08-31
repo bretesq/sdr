@@ -10,7 +10,16 @@ which mislabels calls.
 
 Usage: udp_audio_record.py [port] [seconds] [outdir] [op25_log]
 """
-import socket, wave, time, os, sys, select, json, re, datetime
+import socket, sys, wave, time, os, select, json, re, datetime, signal
+
+# The main loop is blocked most of its time in select(); a SIGINT arriving
+# there used to leave the process alive (Python only delivers the default
+# KeyboardInterrupt handler when executing bytecode). Exit explicitly on
+# SIGINT / SIGTERM so the web /stop endpoint actually stops the session.
+def _on_signal(signum, frame):
+    raise SystemExit(0)
+signal.signal(signal.SIGINT, _on_signal)
+signal.signal(signal.SIGTERM, _on_signal)
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 23456
 SECS = float(sys.argv[2]) if len(sys.argv) > 2 else 400
@@ -62,6 +71,18 @@ tail = LogTail(LOG)
 print(f"listening 127.0.0.1:{PORT}/{PORT+1} for {SECS:.0f}s -> {OUT}/", flush=True)
 print(f"talkgroup source: {LOG}", flush=True)
 
+# The database is opened best-effort. The .wav is the irreplaceable artifact;
+# metadata is derivable from the filename and the WAV header, so a database
+# problem must never abort a recording. Failures are loud, not silent.
+db = None
+try:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import sdr_db
+    db = sdr_db.connect()
+except Exception as e:                                    # noqa: BLE001
+    print(f"WARNING: no database ({e}); metadata will need "
+          f"`python3 scripts/import_to_sqlite.py` to backfill", flush=True)
+
 buf, call, calls, pkts = bytearray(), None, [], 0
 t0 = time.time()
 
@@ -81,32 +102,54 @@ def flush():
             path = os.path.join(OUT, name[:-4] + f"_{i}.wav"); i += 1
         w = wave.open(path, 'wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(8000)
         w.writeframes(bytes(buf)); w.close()
-        calls.append({'file': os.path.basename(path), 'tgid': tg,
-                      'alpha': e.get('alpha'), 'desc': e.get('desc'),
-                      'enc': e.get('enc'), 'cat': e.get('cat'),
-                      'start': call['start'], 'dur': round(dur, 2)})
+        fname = os.path.basename(path)
+        calls.append({'file': fname, 'tgid': tg, 'alpha': e.get('alpha'),
+                      'desc': e.get('desc'), 'enc': e.get('enc'),
+                      'cat': e.get('cat'), 'start': call['start'],
+                      'dur': round(dur, 2)})
+        # Committed per call, not accumulated for a single write at exit. A
+        # call is durable the moment it is flushed, so a crash or a SIGKILL
+        # loses at most the one in progress.
+        if db is not None:
+            try:
+                sdr_db.upsert_call(db, file=fname, tgid=tg,
+                                   start=call['start'], dur=round(dur, 2))
+                db.commit()
+            except Exception as e2:                        # noqa: BLE001
+                print(f"  WARNING: could not record {fname} in the database: {e2}",
+                      flush=True)
         print(f"  {os.path.basename(path)}  {dur:.1f}s  {e.get('desc','(unknown TG)')[:44]}", flush=True)
     buf = bytearray(); call = None
 
-while time.time() - t0 < SECS:
-    tail.poll()
-    r, _, _ = select.select(socks, [], [], 0.2)
-    now = time.time()
-    for s in r:
-        while True:
-            try: d, _ = s.recvfrom(65535)
-            except BlockingIOError: break
-            pkts += 1
-            if len(d) >= 320:
-                if call is None:
-                    call = {'start': now, 'tg': tail.current(), 't': now}
-                elif call['tg'] is None:
-                    call['tg'] = tail.current()      # grant may land just after audio
-                buf += d; call['t'] = now
-    if call and time.time() - call['t'] > GAP:
-        flush()
-flush()
-json.dump(calls, open(os.path.join(OUT, 'calls.json'), 'w'), indent=1)
+try:
+    while time.time() - t0 < SECS:
+        tail.poll()
+        r, _, _ = select.select(socks, [], [], 0.2)
+        now = time.time()
+        for s in r:
+            while True:
+                try: d, _ = s.recvfrom(65535)
+                except BlockingIOError: break
+                pkts += 1
+                if len(d) >= 320:
+                    if call is None:
+                        call = {'start': now, 'tg': tail.current(), 't': now}
+                    elif call['tg'] is None:
+                        call['tg'] = tail.current()      # grant may land just after audio
+                    buf += d; call['t'] = now
+        if call and time.time() - call['t'] > GAP:
+            flush()
+finally:
+    flush()
+    # NO json.dump of calls.json here.
+    #
+    # That line was a truncating write of ONLY this session's calls, so every
+    # run discarded the metadata for every recording that came before it. A
+    # 60-second session took the file from 2,953 entries to 7. It also
+    # clobbered the transcripts stt_watch.py had merged in, which is why none
+    # ever survived. Calls are now committed to sdr.db as they are flushed.
+    if db is not None:
+        db.close()
 named = sum(1 for c in calls if c['tgid'])
 print(f"\nUDP packets: {pkts}", flush=True)
 print(f"{len(calls)} call(s), {sum(c['dur'] for c in calls):.1f}s audio, {named} labelled with talkgroup", flush=True)

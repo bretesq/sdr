@@ -22,6 +22,11 @@
 #                       the encrypted bursts. Needed for BRPD / EBR Sheriff dispatch.
 #   --include-encrypted also follow fully-encrypted talkgroups (records silence).
 #
+# STT (speech-to-text)
+#   --stt                 launch stt_watch.py in parallel with the recorder. New
+#                       .wav files are transcribed as they land, and transcripts
+#                       are merged into calls.json.
+#
 # Other
 #   --list              show the selected talkgroups and exit
 #   -h, --help          this help
@@ -29,7 +34,7 @@
 # Examples
 #   ./scripts/lwin_listen.sh --pd --list
 #   ./scripts/lwin_listen.sh --pd --include-partial 600
-#   ./scripts/lwin_listen.sh --tg 17165,17167,17169,17171 --include-partial
+#   ./scripts/lwin_listen.sh --stt --tg 17165,17167,17169,17171 --include-partial
 set -u
 R=/home/besquivel/rtl
 A=$R/src/op25/op25/gr-op25_repeater/apps
@@ -37,6 +42,7 @@ PORT=23456
 WL=$R/lwin_active_whitelist.txt
 TSV=$R/lwin_active.tsv
 SECS=0
+STT=0
 GEN=()          # args passed through to make_whitelist.py
 
 usage() { sed -n '2,/^set -u/p' "$0" | sed 's/^# \{0,1\}//; $d'; exit 0; }
@@ -56,6 +62,7 @@ while [ $# -gt 0 ]; do
     --all-areas)         GEN+=(--all-areas) ;;
     --include-partial)   GEN+=(--include-partial) ;;
     --include-encrypted) GEN+=(--include-encrypted) ;;
+    --stt)               STT=1 ;;
     --list)              GEN+=(--list) ; LIST=1 ;;
     -h|--help)           usage ;;
     -*)                  echo "unknown option: $1" >&2; exit 1 ;;
@@ -79,6 +86,7 @@ cleanup() {
   [ -n "${OP25_PID:-}" ] && kill "$OP25_PID" 2>/dev/null
   pkill -f "gr-op25_repeater/apps/rx.py" 2>/dev/null
   [ -n "${REC_PID:-}"  ] && kill -INT "$REC_PID" 2>/dev/null
+  [ -n "${STT_PID:-}"  ] && kill -INT "$STT_PID" 2>/dev/null
   wait 2>/dev/null
   n=$(ls -1 "$R"/recordings/TG*.wav 2>/dev/null | wc -l)
   echo "-> $n call(s) in $R/recordings/"
@@ -92,6 +100,13 @@ python3 "$R/scripts/udp_audio_record.py" $PORT "$RUN" "$R/recordings" \
         "$R/results/op25_record.log" &
 REC_PID=$!
 sleep 2
+
+# Optional: launch the STT watcher so new .wav files are transcribed on arrival.
+if [ "$STT" -eq 1 ]; then
+  python3 "$R/scripts/stt_watch.py" --dir "$R/recordings" &
+  STT_PID=$!
+  echo "STT watcher started (whisper small.en on CPU)"
+fi
 
 # op25 under a pty so its log is written in real time (python3 -u breaks op25 on 3.14).
 # -w = audio over UDP (no sound card); -n = silence encrypted; no -2 (system is Phase I).
