@@ -19,6 +19,27 @@
         <span v-if="live" class="text-xs text-color-secondary" aria-live="polite">
           {{ streamOk ? 'live' : 'live (reconnecting)' }}
         </span>
+        <!--
+          The transcriber is a process independent of any recording session, so
+          it gets its own control. It used to be started only by a --stt session
+          and killed when that session ended, which is why transcription fell
+          behind: stop recording and it stopped mid-backlog.
+        -->
+        <span
+          v-if="untranscribed > 0" class="text-xs"
+          :class="sttRunning ? 'text-color-secondary' : 'text-orange-500'"
+          :title="sttRunning
+            ? 'Transcribing; some may be silence, which stays blank'
+            : 'Not transcribing — start the transcriber to work through these'"
+        >{{ untranscribed }} untranscribed</span>
+        <Button
+          :icon="sttRunning ? 'pi pi-microphone' : 'pi pi-microphone'"
+          :severity="sttRunning ? 'success' : 'secondary'"
+          text rounded :loading="sttBusy"
+          :aria-label="sttRunning ? 'Stop the transcriber' : 'Start the transcriber'"
+          :title="sttRunning ? 'Transcriber running — click to stop' : 'Transcriber stopped — click to start'"
+          @click="toggleStt"
+        />
         <Button
           :icon="live ? 'pi pi-pause' : 'pi pi-play'" text rounded
           :aria-label="live ? 'Freeze the table' : 'Resume live updates'"
@@ -278,10 +299,49 @@ watch(recordingsRefresh, () => load())   // wrapped: watch passes a value, which
 const live = ref(true)
 const streamOk = ref(false)
 const pending = ref(0)
+
+/**
+ * Transcriber state, independent of any recording session.
+ *
+ * `untranscribed` comes free from the SSE summary — calls minus transcripts —
+ * so it needs no extra query. Note it never reaches zero: a call whose audio is
+ * silence (or whose encrypted bursts op25 silenced) produces an empty .txt and
+ * is deliberately left NULL rather than storing an empty string. Measured 12
+ * such calls out of 3,686, which is why this is shown as a count rather than as
+ * a "caught up" flag.
+ */
+const sttRunning = ref(false)
+const sttBusy = ref(false)
+const untranscribed = ref(0)
+
+async function refreshStt(): Promise<void> {
+  try {
+    const res = await $fetch<ApiResponse<{ running: boolean }>>('/api/transcribe/status')
+    if (res.success && res.data) sttRunning.value = res.data.running
+  } catch {
+    // Leave the last known state rather than claiming it stopped.
+  }
+}
+
+async function toggleStt(): Promise<void> {
+  sttBusy.value = true
+  const path = sttRunning.value ? '/api/transcribe/stop' : '/api/transcribe/start'
+  try {
+    await $fetch(path, { method: 'POST', body: {} })
+  } catch (e) {
+    error.value = apiError(e, 'Could not change the transcriber state')
+  } finally {
+    // It finishes the file it is on before exiting, so poll rather than
+    // assuming the new state took effect immediately.
+    await refreshStt()
+    sttBusy.value = false
+  }
+}
 let seen: { calls: number, transcripts: number } | null = null
 let es: EventSource | null = null
 
 function onSummary(next: { calls: number, transcripts: number }): void {
+  untranscribed.value = Math.max(0, next.calls - next.transcripts)
   if (seen === null) {                       // first frame: just a baseline
     seen = next
     return
@@ -300,8 +360,15 @@ function toggleLive(): void {
   if (live.value) load(true)
 }
 
+let sttTimer: ReturnType<typeof setInterval> | null = null
+
 onMounted(() => {
   load()
+  refreshStt()
+  // Its state changes for reasons outside this page — a --stt session starting
+  // one, or the watcher exiting on its own — so it is polled rather than
+  // assumed. 10 s: it is one pgrep, and nothing here is time-critical.
+  sttTimer = setInterval(refreshStt, 10_000)
   // EventSource reconnects on its own after a drop, which is most of why this
   // is SSE and not a hand-rolled fetch loop.
   es = new EventSource('/api/recordings/stream')
@@ -321,6 +388,7 @@ onMounted(() => {
 onUnmounted(() => {
   es?.close()
   es = null
+  if (sttTimer) clearInterval(sttTimer)
 })
 
 /**
