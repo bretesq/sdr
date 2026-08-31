@@ -1,0 +1,79 @@
+import { describe, it, expect } from 'vitest'
+import { loadTalkgroups, filterByArea, filterTalkgroups } from './talkgroups'
+import { referenceDir } from './paths'
+import { join } from 'node:path'
+import type { TalkgroupEntry } from './files'
+
+// Real entries: tgid 17165 and 6039 as they actually appear in the DB.
+const tgs: TalkgroupEntry[] = [
+  { tgid: 17165, alpha: '17-BRPD DSP1', desc: 'Dispatch 1',
+    cat: 'East Baton Rouge Parish (17) - Baton Rouge Police',
+    enc: 'partial', tag: 'Law Dispatch', mode: 'D enc' },
+  { tgid: 6039, alpha: 'LDWF R4-DISP', desc: 'Region 4 Dispatch',
+    cat: 'Dept. of Wildlife and Fisheries - Region 4 (Lafayette)',
+    enc: 'clear', tag: 'Law Dispatch', mode: 'D' },
+]
+
+describe('loadTalkgroups', () => {
+  it('synthesizes tgid from the JSON key', () => {
+    // The DB is an object keyed by tgid; entries carry NO tgid field.
+    // A naive `'tgid' in v` filter returns zero rows for all 4,163 entries.
+    const all = loadTalkgroups(join(referenceDir(), 'lwin_talkgroups.json'))
+    expect(all.length).toBe(4163)
+    expect(all.every(t => Number.isFinite(t.tgid))).toBe(true)
+
+    const brpd = all.find(t => t.tgid === 17165)
+    expect(brpd?.alpha).toBe('17-BRPD DSP1')
+    expect(brpd?.enc).toBe('partial')
+    expect(brpd?.tag).toBe('Law Dispatch')
+  })
+
+  it('returns entries sorted ascending by tgid', () => {
+    const all = loadTalkgroups(join(referenceDir(), 'lwin_talkgroups.json'))
+    for (let i = 1; i < all.length; i++) {
+      expect(all[i].tgid).toBeGreaterThan(all[i - 1].tgid)
+    }
+  })
+})
+
+describe('filterByArea', () => {
+  it('keeps everything for area=all', () => {
+    expect(filterByArea(tgs, 'all')).toHaveLength(2)
+  })
+
+  it('matches BR-area categories by substring', () => {
+    const out = filterByArea(tgs, 'br')
+    // 17165 matches 'East Baton Rouge'; 6039 matches 'Wildlife and Fisheries'.
+    expect(out.map(t => t.tgid)).toContain(17165)
+    expect(out.map(t => t.tgid)).toContain(6039)
+  })
+
+  it('selects exactly 601 of 4163 against the real DB', () => {
+    // 601 is also the line count of lwin_active_whitelist.txt — if this drifts,
+    // either the keyword list or the DB changed.
+    const all = loadTalkgroups(join(referenceDir(), 'lwin_talkgroups.json'))
+    expect(filterByArea(all, 'br')).toHaveLength(601)
+  })
+})
+
+describe('filterTalkgroups', () => {
+  it('filters by exact category', () => {
+    const out = filterTalkgroups(tgs, {
+      category: 'Dept. of Wildlife and Fisheries - Region 4 (Lafayette)',
+    })
+    expect(out).toHaveLength(1)
+    expect(out[0].tgid).toBe(6039)
+  })
+
+  it('searches tgid, alpha, desc, cat and tag case-insensitively', () => {
+    expect(filterTalkgroups(tgs, { text: 'brpd' })).toHaveLength(1)
+    expect(filterTalkgroups(tgs, { text: '6039' })).toHaveLength(1)
+    expect(filterTalkgroups(tgs, { text: 'wildlife' })).toHaveLength(1)
+    expect(filterTalkgroups(tgs, { text: 'law dispatch' })).toHaveLength(2)
+  })
+
+  it('filters by encryption label', () => {
+    expect(filterTalkgroups(tgs, { enc: 'partial' })).toHaveLength(1)
+    expect(filterTalkgroups(tgs, { enc: 'full' })).toHaveLength(0)
+  })
+})

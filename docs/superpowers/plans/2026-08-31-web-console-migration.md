@@ -1061,9 +1061,10 @@ git commit -m "feat: add talkgroup reference DB filters"
 **Interfaces:**
 - Consumes: `listenLogPath`, `scriptsDir` from `paths.ts`.
 - Produces:
-  - `interface ListenOptions { preset?: string; talkgroups?: string; encryption?: Encryption; stt?: boolean; duration?: number }`
+  - `interface ListenOptions { preset?: string; talkgroups?: string; tag?: string; match?: string; allAreas?: boolean; includePartial?: boolean; includeEncrypted?: boolean; stt?: boolean; duration?: number }` — **independent booleans, not an `Encryption` enum.** `Encryption` is the DB label type (`'clear'|'partial'|'full'`) and must not be reused here: a single enum makes "partial AND full" unreachable, which is the B2 regression.
   - `buildListenArgs(opts: ListenOptions): string[]`
   - `countCalls(logText: string): number`
+  - `readTail(path: string, maxBytes?: number): string`
   - `isProcessRunning(pid: number): boolean`
   - `startListening(opts: ListenOptions): { pid: number; config: ListenOptions }`
   - `stopListening(pid: number): Promise<void>`
@@ -1271,16 +1272,38 @@ export function startListening(opts: ListenOptions): { pid: number; config: List
   }
 }
 
+/**
+ * Signal `target`, treating "no such process" as success.
+ *
+ * The group can exit between an isProcessRunning() check and the signal —
+ * routine for --stt and duration-limited sessions — and an unguarded ESRCH
+ * would surface as a 500 for what was actually a clean stop. Anything else
+ * (EPERM, EINVAL) is a real fault and must not be swallowed: silently
+ * reporting a successful stop while op25 still holds the HackRF is the worst
+ * possible outcome here.
+ *
+ * Narrowing on the error code rather than using a bare `catch {}` also keeps
+ * this compliant with the repo's no-empty-catch rule.
+ *
+ * @returns true if the signal was delivered, false if the target was already gone.
+ */
+function signalOrAlreadyGone(target: number, signal: NodeJS.Signals): boolean {
+  try {
+    process.kill(target, signal)
+    return true
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return false
+    throw err
+  }
+}
+
 export async function stopListening(pid: number): Promise<void> {
   if (!isProcessRunning(pid)) return
 
-  // Both fallbacks must be guarded. The group can exit between the check above
-  // and the signal — routine for --stt and duration-limited sessions — and an
-  // unguarded ESRCH here would surface as a 500 for what was a clean stop.
-  try {
-    process.kill(-pid, 'SIGINT')    // negative pid = whole process group
-  } catch {
-    try { process.kill(pid, 'SIGINT') } catch { /* already gone — nothing to stop */ }
+  // Negative pid = whole process group. If the group is already gone, fall back
+  // to the bare pid in case the child was never a group leader.
+  if (!signalOrAlreadyGone(-pid, 'SIGINT')) {
+    signalOrAlreadyGone(pid, 'SIGINT')
   }
 
   for (let waited = 0; waited < 8000 && isProcessRunning(pid); waited += 200) {
@@ -1289,7 +1312,7 @@ export async function stopListening(pid: number): Promise<void> {
 
   if (isProcessRunning(pid)) {
     // Group-scoped, so rx.py cannot be stranded holding the HackRF.
-    try { process.kill(-pid, 'SIGKILL') } catch { /* already gone */ }
+    signalOrAlreadyGone(-pid, 'SIGKILL')
   }
 }
 ```
@@ -1345,7 +1368,13 @@ function recover(): Session | null {
 
 function removeSidecars(): void {
   for (const p of [listenPidPath(), listenConfigPath(), listenStartedPath()]) {
-    try { unlinkSync(p) } catch { /* already absent */ }
+    try {
+      unlinkSync(p)
+    } catch (err) {
+      // ENOENT means the file is already gone, which is the desired end state.
+      // Anything else (EACCES, EISDIR) is a real fault worth surfacing.
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+    }
   }
 }
 
