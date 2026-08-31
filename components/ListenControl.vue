@@ -57,22 +57,22 @@
         "encrypted" was chosen.
       -->
       <div class="flex align-items-center gap-2">
-        <Checkbox input-id="partial" v-model="includePartial" binary :disabled="running" />
+        <Checkbox v-model="includePartial" input-id="partial" binary :disabled="running" />
         <label for="partial" class="text-sm">Include partially-encrypted TGs (BRPD / EBR SO)</label>
       </div>
 
       <div class="flex align-items-center gap-2">
-        <Checkbox input-id="encrypted" v-model="includeEncrypted" binary :disabled="running" />
+        <Checkbox v-model="includeEncrypted" input-id="encrypted" binary :disabled="running" />
         <label for="encrypted" class="text-sm">Include fully-encrypted TGs (records silence)</label>
       </div>
 
       <div class="flex align-items-center gap-2">
-        <Checkbox input-id="allareas" v-model="allAreas" binary :disabled="running" />
+        <Checkbox v-model="allAreas" input-id="allareas" binary :disabled="running" />
         <label for="allareas" class="text-sm">All areas (statewide, not just Baton Rouge)</label>
       </div>
 
       <div class="flex align-items-center gap-2">
-        <Checkbox input-id="stt" v-model="stt" binary :disabled="running" />
+        <Checkbox v-model="stt" input-id="stt" binary :disabled="running" />
         <label for="stt" class="text-sm">Transcribe with Whisper</label>
       </div>
 

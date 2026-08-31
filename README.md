@@ -439,6 +439,12 @@ pnpm install
 > Commands go through `./node_modules/.bin/` rather than `pnpm run`: pnpm 11.17
 > aborts every script run with `ERR_PNPM_IGNORED_BUILDS` for esbuild, whose
 > platform binaries are in fact installed. `pnpm install` itself is fine.
+>
+> Reaching the dev server **by hostname** needs that host in
+> `vite.server.allowedHosts` (`nuxt.config.ts`) — Vite refuses unrecognised
+> Host headers as a DNS-rebinding guard, and bare IPs are exempt but names are
+> not. `monarch.esquivel.io` and `.esquivel.io` are allowed; add others there.
+> Prefer naming hosts over `allowedHosts: true`, which disables the check.
 
 Open **http://10.56.1.77:3000/** (or **http://127.0.0.1:3000/**) — three panels:
 

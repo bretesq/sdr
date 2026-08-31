@@ -4,7 +4,7 @@ import { join, resolve, basename } from 'node:path'
 // udp_audio_record.py:86 emits TGunknown_<stamp>.wav when no grant matched the
 // audio, and server.py could still serve those. None exist today, but rejecting
 // them here would make them silently unplayable.
-const RECORDING_NAME = /^TG(?:\d+|unknown)_[A-Za-z0-9.\-]+_\d{8}-\d{6}(?:_\d+)?\.(wav|txt)$/
+const RECORDING_NAME = /^TG(?:\d+|unknown)_[A-Za-z0-9.-]+_\d{8}-\d{6}(?:_\d+)?\.(wav|txt)$/
 
 export function sdrRoot(): string {
   return process.env.SDR_ROOT || '/home/besquivel/rtl'

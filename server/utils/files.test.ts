@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { parseRecordingFilename, loadJSON } from './files'
+import { parseRecordingFilename, loadJSON, mergeCalls  } from './files'
+
+import type { Recording } from './files'
 
 describe('parseRecordingFilename', () => {
   it('extracts tgid and a LOCAL-time timestamp', () => {
@@ -28,9 +30,6 @@ describe('loadJSON', () => {
     expect(loadJSON('/nonexistent/nope.json', { a: 1 })).toEqual({ a: 1 })
   })
 })
-
-import { mergeCalls } from './files'
-import type { Recording } from './files'
 
 const base: Recording = {
   file: 'TG17165_x_20260830-170008.wav',
