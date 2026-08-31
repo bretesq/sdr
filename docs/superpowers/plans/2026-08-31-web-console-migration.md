@@ -1468,13 +1468,45 @@ const PRESETS = new Set([
 ])
 const TG_LIST = /^\d+(,\d+)*$/
 
+/**
+ * Is this a regex `scripts/make_whitelist.py` will accept?
+ *
+ * --match is compiled by Python's `re`, not JavaScript's engine, so a plain
+ * `new RegExp(p)` rejects patterns that are perfectly valid downstream — a
+ * Python named group `(?P<x>…)` being the common one. Normalize the
+ * Python-only spellings to their JS equivalents before testing, so the check
+ * still catches genuine typos (unbalanced parens, a dangling quantifier)
+ * without 400-ing a pattern Python would have run happily.
+ */
+function looksLikeValidPythonRegex(pattern: string): boolean {
+  const jsEquivalent = pattern
+    .replace(/\(\?P</g, '(?<')            // (?P<name>…) -> (?<name>…)
+    .replace(/\(\?P=(\w+)\)/g, '\\k<$1>') // (?P=name)   -> \k<name>
+    .replace(/\(\?#[^)]*\)/g, '')         // (?#comment) -> (JS has no equivalent)
+  try {
+    new RegExp(jsEquivalent)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export default defineEventHandler(async (event) => {
   if (sessionStore.isRunning()) {
     setResponseStatus(event, 409)
     return { success: false, error: 'A listening session is already running' }
   }
 
-  const body = await readBody<ListenOptions>(event)
+  // readBody returns undefined for a POST with no body. Without this default,
+  // the first `body.preset` below throws a TypeError OUTSIDE the try/catch
+  // (which only wraps startListening) and the caller gets an unhandled 500
+  // instead of the 400 this validation block was written to produce.
+  const body = (await readBody<ListenOptions | undefined>(event)) ?? {}
+
+  if (typeof body !== 'object' || Array.isArray(body)) {
+    setResponseStatus(event, 400)
+    return { success: false, error: 'Request body must be a JSON object' }
+  }
 
   if (body.preset && !PRESETS.has(body.preset)) {
     setResponseStatus(event, 400)
@@ -1484,15 +1516,9 @@ export default defineEventHandler(async (event) => {
     setResponseStatus(event, 400)
     return { success: false, error: 'Talkgroups must be a comma-separated list of numbers' }
   }
-  if (body.match) {
-    // --match is a regex handed to Python's re; reject one that cannot compile
-    // here so the failure is a 400 rather than a silently empty whitelist.
-    try {
-      new RegExp(body.match)
-    } catch {
-      setResponseStatus(event, 400)
-      return { success: false, error: `Not a valid regex: ${body.match}` }
-    }
+  if (body.match && !looksLikeValidPythonRegex(body.match)) {
+    setResponseStatus(event, 400)
+    return { success: false, error: `Not a valid regex: ${body.match}` }
   }
   if (body.duration !== undefined && (!Number.isInteger(body.duration) || body.duration < 1)) {
     setResponseStatus(event, 400)
@@ -1583,7 +1609,30 @@ sleep 2
 curl -s localhost:3000/api/listen/status
 ```
 
-Expected: status starts `running:false`; start returns a pid; status shows `running:true` with a `callCount` that is **0 or climbing, never ~1600** (a stale figure means the log redirect in Task 6 is wrong); stop succeeds; status returns to `running:false`.
+Validation regressions worth curling before any session is started — none of these touch the radio:
+
+```bash
+# Empty body must be a 400, NOT an unhandled 500. readBody() returns undefined
+# for a bodyless POST, and the resulting TypeError would throw outside the
+# try/catch that only wraps startListening.
+curl -s -o /dev/null -w 'no body:       %{http_code}\n' -X POST localhost:3000/api/listen/start
+curl -s -X POST localhost:3000/api/listen/start -H 'Content-Type: application/json' -d '{}' \
+  | python3 -c "import json,sys;print('empty object: ', json.load(sys.stdin)['error'])"
+curl -s -X POST localhost:3000/api/listen/start -H 'Content-Type: application/json' \
+  -d '{"preset":"nope"}' | python3 -c "import json,sys;print('bad preset:  ', json.load(sys.stdin)['error'])"
+curl -s -X POST localhost:3000/api/listen/start -H 'Content-Type: application/json' \
+  -d '{"talkgroups":"17165,abc"}' | python3 -c "import json,sys;print('bad tgs:     ', json.load(sys.stdin)['error'])"
+curl -s -X POST localhost:3000/api/listen/start -H 'Content-Type: application/json' \
+  -d '{"match":"(unbalanced"}' | python3 -c "import json,sys;print('bad regex:   ', json.load(sys.stdin)['error'])"
+# A Python named group is valid downstream and must NOT be rejected:
+curl -s -X POST localhost:3000/api/listen/start -H 'Content-Type: application/json' \
+  -d '{"match":"(?P<agency>BRPD)","duration":0}' \
+  | python3 -c "import json,sys;print('py regex ok: ', json.load(sys.stdin)['error'])"
+```
+
+Expected: `no body: 400` (a 500 here means the `?? {}` default is missing); then the four distinct validation messages; and the last one must complain about **duration**, not the regex — proving `(?P<…>)` passed validation.
+
+Then the session checks. Expected: status starts `running:false`; start returns a pid; status shows `running:true` with a `callCount` that is **0 or climbing, never ~1600** (a stale figure means the log redirect in Task 6 is wrong); stop succeeds; status returns to `running:false`.
 
 Confirm the log is this session's, not a leftover:
 
@@ -1781,7 +1830,7 @@ curl -s -o /dev/null -w 'traversal: %{http_code}\n' 'localhost:3000/api/recordin
 curl -s -o /dev/null -w 'calls.json: %{http_code}\n' 'localhost:3000/api/recordings/calls.json'
 ```
 
-Expected: **3232 recordings, ~3231 with transcript**, ~2953 with dur; `enc values: ['clear','full','partial',None]` — if `'encrypted'` appears anywhere, B2 was not applied. Plain GET `200` with `Content-Length`; Range GET `206` with `Content-Range`; both traversal and `calls.json` return `404`.
+Expected: **3232 recordings, 3220 with transcript** (11 .txt files are empty), 2953 with dur; `enc values: ['clear','full','partial']` with no None — if `'encrypted'` appears anywhere, B2 was not applied. Plain GET `200` with `Content-Length`; Range GET `206` with `Content-Range`; both traversal and `calls.json` return `404`.
 
 - [ ] **Step 5: Commit**
 
@@ -2734,8 +2783,10 @@ Walk every acceptance check. Numbers are the point — "it looks fine" would hav
 - Table shows **3232** rows.
 - A recording plays **and seeks** (seeking is what exercises the Range path).
 - Search a word you know is in a transcript — it matches. Search `brpd` — it matches alpha.
-- Encryption filter: `Full` → 241 rows, `Partial` → 773, `Clear` → 1939, `Unlabelled` → 279.
-- A `[BLANK_AUDIO]` transcript renders dimmed and italic.
+- Encryption filter: `Clear` → 2088, `Partial` → 890, `Full` → 254, `Unlabelled` → 0.
+  (Merged-list figures, not calls.json's 1939/773/241 — the 279 recordings with
+  no calls.json entry still resolve `enc` from the reference DB.)
+- A `[BLANK_AUDIO]` transcript renders dimmed and italic (518 qualify).
 
 **Talkgroups:**
 - BR area `showing 601 of 601`; Statewide `4163 of 4163`; Statewide + Full `856`.
@@ -2906,11 +2957,23 @@ Each carries the number that makes it falsifiable. A criterion that can be satis
 - [ ] A deliberate validation error shows the handler's message, not `400 Bad Request`
 
 **Recordings**
-- [ ] `/api/recordings/list` returns **3232** rows, ~**3231** with a transcript
+- [ ] `/api/recordings/list` returns **3232** rows, **3220** with a transcript
+      (3231 `.txt` files exist, but 11 are empty and `attachTranscripts` trims
+      them to nothing; 1 `.wav` has no `.txt` at all)
 - [ ] A recording plays **and seeks**; Range requests return **206**, malformed ranges **416**
 - [ ] Search matches on transcript text, not just alpha/desc
-- [ ] Encryption filter: Full **241**, Partial **773**, Clear **1939**, Unlabelled **279**
-- [ ] `[BLANK_AUDIO]` transcripts render dimmed
+- [ ] Encryption filter on the **merged list**: Clear **2088**, Partial **890**,
+      Full **254**, Unlabelled **0**.
+      These are *not* the calls.json figures (1939/773/241) — `scanRecordings`
+      resolves `enc` from the reference DB for the 279 recordings that have no
+      calls.json entry, so the merged totals are higher and **no recording ends
+      up with `enc: null`**. The `Unlabelled` option therefore matches nothing
+      today; it is retained because the old console had it and it would catch a
+      recording whose talkgroup is absent from the reference DB.
+- [ ] `[BLANK_AUDIO]` transcripts render dimmed — **518** of them.
+      (528 `.txt` files contain the marker somewhere, but 10 have it
+      mid-transcript; `isBlank` uses `startsWith`, matching the old console's
+      `(c.transcript||'').startsWith('[BLANK_AUDIO]')`.)
 - [ ] The table reloads ~1.5 s after Stop, showing the new calls with real durations
 - [ ] Path traversal and `calls.json` on `/api/recordings/:name` both return **404**
 
