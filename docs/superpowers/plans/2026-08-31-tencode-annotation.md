@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- **`calls.transcript` is never written by this feature.** The `.txt` files stay the durable copy and `transcript` stays the raw whisper record.
+- **`calls.transcript` is never rewritten or normalized by this feature.** It continues to hold exactly the raw whisper output, as it does today. `set_transcript` still assigns it — that is its existing job — but the annotation layer must never alter that value. Normalized text goes to `transcript_norm`. The `.txt` files remain the durable copy.
 - **No invented code meanings.** Every entry in a code set carries a `src` that resolves to an entry in that file's `sources` array. A data-integrity test enforces this.
 - **Unknown codes render un-expanded**, never guessed.
 - **Bare-number codes are out of scope.** Only `10-NN`, `10 NN`, `10NN`, `ten-<word>`, `signal NN`, `code N` are recognised.
