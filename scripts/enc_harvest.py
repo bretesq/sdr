@@ -149,24 +149,61 @@ def resolve_enc(tgid: int, ref: dict, overrides: dict) -> str | None:
     return (ref.get(str(tgid)) or {}).get('enc')
 
 
-def reconcile(db, ref: dict, *, min_obs: int = 5) -> list:
+def talkgroup_ess(log_text: str) -> dict:
+    """Per-talkgroup ALGID counts from grant-attributed ESS.
+
+    Deliberately independent of whether a call was RECORDED. Reconciliation is a
+    talkgroup-level question — the grant already says which talkgroup an ESS
+    belongs to — and requiring a bound call throws away exactly the evidence
+    that matters most.
+
+    Encrypted transmissions produce no audio worth recording, because op25 -n
+    silences them, so they often leave no call for an ESS to attach to. Measured
+    on results/op25_multi.log: 168 of 214 unbound observations are ADP, and
+    TG19014 — which RadioReference labels 'clear' — carries 90 of them against 3
+    recorded calls. Under call-binding that talkgroup is invisible, which is the
+    opposite of useful when the question is "are we capturing encrypted traffic".
+    """
+    grants, obs = enc_log.parse_log(log_text)
+    out: dict = collections.defaultdict(collections.Counter)
+    for o, g in enc_log.attribute(grants, obs):
+        if g is None or o.algid not in enc_log.KNOWN_ALGIDS:
+            continue
+        out[g.tgid][o.algid] += 1
+    return dict(out)
+
+
+def reconcile(db, ref: dict, *, min_obs: int = 5, log_text: str = '') -> list:
     """Talkgroups whose observed behaviour contradicts RadioReference.
 
-    Only disagreements clear the report, and only above `min_obs` observations:
-    ESS reaches 19% of calls, so small-N conclusions are not trustworthy. This
-    proposes; it never writes. A human copies accepted rows into
-    reference/enc_overrides.json.
-    """
-    rows = db.execute(
-        "SELECT tgid, enc_observed, enc_evidence, count(*) AS n FROM calls "
-        "WHERE enc_observed IS NOT NULL AND tgid IS NOT NULL "
-        "GROUP BY tgid, enc_observed, enc_evidence").fetchall()
+    Two evidence streams, deliberately kept separate to avoid double counting:
 
+      ESS      from `log_text`, at talkgroup level, recorded call or not.
+      speech   from the database, which is where transcripts live.
+
+    Only disagreements clear the report, and only above `min_obs` observations:
+    small-N conclusions are not trustworthy. This proposes; it never writes. A
+    human copies accepted rows into reference/enc_overrides.json.
+    """
     agg = collections.defaultdict(collections.Counter)
     evid = collections.defaultdict(set)
+
+    # ESS evidence comes from the log only. The database's ess-backed rows are a
+    # strict subset of it — every bound observation was also attributed to a
+    # grant — so counting both would double every recorded encrypted call.
+    for tgid, algids in talkgroup_ess(log_text).items():
+        for algid, n in algids.items():
+            state = 'clear' if algid == enc_log.CLEAR_ALGID else 'encrypted'
+            agg[tgid][state] += n
+            evid[tgid].add('ess')
+
+    rows = db.execute(
+        "SELECT tgid, enc_observed, count(*) AS n FROM calls "
+        "WHERE enc_observed IS NOT NULL AND tgid IS NOT NULL "
+        "AND enc_evidence = 'speech' GROUP BY tgid, enc_observed").fetchall()
     for r in rows:
         agg[r['tgid']][r['enc_observed']] += r['n']
-        evid[r['tgid']].add(r['enc_evidence'])
+        evid[r['tgid']].add('speech')
 
     out = []
     for tgid, counts in sorted(agg.items()):
@@ -203,12 +240,15 @@ def main() -> int:
     db = sdr_db.connect(a.db)
     try:
         total = collections.Counter()
+        seen_text = []
         for path in (a.logs or [DEFAULT_LOG]):
             if not os.path.exists(path):
                 print(f'skip (missing): {path}')
                 continue
             with open(path, errors='ignore') as f:
-                s = harvest(db, f.read())
+                text = f.read()
+            seen_text.append(text)
+            s = harvest(db, text)
             print(f'{os.path.basename(path)}: {s["bound"]} bound, '
                   f'{s["unbound"]} unbound, {s["updated"]} calls updated, '
                   f'{s["speech_only"]} from speech')
@@ -218,7 +258,11 @@ def main() -> int:
         if a.report:
             with open(f'{R}/reference/lwin_talkgroups.json') as f:
                 ref = json.load(f)
-            props = reconcile(db, ref, min_obs=a.min_obs)
+            # The log, not just the database: a talkgroup whose encrypted
+            # traffic never produced a recording has no rows to reconcile from,
+            # and those are the ones that matter here.
+            props = reconcile(db, ref, min_obs=a.min_obs,
+                              log_text='\n'.join(seen_text))
             print(f'\n{len(props)} talkgroup(s) disagree with RadioReference '
                   f'(>= {a.min_obs} observations)')
             print(f'{"TG":>7} {"RR":<9}{"proposed":<10}{"clear":>6}{"enc":>5}  evidence')
