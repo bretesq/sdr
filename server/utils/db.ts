@@ -138,11 +138,18 @@ export interface CallRow {
   description: string | null
   cat: string | null
   enc: 'clear' | 'partial' | 'full' | null
+  enc_overridden: number | null
   src_addr: number | null
   algid: number | null
   algorithm: string | null
   keyid: number | null
   mi: string | null
+  // Written by scripts/enc_harvest.py. Distinct from `enc` above, which is the
+  // scraped RadioReference label for the talkgroup rather than a fact about
+  // this transmission.
+  enc_observed: string | null
+  enc_evidence: string | null
+  enc_source: string | null
   rfss: number | null
   site: number | null
   site_name: string | null

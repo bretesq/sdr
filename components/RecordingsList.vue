@@ -146,16 +146,34 @@ scripts/stt_server.sh start"
       </Column>
       <Column field="enc" header="Enc" sortable style="width: 7rem">
         <template #body="{ data }">
-          <!-- The reference DB's static per-talkgroup label. -->
+          <!-- The talkgroup label. A reviewed override is marked, because a
+               decision someone made from observed traffic should not look
+               identical to the RadioReference scrape it replaced. -->
           <Tag :value="data.enc ?? 'unknown'" :severity="encSeverity(data.enc)" />
+          <span
+            v-if="data.encOverridden"
+            class="text-xs text-color-secondary ml-1"
+            title="Reclassified from observed traffic; see reference/enc_overrides.json"
+          >&#9998;</span>
         </template>
       </Column>
-      <Column field="algid" header="Observed" sortable style="width: 8rem">
+      <Column field="encObserved" header="Observed" sortable style="width: 9rem">
         <template #body="{ data }">
-          <!-- What the ESS header said for THIS call. Blank when op25 was not
-               run with --ess, which is the default. -->
+          <!--
+            What THIS call carried. The harvested value wins over the raw algid:
+            the live path keeps one ESS slot for 12 s with no talkgroup binding,
+            so it stamps a finished call's ALGID onto the next one. Measured: 61
+            calls hold a non-clear algid — including bit-error values like 0x45
+            and 0xB8 — while their transcripts are plain dispatch speech.
+          -->
           <Tag
-            v-if="data.algid !== null"
+            v-if="data.encSource === 'harvest' && data.encObserved"
+            :value="observedLabel(data)"
+            :severity="observedSeverity(data.encObserved)"
+          />
+          <!-- No harvest yet: fall back to the live ESS reading, as before. -->
+          <Tag
+            v-else-if="data.algid !== null"
             :value="data.algid === 128 ? 'clear' : (data.algorithm ?? 'enc')"
             :severity="essSeverity(data.algid)"
           />
@@ -297,6 +315,10 @@ interface Recording {
   srcAddr: number | null
   algid: number | null
   algorithm: string | null
+  encObserved: string | null
+  encEvidence: string | null
+  encSource: string | null
+  encOverridden: boolean
   keyid: number | null
   site: string | null
   freq: number | null
@@ -677,6 +699,28 @@ function essLabel(r: Recording): string | null {
 function essSeverity(algid: number | null): string {
   if (algid === null) return 'secondary'
   return algid === 0x80 ? 'success' : 'danger'   // 0x80 is the only clear value
+}
+
+/**
+ * Label for a harvested observation, marking how it was established.
+ *
+ * ESS is authoritative for that transmission. Speech only proves the audio was
+ * not encrypted — real evidence, since op25 -n silences encrypted bursts, but
+ * weaker than reading the header — so it is marked rather than shown as equal.
+ */
+function observedLabel(r: Recording): string {
+  if (r.encObserved === 'clear') {
+    return r.encEvidence === 'speech' ? 'clear (audio)' : 'clear'
+  }
+  if (r.encObserved === 'encrypted') return r.algorithm ?? 'encrypted'
+  return r.encObserved ?? 'unknown'
+}
+
+function observedSeverity(observed: string | null): string {
+  if (observed === 'clear') return 'success'
+  if (observed === 'mixed') return 'warn'
+  if (observed === 'encrypted') return 'danger'
+  return 'secondary'
 }
 
 function encSeverity(enc: string | null): string {

@@ -173,5 +173,54 @@ class TestReceiverFiltering(unittest.TestCase):
         self.assertEqual(tail_over(interleaved, rx_id=3).metadata()['algid'], 0xaa)
 
 
+# An encrypted call, then a grant for a DIFFERENT talkgroup. The ESS precedes
+# the new grant, so it described the call that just ended.
+ESS_THEN_NEW_GRANT = (
+    '08/31/26 13:38:35.100000 [0] voice update:  '
+    'tg(17086), freq(851837500), slot(-), prio(3)\n'
+    '08/31/26 13:38:35.200000 [0] NAC 0x1bd LDU2: '
+    'ESS: algid=aa, keyid=8, mi=00 00 00 00 00 00 00 00 00, rs_errs=0\n'
+    '08/31/26 13:38:36.000000 [0] voice update:  '
+    'tg(6848), freq(851837500), slot(-), prio(3)\n'
+)
+# The same lines, but the ESS arrives AFTER the new grant, so it is this call's.
+NEW_GRANT_THEN_ESS = (
+    '08/31/26 13:38:35.100000 [0] voice update:  '
+    'tg(17086), freq(851837500), slot(-), prio(3)\n'
+    '08/31/26 13:38:36.000000 [0] voice update:  '
+    'tg(6848), freq(851837500), slot(-), prio(3)\n'
+    '08/31/26 13:38:36.200000 [0] NAC 0x1bd LDU2: '
+    'ESS: algid=aa, keyid=8, mi=00 00 00 00 00 00 00 00 00, rs_errs=0\n'
+)
+
+
+class TestEssDoesNotCrossCalls(unittest.TestCase):
+    """The ESS line carries no tgid, so position is the only thing binding it.
+
+    TG_TTL is 12 s, so without this an encrypted call's ALGID is still "fresh"
+    when the next clear call starts and gets recorded against it. Measured in
+    the corpus: 61 calls hold a non-clear algid while their transcripts are
+    ordinary dispatch speech.
+
+    poll() runs one finditer pass per pattern, which discards line ordering, so
+    the fix compares buffer offsets rather than clearing inside the tg loop —
+    that would simply be undone by the ESS loop later in the same poll.
+    """
+
+    def test_ess_before_a_new_grant_is_dropped(self):
+        t = tail_over(ESS_THEN_NEW_GRANT, rx_id=0)
+        self.assertEqual(t.current(), 6848)
+        self.assertIsNone(t.metadata()['algid'])
+
+    def test_ess_after_a_new_grant_is_kept(self):
+        t = tail_over(NEW_GRANT_THEN_ESS, rx_id=0)
+        self.assertEqual(t.current(), 6848)
+        self.assertEqual(t.metadata()['algid'], 0xAA)
+
+    def test_an_ess_with_no_grant_change_is_untouched(self):
+        t = tail_over(ESS_RX0, rx_id=0)
+        self.assertEqual(t.metadata()['algid'], 0x80)
+
+
 if __name__ == '__main__':
     unittest.main()

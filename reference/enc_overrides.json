@@ -1,0 +1,8 @@
+{
+  "_comment": "Reviewed reclassifications layered over the RadioReference scrape in lwin_talkgroups.json, which is upstream and is never edited. RadioReference's enc describes how a talkgroup is documented, not what it transmits. Produced by: python3 scripts/enc_harvest.py --report. Each entry records why it was accepted and when, so a decision can be revisited against the evidence that produced it.",
+  "_example": {
+    "enc": "clear",
+    "why": "21 of 21 calls intelligible; no ESS ever observed",
+    "reviewed": "2026-09-01"
+  }
+}

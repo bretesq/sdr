@@ -259,6 +259,22 @@ _DERIVED_COLUMNS = (
     ('codes_text', 'TEXT'),
     ('codes_set_id', 'TEXT'),
     ('codes_rev', 'TEXT'),
+    # Observed encryption, written by enc_harvest.py from op25 logs. Distinct
+    # from talkgroups.enc, which is a RadioReference label describing how a
+    # talkgroup is documented rather than what a transmission carried: 367 of
+    # 377 calls on talkgroups flagged 'full' contain real speech.
+    ('enc_observed', 'TEXT'),   # 'clear' | 'encrypted' | 'mixed' | NULL unseen
+    ('enc_evidence', 'TEXT'),   # 'ess' | 'speech' | 'both' | NULL
+    ('enc_source', 'TEXT'),     # 'harvest' (authoritative) | 'live' (hint)
+)
+
+_TALKGROUP_COLUMNS = (
+    # Set by enc_harvest.apply_overrides() when a human has reviewed a
+    # reclassification, so the UI can show the label as decided rather than
+    # scraped. The scrape in reference/lwin_talkgroups.json stays untouched;
+    # the talkgroups TABLE is derived and rebuilt by import_to_sqlite.py, which
+    # is the right place for a decision to land.
+    ('enc_overridden', 'INTEGER'),
 )
 
 
@@ -272,6 +288,11 @@ def _migrate(db: sqlite3.Connection) -> None:
     for name, decl in _DERIVED_COLUMNS:
         if name not in have:
             db.execute(f'ALTER TABLE calls ADD COLUMN {name} {decl}')
+
+    have_tg = {r[1] for r in db.execute('PRAGMA table_info(talkgroups)')}
+    for name, decl in _TALKGROUP_COLUMNS:
+        if name not in have_tg:
+            db.execute(f'ALTER TABLE talkgroups ADD COLUMN {name} {decl}')
 
     if db.execute('PRAGMA user_version').fetchone()[0] >= _USER_VERSION:
         return

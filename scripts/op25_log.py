@@ -117,15 +117,26 @@ class LogTail:
         self.buf += ANSI.sub('', chunk)
         now = time.time()
 
+        # Buffer POSITIONS, not just values. poll() runs one finditer pass per
+        # pattern, so the passes alone cannot tell whether an ESS arrived before
+        # or after a grant; offsets restore the ordering the passes discard.
+        last_tg_change = -1
+        last_ess = -1
+
         # op25 rewrites the status line without newlines, so scan the whole
         # buffer tail rather than trying to split into lines.
         for m in self.tgpat.finditer(self.buf):
-            tg = next(g for g in m.groups() if g)
-            self.tg, self.tg_t = int(tg), now
+            tg = int(next(g for g in m.groups() if g))
+            if tg != self.tg:
+                last_tg_change = m.start()
+            self.tg, self.tg_t = tg, now
 
         # tg+freq together: the grant's voice channel for this call
         for m in self.freqpat.finditer(self.buf):
-            self.tg, self.tg_t = int(m.group(1)), now
+            tg = int(m.group(1))
+            if tg != self.tg:
+                last_tg_change = max(last_tg_change, m.start())
+            self.tg, self.tg_t = tg, now
             if m.group(2):
                 self.src_addr, self.src_t = int(m.group(2)), now
             self.freq, self.freq_t = _to_hz(m.group(3)), now
@@ -138,6 +149,17 @@ class LogTail:
             self.ess = (int(m.group(1), 16), int(m.group(2), 16),
                         m.group(3).replace(' ', ''))
             self.ess_t = now
+            last_ess = m.start()
+
+        # An ESS that precedes the newest grant described the call that just
+        # ended. Keeping it attributes one call's encryption to the next, which
+        # TG_TTL (12 s) makes near-certain at normal call rates: 61 calls in the
+        # corpus hold a non-clear algid while their transcripts are ordinary
+        # dispatch speech. Dropping it yields "unknown", which enc_harvest.py
+        # then resolves properly from the full timeline; enc_source distinguishes
+        # a harvested fact from this provisional hint.
+        if last_tg_change > last_ess:
+            self.ess, self.ess_t = None, 0.0
 
         for m in SITEPAT.finditer(self.buf):
             self.site = (int(m.group(1), 16), int(m.group(2)), int(m.group(3)))

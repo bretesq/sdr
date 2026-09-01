@@ -554,3 +554,51 @@ class TestSetTranscriptWritesCodes(unittest.TestCase):
             'SELECT codes_rev FROM calls WHERE file = ?',
             (self.file,)).fetchone()['codes_rev']
         self.assertTrue(rev)
+
+
+class TestObservedEncryptionColumns(unittest.TestCase):
+    """Columns enc_harvest.py writes, added by the standard migration.
+
+    Distinct from talkgroups.enc, which is a scraped RadioReference label
+    describing a talkgroup in general. These describe one transmission.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+        self.tmp.close()
+
+    def tearDown(self):
+        for suffix in ('', '-wal', '-shm'):
+            try:
+                os.unlink(self.tmp.name + suffix)
+            except OSError:
+                pass
+
+    def test_observed_encryption_columns_exist(self):
+        db = sdr_db.connect(self.tmp.name)
+        try:
+            cols = {r[1] for r in db.execute('PRAGMA table_info(calls)')}
+            self.assertIn('enc_observed', cols)
+            self.assertIn('enc_evidence', cols)
+            self.assertIn('enc_source', cols)
+        finally:
+            db.close()
+
+    def test_talkgroups_carries_the_override_marker(self):
+        """So the UI can show a reviewed reclassification as decided, not scraped."""
+        db = sdr_db.connect(self.tmp.name)
+        try:
+            cols = {r[1] for r in db.execute('PRAGMA table_info(talkgroups)')}
+            self.assertIn('enc_overridden', cols)
+        finally:
+            db.close()
+
+    def test_migration_is_idempotent_for_enc_columns(self):
+        """connect() runs on every open, including while the recorder holds it."""
+        sdr_db.connect(self.tmp.name).close()
+        db = sdr_db.connect(self.tmp.name)   # would raise "duplicate column name"
+        try:
+            cols = {r[1] for r in db.execute('PRAGMA table_info(calls)')}
+            self.assertIn('enc_observed', cols)
+        finally:
+            db.close()

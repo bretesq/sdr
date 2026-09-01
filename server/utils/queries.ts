@@ -43,6 +43,14 @@ export interface Recording {
   algid: number | null
   algorithm: string | null
   keyid: number | null
+  // What THIS call carried, harvested from op25's ESS or proven by intelligible
+  // speech. `enc` above is the scraped RadioReference label for the talkgroup,
+  // which describes how it is documented rather than what it transmitted.
+  encObserved: string | null
+  encEvidence: string | null
+  encSource: string | null
+  // True when a human reviewed this talkgroup's class from observed traffic.
+  encOverridden: boolean
   site: string | null
   freq: number | null
 }
@@ -50,7 +58,8 @@ export interface Recording {
 const CALL_SELECT = `
   SELECT c.file, c.tgid, c.start, c.dur, c.transcript, c.transcript_norm,
          c.src_addr, c.algid, c.keyid, c.freq, c.rfss, c.site,
-         t.alpha, t.description, t.cat, t.enc,
+         c.enc_observed, c.enc_evidence, c.enc_source,
+         t.alpha, t.description, t.cat, t.enc, t.enc_overridden,
          a.name AS algorithm,
          s.name_county AS site_name
     FROM calls c
@@ -131,6 +140,10 @@ function toRecording(r: CallRow, codes: CodeMention[] = []): Recording {
     algid: r.algid,
     algorithm: r.algorithm,
     keyid: r.keyid,
+    encObserved: r.enc_observed,
+    encEvidence: r.enc_evidence,
+    encSource: r.enc_source,
+    encOverridden: Boolean(r.enc_overridden),
     site: r.site_name,
     freq: r.freq,
   }
