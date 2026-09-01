@@ -182,9 +182,15 @@ RadioReference and proposes a diff, with the evidence and an explicit
 minimum-observation gate:
 
 ```
-TG17166  17-BRPD TLK1  RR=full  speech 21/21, ESS none      -> propose clear
-TG17086  17 JAIL SEC1  RR=full  ESS clear 27 / ADP 3        -> propose partial
+TG17166  17-BRPD TLK1  RR=full   speech 16, ESS none        -> propose clear
+TG17086  17 JAIL SEC1  RR=full   clear 154, enc 0           -> propose clear
+TG19014  24-PPD DISP   RR=clear  clear 5,   enc 90          -> propose partial
 ```
+
+TG19014 is the case that matters for capturing encrypted traffic: documented
+clear, transmitting ADP, and nearly absent from the recordings because the
+audio is silenced. Its ciphertext exists only in the logs — which is why the
+ADP pipeline in Phase 5 must read logs rather than the recorded corpus.
 
 Accepted entries are written by hand into `reference/enc_overrides.json`:
 
