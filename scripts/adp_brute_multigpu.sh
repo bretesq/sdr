@@ -11,6 +11,10 @@
 # Usage:
 #   adp_brute_multigpu.sh <mi_hex> <pt_hex> --pairs FILE [--gpus N] [--count-per-shard M]
 #   adp_brute_multigpu.sh <mi_hex> <pt_hex> --frame ldu2 --position 5 --ct <ct_hex>
+#
+# Each shard reports progress to its own log by default; --no-progress disables
+# it. Throughput for that estimate defaults to the measured 83.4M keys/s per
+# card, NOT adp_brute.cu's built-in 840K, which is 100x low for these GPUs.
 set -euo pipefail
 
 BIN="${ADP_BIN:-$HOME/wopr_adp/adp_brute_cuda}"
@@ -23,15 +27,28 @@ PT="${1:?usage: $0 <mi_hex> <pt_hex> [options]}"; shift
 GPUS=$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)
 COUNT_PER_SHARD=""
 CT="00 00 00 00 00 00 00 00 00 00 00"
+# Progress reporting is ON by default. A 22-minute run that says nothing is
+# indistinguishable from a hung one, and the alternative is estimating from
+# elapsed wall-time outside the process, which is what this exists to avoid.
+PROGRESS=1
+# Measured on wopr's RTX PRO 6000 Blackwell Server cards: 2G keys in 23.97 s.
+# adp_brute.cu's own default is 840000 -- an H100-era figure 100x too low, which
+# would make every reported percentage wrong by two orders of magnitude.
+THROUGHPUT="${ADP_THROUGHPUT:-83400000}"
 PASSTHRU=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --gpus)             GPUS="$2"; shift 2 ;;
         --count-per-shard)  COUNT_PER_SHARD="$2"; shift 2 ;;
         --ct)               CT="$2"; shift 2 ;;
+        --no-progress)      PROGRESS=0; shift ;;
+        --throughput)       THROUGHPUT="$2"; shift 2 ;;
         *)                  PASSTHRU+=("$1"); shift ;;
     esac
 done
+if [ "$PROGRESS" -eq 1 ]; then
+    PASSTHRU+=(--progress --throughput "$THROUGHPUT")
+fi
 
 TOTAL=$((1 << 40))
 SLICE=$(( TOTAL / GPUS ))
