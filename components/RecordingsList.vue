@@ -32,12 +32,30 @@
             ? 'Transcribing; some may be silence, which stays blank'
             : 'Not transcribing — start the transcriber to work through these'"
         >{{ untranscribed }} untranscribed</span>
+        <!--
+          Shown only while transcribing, and only when the GPU server is NOT
+          answering: on the happy path this stays out of the way, and the one
+          case worth interrupting for — silently running 15x slower on the CPU
+          fallback — is visible without hovering anything.
+        -->
+        <span
+          v-if="sttRunning && !sttGpu"
+          class="text-xs text-orange-500 font-medium"
+          aria-live="polite"
+          title="The CUDA whisper-server is not answering, so the transcriber is
+falling back to the CPU (~2.5 s/clip against 0.168 s). Restart it with
+scripts/stt_server.sh start"
+        >CPU fallback</span>
         <Button
-          :icon="sttRunning ? 'pi pi-microphone' : 'pi pi-microphone'"
-          :severity="sttRunning ? 'success' : 'secondary'"
+          icon="pi pi-microphone"
+          :severity="sttRunning ? (sttGpu ? 'success' : 'warn') : 'secondary'"
           text rounded :loading="sttBusy"
           :aria-label="sttRunning ? 'Stop the transcriber' : 'Start the transcriber'"
-          :title="sttRunning ? 'Transcriber running — click to stop' : 'Transcriber stopped — click to start'"
+          :title="sttRunning
+            ? (sttGpu
+              ? 'Transcriber running on GPU (medium.en) — click to stop'
+              : 'Transcriber running on CPU fallback — GPU server down — click to stop')
+            : 'Transcriber stopped — click to start'"
           @click="toggleStt"
         />
         <Button
@@ -406,20 +424,31 @@ const pending = ref(0)
  * Transcriber state, independent of any recording session.
  *
  * `untranscribed` comes free from the SSE summary — calls minus transcripts —
- * so it needs no extra query. Note it never reaches zero: a call whose audio is
- * silence (or whose encrypted bursts op25 silenced) produces an empty .txt and
- * is deliberately left NULL rather than storing an empty string. Measured 12
- * such calls out of 3,686, which is why this is shown as a count rather than as
- * a "caught up" flag.
+ * so it needs no extra query. It does now reach zero: a call whose audio is
+ * silence (or whose encrypted bursts op25 silenced) stores an empty transcript
+ * rather than NULL, so it no longer counts as outstanding work. NULL means only
+ * "not yet attempted". Measured 80 silent calls out of 4,503.
+ *
+ * `sttGpu` is tracked separately from `sttRunning` because the two fail
+ * independently: the watcher can be up while the CUDA whisper-server is down,
+ * in which case it is transcribing on the CPU fallback at roughly 15x the cost
+ * per clip (~2.5 s/clip against 0.168 s) — slower than the small.en pipeline it
+ * replaced. That is a large regression with no other visible symptom than a
+ * slowly growing backlog, so it gets a badge rather than only a tooltip.
  */
 const sttRunning = ref(false)
+const sttGpu = ref(false)
 const sttBusy = ref(false)
 const untranscribed = ref(0)
 
 async function refreshStt(): Promise<void> {
   try {
-    const res = await $fetch<ApiResponse<{ running: boolean }>>('/api/transcribe/status')
-    if (res.success && res.data) sttRunning.value = res.data.running
+    const res = await $fetch<ApiResponse<{ running: boolean, gpuServer: boolean }>>(
+      '/api/transcribe/status')
+    if (res.success && res.data) {
+      sttRunning.value = res.data.running
+      sttGpu.value = res.data.gpuServer
+    }
   } catch {
     // Leave the last known state rather than claiming it stopped.
   }

@@ -323,9 +323,14 @@ export function listCategories(): string[] {
  * A cheap fingerprint of the recordings corpus, for the live SSE stream.
  *
  * Three aggregates over `calls`, no join and no scan of transcript text, so it
- * is cheap enough to evaluate on every change tick. `transcripts` counts
- * non-NULL, which is what stt_watch.py writes — it skips empty text, so an
- * empty string never lands.
+ * is cheap enough to evaluate on every change tick.
+ *
+ * `transcripts` counts non-NULL, and NULL now means exactly one thing: not yet
+ * attempted. It used to also cover "attempted, but whisper heard silence",
+ * because stt_watch.py skipped empty text — so `calls - transcripts` could never
+ * reach zero and a caught-up corpus still reported a dozen outstanding. Empty
+ * text is now stored as an empty string (it is what the .txt on disk says), so
+ * the difference is a true pending backlog and does reach zero.
  *
  * `latest` lets a client tell "a new call arrived" from "an existing call
  * gained a transcript" without shipping any rows.
