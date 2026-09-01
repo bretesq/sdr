@@ -2,7 +2,8 @@ import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
   test: {
-    include: ['server/**/*.test.ts'],
+    // `utils/` holds the client-side pure helpers; server/ holds the rest.
+    include: ['server/**/*.test.ts', 'utils/**/*.test.ts'],
     environment: 'node',
     server: {
       deps: {

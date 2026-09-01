@@ -236,43 +236,14 @@
 </template>
 
 <script setup lang="ts">
-interface CodeMention {
-  raw: string
-  canonical: string
-  kind: 'ten' | 'signal' | 'response'
-  meaning: string | null
-  confidence: 'high' | 'medium' | 'low'
-  offStart: number
-  offEnd: number
-}
-
-interface Segment {
-  text: string
-  code?: CodeMention
-}
-
+import { segments } from '~/utils/tencodeSegments'
+import type { CodeMention } from '~/utils/tencodeSegments'
 /**
- * Split transcript text into plain and code-bearing segments using the
- * offsets the server supplies.
- *
- * Rendered with v-for rather than v-html: no injection surface, and no
- * re-running the extractor's regex in the browser.
+ * `segments()` and its types live in utils/tencodeSegments.ts rather than
+ * here, because they are the consumer half of a cross-runtime offset contract
+ * with scripts/tencodes.py and need direct test coverage. See that file for
+ * why the offsets are code-point indexes and not string offsets.
  */
-function segments(text: string | null, codes: CodeMention[]): Segment[] {
-  if (!text) return []
-  if (codes.length === 0) return [{ text }]
-
-  const out: Segment[] = []
-  let pos = 0
-  for (const c of codes) {
-    if (c.offStart < pos || c.offEnd > text.length) continue
-    if (c.offStart > pos) out.push({ text: text.slice(pos, c.offStart) })
-    out.push({ text: text.slice(c.offStart, c.offEnd), code: c })
-    pos = c.offEnd
-  }
-  if (pos < text.length) out.push({ text: text.slice(pos) })
-  return out
-}
 
 /**
  * 10-4 is ~40% of all mentions. Annotating the one code everyone knows would

@@ -183,6 +183,43 @@ class TestOffsets(unittest.TestCase):
             self.assertEqual(norm[m.off_start:m.off_end], m.canonical)
 
 
+class TestNonBmpOffsets(unittest.TestCase):
+    """Offsets must stay valid when the text contains non-BMP characters.
+
+    These offsets cross into TypeScript (utils/tencodeSegments.ts), which
+    slices by UTF-16 code unit while Python indexes by code point. This side
+    pins the Python contract; utils/tencodeSegments.test.ts pins the consumer.
+    """
+
+    def test_offsets_index_code_points_not_utf16_units(self):
+        norm, mentions = tencodes.extract('\U0001F600 call 1042.', CODES)
+        self.assertEqual(norm, '\U0001F600 call 10-42.')
+        m = mentions[0]
+        self.assertEqual(norm[m.off_start:m.off_end], '10-42')
+
+    def test_offset_differs_from_the_utf16_index(self):
+        """Proves the case actually exercises the hazard.
+
+        If the emoji were one UTF-16 unit, code-point and code-unit indexes
+        would agree and the test above would pass either way.
+        """
+        norm, mentions = tencodes.extract('\U0001F600 call 1042.', CODES)
+        m = mentions[0]
+        utf16_index = len(norm[:m.off_start].encode('utf-16-le')) // 2
+        self.assertNotEqual(utf16_index, m.off_start)
+
+    def test_multiple_non_bmp_characters(self):
+        norm, mentions = tencodes.extract(
+            '\U0001F600\U0001F692 radio 1042 clear', CODES)
+        m = mentions[0]
+        self.assertEqual(norm[m.off_start:m.off_end], '10-42')
+
+    def test_non_bmp_after_the_code(self):
+        norm, mentions = tencodes.extract('1042 \U0001F600', CODES)
+        m = mentions[0]
+        self.assertEqual(norm[m.off_start:m.off_end], '10-42')
+
+
 class TestCodesText(unittest.TestCase):
     def test_includes_raw_canonical_and_meaning(self):
         _, mentions = tencodes.extract('Zachary, 43 is 1042.', CODES)

@@ -70,7 +70,18 @@ class Mention:
     meaning: str | None  # None when the chain does not define it
     set_id: str | None
     confidence: str      # 'high' | 'medium' | 'low'
-    off_start: int       # offsets into the RETURNED normalized text
+
+    # Offsets into the RETURNED normalized text, as Python string indexes —
+    # that is, CODE POINTS, not bytes and not UTF-16 code units.
+    #
+    # These cross a language boundary: they are stored in call_codes and
+    # consumed by utils/tencodeSegments.ts to slice the same string in
+    # JavaScript, which indexes by UTF-16 code unit. The two agree only while
+    # every character is in the BMP, so the consumer indexes a code-point
+    # array to stay in this space. Do not "simplify" either side to plain
+    # string slicing: one emoji in a transcript would then shift every later
+    # code and annotate the wrong words, silently.
+    off_start: int
     off_end: int
 
 
