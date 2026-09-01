@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import json
 import os
 import sys
 
@@ -37,6 +38,8 @@ DEFAULT_LOG = f'{R}/results/op25_multi.log'
 # still belong to it. Log timestamps and calls.start agree to within ~1.6 s in
 # practice; this absorbs that without letting one call claim its neighbour.
 SLACK = 2.0
+
+OVERRIDES = f'{R}/reference/enc_overrides.json'
 
 
 def _calls_by_tgid(db) -> dict:
@@ -108,10 +111,74 @@ def harvest(db, log_text: str) -> dict:
     return dict(stats)
 
 
+def load_overrides(path: str = OVERRIDES) -> dict:
+    """Reviewed reclassifications, keyed by tgid. Absent file means none.
+
+    Keys beginning with '_' are documentation, not talkgroups.
+    """
+    if not os.path.exists(path):
+        return {}
+    with open(path) as f:
+        return {int(k): v['enc'] for k, v in json.load(f).items()
+                if not k.startswith('_')}
+
+
+def resolve_enc(tgid: int, ref: dict, overrides: dict) -> str | None:
+    """The encryption class to act on: a reviewed override, else the scrape."""
+    if tgid in overrides:
+        return overrides[tgid]
+    return (ref.get(str(tgid)) or {}).get('enc')
+
+
+def reconcile(db, ref: dict, *, min_obs: int = 5) -> list:
+    """Talkgroups whose observed behaviour contradicts RadioReference.
+
+    Only disagreements clear the report, and only above `min_obs` observations:
+    ESS reaches 19% of calls, so small-N conclusions are not trustworthy. This
+    proposes; it never writes. A human copies accepted rows into
+    reference/enc_overrides.json.
+    """
+    rows = db.execute(
+        "SELECT tgid, enc_observed, enc_evidence, count(*) AS n FROM calls "
+        "WHERE enc_observed IS NOT NULL AND tgid IS NOT NULL "
+        "GROUP BY tgid, enc_observed, enc_evidence").fetchall()
+
+    agg = collections.defaultdict(collections.Counter)
+    evid = collections.defaultdict(set)
+    for r in rows:
+        agg[r['tgid']][r['enc_observed']] += r['n']
+        evid[r['tgid']].add(r['enc_evidence'])
+
+    out = []
+    for tgid, counts in sorted(agg.items()):
+        total = sum(counts.values())
+        if total < min_obs:
+            continue
+        clear = counts['clear']
+        enc = counts['encrypted'] + counts['mixed']
+        if enc == 0:
+            proposed = 'clear'
+        elif clear == 0:
+            proposed = 'full'
+        else:
+            proposed = 'partial'
+        rr = (ref.get(str(tgid)) or {}).get('enc')
+        if rr == proposed:
+            continue
+        out.append({'tgid': tgid, 'rr': rr, 'proposed': proposed,
+                    'clear': clear, 'encrypted': enc,
+                    'evidence': ','.join(sorted(evid[tgid]))})
+    return out
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument('logs', nargs='*')
     p.add_argument('--db', default=sdr_db.DB_PATH)
+    p.add_argument('--report', action='store_true',
+                   help='print talkgroups whose observed behaviour disagrees')
+    p.add_argument('--min-obs', type=int, default=5,
+                   help='minimum observations before proposing a change')
     a = p.parse_args()
 
     db = sdr_db.connect(a.db)
@@ -128,6 +195,18 @@ def main() -> int:
                   f'{s["speech_only"]} from speech')
             total.update(s)
         print(f'TOTAL: {dict(total)}')
+
+        if a.report:
+            with open(f'{R}/reference/lwin_talkgroups.json') as f:
+                ref = json.load(f)
+            props = reconcile(db, ref, min_obs=a.min_obs)
+            print(f'\n{len(props)} talkgroup(s) disagree with RadioReference '
+                  f'(>= {a.min_obs} observations)')
+            print(f'{"TG":>7} {"RR":<9}{"proposed":<10}{"clear":>6}{"enc":>5}  evidence')
+            for p_ in props:
+                print(f'{p_["tgid"]:>7} {str(p_["rr"]):<9}{p_["proposed"]:<10}'
+                      f'{p_["clear"]:>6}{p_["encrypted"]:>5}  {p_["evidence"]}')
+            print('\nAccept by adding entries to reference/enc_overrides.json')
     finally:
         db.close()
     return 0

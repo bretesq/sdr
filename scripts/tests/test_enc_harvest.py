@@ -100,5 +100,73 @@ class Harvest(unittest.TestCase):
         self.assertIsNone(r['enc_observed'])
 
 
+class Reconcile(unittest.TestCase):
+    """Proposals only. Nothing here writes a reclassification."""
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+        self.tmp.close()
+        self.db = sdr_db.connect(self.tmp.name)
+
+    def tearDown(self):
+        self.db.close()
+        for suffix in ('', '-wal', '-shm'):
+            try:
+                os.unlink(self.tmp.name + suffix)
+            except OSError:
+                pass
+
+    def add(self, tgid, n, observed, start=1788282000.0):
+        for i in range(n):
+            f = f'TG{tgid}_X_{i}.wav'
+            sdr_db.upsert_call(self.db, file=f, tgid=tgid, start=start + i, dur=1.0)
+            self.db.execute('UPDATE calls SET enc_observed=?, enc_evidence=? '
+                            'WHERE file=?', (observed, 'ess', f))
+        self.db.commit()
+
+    def test_proposes_clear_for_a_full_flagged_tg_observed_clear(self):
+        self.add(17166, 21, 'clear')
+        out = enc_harvest.reconcile(self.db, {'17166': {'enc': 'full'}}, min_obs=5)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]['proposed'], 'clear')
+
+    def test_below_the_evidence_gate_nothing_is_proposed(self):
+        # ESS reaches 19% of calls; small-N conclusions are not trustworthy.
+        self.add(17166, 2, 'clear')
+        self.assertEqual(
+            enc_harvest.reconcile(self.db, {'17166': {'enc': 'full'}}, min_obs=5), [])
+
+    def test_a_tg_carrying_both_is_proposed_partial_not_clear(self):
+        self.add(17086, 20, 'clear')
+        self.add(17086, 4, 'encrypted', start=1788283000.0)
+        out = enc_harvest.reconcile(self.db, {'17086': {'enc': 'full'}}, min_obs=5)
+        self.assertEqual(out[0]['proposed'], 'partial')
+
+    def test_agreement_is_not_reported(self):
+        self.add(17053, 10, 'encrypted')
+        self.assertEqual(
+            enc_harvest.reconcile(self.db, {'17053': {'enc': 'full'}}, min_obs=5), [])
+
+
+class Overrides(unittest.TestCase):
+    def test_missing_file_is_empty_not_an_error(self):
+        self.assertEqual(enc_harvest.load_overrides('/nonexistent.json'), {})
+
+    def test_loads_int_keyed_enc_values(self):
+        import json
+        p = os.path.join(tempfile.mkdtemp(), 'o.json')
+        with open(p, 'w') as f:
+            json.dump({'17166': {'enc': 'clear', 'why': 'x', 'reviewed': 'y'}}, f)
+        self.assertEqual(enc_harvest.load_overrides(p), {17166: 'clear'})
+
+    def test_underscore_keys_are_documentation_not_talkgroups(self):
+        import json
+        p = os.path.join(tempfile.mkdtemp(), 'o.json')
+        with open(p, 'w') as f:
+            json.dump({'_comment': 'notes', '_example': {'enc': 'clear'},
+                       '17166': {'enc': 'clear'}}, f)
+        self.assertEqual(enc_harvest.load_overrides(p), {17166: 'clear'})
+
+
 if __name__ == '__main__':
     unittest.main()
