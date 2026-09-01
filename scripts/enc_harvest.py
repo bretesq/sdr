@@ -111,6 +111,25 @@ def harvest(db, log_text: str) -> dict:
     return dict(stats)
 
 
+def enc_pair_keys(log_text: str, *, min_obs: int = 2) -> list:
+    """The (algid, keyid) groups in a log that are worth a brute-force run.
+
+    Clear traffic is not a target. Observations with rs_errs > 0 are not counted
+    towards a key id's evidence: the ESS carries Reed-Solomon residuals, and a
+    corrupted KID both invents a group and strands real pairs away from the run
+    that could use them. Five ADP key ids appear in this corpus — 0x22 (63),
+    0x8 (21), 0x2F08 (5), 0x1 (4), 0x2EF4 (1) — and the two rare high values sit
+    next to non-zero rs_errs, which is what the gate is for.
+    """
+    _, obs = enc_log.parse_log(log_text)
+    counts = collections.Counter(
+        (o.algid, o.keyid) for o in obs
+        if o.algid in enc_log.KNOWN_ALGIDS
+        and o.algid != enc_log.CLEAR_ALGID
+        and o.rs_errs == 0)
+    return sorted(k for k, n in counts.items() if n >= min_obs)
+
+
 def load_overrides(path: str = OVERRIDES) -> dict:
     """Reviewed reclassifications, keyed by tgid. Absent file means none.
 

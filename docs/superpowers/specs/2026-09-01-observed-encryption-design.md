@@ -278,12 +278,22 @@ Each KID is a different key; pooling pairs across KIDs into one `adp_brute` run
 searches for a key that does not exist. This is a correctness requirement, not an
 optimisation.
 
-**KEYID needs the same bit-error scepticism as ALGID.** `rs_errs` is non-zero on
-some ESS lines, and `0x2F08` / `0x2EF4` are suspicious next to `0x22` and `0x8` —
-a corrupted KID would form a bogus group and quietly split real pairs away from
-the run that could use them. Prefer ESS lines with `rs_errs=0` when forming
-pairs, require a minimum observation count before treating a KID as real, and
-report low-count KIDs rather than grouping on them silently.
+**KEYID needs the same bit-error scepticism as ALGID** — but the `rs_errs=0`
+gate, not a judgement about which values "look wrong". An earlier draft called
+`0x2F08` and `0x2EF4` suspicious for being large next to `0x22` and `0x8`. That
+was wrong about `0x2F08`, and instructively so:
+
+| keyid | recorded calls | clean pairs in the log |
+|---|---|---|
+| `0x8` | 21 | 401 |
+| `0x22` | 60 | 481 |
+| **`0x2F08`** | **0** | **1189** |
+
+`0x2F08` is the most-used key on the system and appears in **no recorded call at
+all**, because its traffic is encrypted and therefore silenced. Judging a KID by
+how often it shows up in the corpus measures how often it was *recorded*, which
+is inversely related to how encrypted it is. Only `rs_errs` and an observation
+count are trustworthy here; `0x2EF4` fails that gate on its own merits.
 
 ---
 

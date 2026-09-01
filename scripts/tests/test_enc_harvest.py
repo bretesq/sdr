@@ -325,5 +325,43 @@ class ReconcileWithUnrecordedEncryption(unittest.TestCase):
         self.assertEqual(out[0]['proposed'], 'clear')
 
 
+class PairKeys(unittest.TestCase):
+    """Which (algid, keyid) groups are worth a brute-force run.
+
+    Five distinct ADP key ids appear in this corpus (0x22, 0x8, 0x2F08, 0x1,
+    0x2EF4). Each is a different key, so pooling their pairs into one run
+    searches for a key that does not exist.
+    """
+
+    def line(self, algid, keyid, rs, ts='12:00:42.100000'):
+        return (f'09/01/26 {ts} [9] NAC 0x1bd LDU2: ESS: algid={algid}, '
+                f'keyid={keyid}, mi=00 00 00 00 00 00 00 00 00, rs_errs={rs}\n')
+
+    def test_groups_each_key_id_separately(self):
+        text = (self.line('aa', '22', 0, '12:00:42.100000')
+                + self.line('aa', '22', 0, '12:00:43.100000')
+                + self.line('aa', '8', 0, '12:00:44.100000')
+                + self.line('aa', '8', 0, '12:00:45.100000'))
+        self.assertEqual(sorted(enc_harvest.enc_pair_keys(text, min_obs=2)),
+                         [(0xAA, 0x8), (0xAA, 0x22)])
+
+    def test_clear_is_never_a_brute_force_target(self):
+        text = self.line('80', '0', 0) + self.line('80', '0', 0, '12:00:43.100000')
+        self.assertEqual(enc_harvest.enc_pair_keys(text, min_obs=2), [])
+
+    def test_a_lone_key_id_seen_with_bit_errors_is_excluded(self):
+        # 0x2EF4 appears once, with rs_errs set. Grouping on a corrupted KID
+        # both invents a bogus run and strands real pairs away from a good one.
+        text = (self.line('aa', '22', 0, '12:00:42.100000')
+                + self.line('aa', '22', 0, '12:00:43.100000')
+                + self.line('aa', '2ef4', 3, '12:00:44.100000'))
+        self.assertEqual(enc_harvest.enc_pair_keys(text, min_obs=2),
+                         [(0xAA, 0x22)])
+
+    def test_a_single_clean_observation_is_below_the_gate(self):
+        text = self.line('aa', '22', 0)
+        self.assertEqual(enc_harvest.enc_pair_keys(text, min_obs=2), [])
+
+
 if __name__ == '__main__':
     unittest.main()
