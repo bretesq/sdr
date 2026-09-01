@@ -1003,7 +1003,6 @@ fragment: set membership is what separates room 1003 from code 1042."
 - Produces:
   - `sdr_db.tgid_from_filename(file: str) -> int | None`
   - `sdr_db.code_context(db, tgid) -> tuple[str, dict, str]` returning `(set_id, resolved, rev)`
-  - `sdr_db.apply_codes(db, file: str, transcript: str) -> None`
   - `calls.transcript_norm`, `calls.codes_text`, `calls.codes_set_id`, `calls.codes_rev`
   - `call_codes` table
   - `calls_fts` rebuilt over `(transcript_norm, codes_text)`
@@ -1626,10 +1625,15 @@ runs, **all transcript search returns nothing** and `call_codes` is empty. The
 migration and the first backfill have to land together, so this happens here
 rather than in Task 7 — and Task 5's tests read this database.
 
-Stop the transcriber first so nothing writes mid-run, and take a copy:
+Stop the transcriber first so nothing writes mid-run, then checkpoint the WAL
+before copying. `sdr.db` is in WAL mode, and a plain `cp` of the main file
+alone omits committed data still sitting in the WAL, producing a backup
+missing recent calls. Use raw `sqlite3` for the checkpoint, not
+`sdr_db.connect()` — that path triggers the migration:
 
 ```bash
 pkill -f stt_watch.py || true
+python3 -c "import sqlite3; d=sqlite3.connect('sdr.db'); d.execute('PRAGMA wal_checkpoint(TRUNCATE)'); d.close()"
 cp sdr.db sdr.db.pre-tencodes
 python3 scripts/backfill_codes.py
 ```
@@ -1987,11 +1991,36 @@ export function codeStats(q: CodeStatsQuery = {}): CodeStat[] {
 
 - [ ] **Step 5: Create the stats route**
 
+Create `server/utils/query-params.ts`:
+
+```ts
+/**
+ * Parses an optional numeric query-string parameter.
+ *
+ * `Number('')` is `0`, not `NaN`, so a naive `typeof v === 'string' ? Number(v)
+ * : undefined` turns a CLEARED filter (`?tgid=`, `?until=`) into a real filter
+ * on `tgid = 0` / `until = 0` instead of no filter at all — exactly what a
+ * browser sends when a user empties a field. Treat an empty (or
+ * whitespace-only) string the same as a missing param, while still letting a
+ * genuine zero through: `parseNumberParam('0') === 0`, not `undefined`.
+ *
+ * Extracted rather than left as a route-local closure so it can be exercised
+ * directly under vitest: `getQuery`/`defineEventHandler` are Nitro
+ * auto-imports and undefined in a plain vitest environment, the same reason
+ * server/utils/guards.ts pulls its checks out of the handlers that use them.
+ */
+export function parseNumberParam(v: unknown): number | undefined {
+  if (typeof v !== 'string' || v.trim() === '') return undefined
+  const n = Number(v)
+  return Number.isNaN(n) ? undefined : n
+}
+```
+
 Create `server/api/codes/stats.get.ts`:
 
 ```ts
-import { codeStats } from '../../utils/queries'
-import type { CodeStatsQuery } from '../../utils/queries'
+import { codeStats, type CodeStatsQuery } from '~/server/utils/queries'
+import { parseNumberParam } from '~/server/utils/query-params'
 
 /**
  * Aggregate radio-code counts. Powers the code filter's option list and any
@@ -2000,16 +2029,11 @@ import type { CodeStatsQuery } from '../../utils/queries'
 export default defineEventHandler((event) => {
   const q = getQuery(event)
 
-  const num = (v: unknown): number | undefined => {
-    const n = Number(v)
-    return v === undefined || Number.isNaN(n) ? undefined : n
-  }
-
   const conf = typeof q.minConfidence === 'string' ? q.minConfidence : undefined
   const query: CodeStatsQuery = {
-    since: num(q.since),
-    until: num(q.until),
-    tgid: num(q.tgid),
+    since: parseNumberParam(q.since),
+    until: parseNumberParam(q.until),
+    tgid: parseNumberParam(q.tgid),
     cat: typeof q.cat === 'string' ? q.cat : undefined,
     minConfidence: conf === 'high' || conf === 'medium' || conf === 'low'
       ? conf

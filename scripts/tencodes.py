@@ -49,7 +49,7 @@ _CANDIDATE = re.compile(
     re.IGNORECASE)
 
 # A "10NN" next to any of these is a room, address or odometer reading, not a
-# code. Checked three tokens either side.
+# code. Checked five tokens either side.
 _ADDRESS_WORDS = frozenset({
     'room', 'rooms', 'apartment', 'apartments', 'apt', 'suite', 'ste', 'unit',
     'block', 'mileage', 'milepost', 'marker', 'box', 'lot', 'building',
