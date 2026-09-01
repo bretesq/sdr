@@ -1,0 +1,40 @@
+3938 scanned, 0 updated, 3938 skipped, 232 code mentions stored
+
+Resolved / unresolved by agency
+----------------------------------------------------------
+East Baton Rouge Parish (17) - Sheriff          31     1
+East Baton Rouge Parish (17) - Baton Rouge P    30     3
+East Baton Rouge Parish (17) - Services         27     0
+EMS Agencies                                    24    16
+West Baton Rouge Parish (61) - Public Safety    18     0
+East Feliciana Parish (19) - Public Safety      14     0
+East Baton Rouge Parish (17) - Fire/EMS         11     0
+Livingston Parish (32) - Public Safety           9     0
+State Police - Troop A - Baton Rouge             9     0
+West Feliciana Parish (63) - Public Safety       9     0
+Iberville Parish (24) - Public Safety            7     3
+LSU - Baton Rouge                                6     0
+Dept. of Wildlife and Fisheries - Region 7 (     4     0
+East Baton Rouge Parish (17) - Central           4     0
+Southern University - Baton Rouge                3     0
+East Baton Rouge Parish (17) - Baton Rouge F     2     0
+Dept. of Wildlife and Fisheries - Region 4 (     1     0
+
+Unresolved codes — sourcing worklist
+----------------------------------------------------------
+10-0           ten       la-generic-ems          3
+10-6           ten       la-generic-ems          3
+10-11          ten       la-generic-ems          2
+10-15          ten       la-generic-ems          2
+10-16          ten       la-generic-ems          2
+10-0           ten       la-brpd-law             1
+10-3           ten       la-generic-ems          1
+10-50          ten       la-generic-law          1
+10-53          ten       la-ebrso-law            1
+10-56          ten       la-generic-ems          1
+10-77          ten       la-generic-ems          1
+10-81          ten       la-generic-law          1
+10-84          ten       la-brpd-law             1
+10-89          ten       la-brpd-law             1
+10-91          ten       la-generic-ems          1
+signal 31      signal    la-generic-law          1
