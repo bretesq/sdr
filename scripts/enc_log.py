@@ -100,3 +100,35 @@ def parse_log(text: str) -> tuple[list[Grant], list[EncObs]]:
     grants.sort(key=lambda g: g.ts)
     obs.sort(key=lambda o: o.ts)
     return grants, obs
+
+
+def attribute(grants: list[Grant], obs: list[EncObs],
+              *, max_age: float = 30.0) -> list[tuple[EncObs, Grant | None]]:
+    """Pair each observation with the grant active on ITS receiver.
+
+    Per receiver, the active grant is the most recent one at or before the
+    observation, provided it is no older than `max_age`. Anything else yields
+    None — deliberately. Attributing an observation to the nearest grant on
+    another receiver is exactly the cross-attribution this replaces: two
+    receivers routinely carry different talkgroups, one encrypted and one clear,
+    in the same second.
+
+    `max_age` bounds a grant's reach so one grant cannot own the remainder of
+    the log after its call ends. 30 s comfortably exceeds a normal transmission
+    while staying well below the gap between unrelated calls.
+    """
+    per_rx: dict[int, list[Grant]] = {}
+    for g in grants:
+        per_rx.setdefault(g.rx_id, []).append(g)
+
+    out: list[tuple[EncObs, Grant | None]] = []
+    for o in obs:
+        active = None
+        for g in per_rx.get(o.rx_id, ()):
+            if g.ts > o.ts:
+                break                       # grants are sorted by ts
+            active = g
+        if active is not None and o.ts - active.ts > max_age:
+            active = None
+        out.append((o, active))
+    return out

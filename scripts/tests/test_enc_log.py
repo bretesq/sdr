@@ -102,5 +102,52 @@ class RealLog(unittest.TestCase):
         self.assertGreater(len({g.rx_id for g in self.grants}), 1)
 
 
+class Attribute(unittest.TestCase):
+    """The core fix: an ESS belongs to its own receiver's active grant."""
+
+    def obs(self, ts, rx, algid=0xAA):
+        return enc_log.EncObs(ts=ts, rx_id=rx, algid=algid, keyid=8,
+                              mi='00 ' * 8 + '00', rs_errs=0)
+
+    def grant(self, ts, rx, tgid):
+        return enc_log.Grant(ts=ts, rx_id=rx, tgid=tgid, freq=851837500)
+
+    def test_binds_to_the_most_recent_grant_on_the_same_receiver(self):
+        grants = [self.grant(100.0, 9, 17051)]
+        out = enc_log.attribute(grants, [self.obs(101.0, 9)])
+        self.assertEqual(out[0][1].tgid, 17051)
+
+    def test_never_binds_across_receivers(self):
+        # THE bug being fixed. In the real log, rx 10 carried 0xAA while rx 9
+        # carried 0x80 in the same second; attributing across receivers invents
+        # encrypted calls on clear talkgroups.
+        grants = [self.grant(100.0, 9, 17051)]
+        out = enc_log.attribute(grants, [self.obs(101.0, 10)])
+        self.assertIsNone(out[0][1])
+
+    def test_a_later_grant_supersedes_an_earlier_one(self):
+        grants = [self.grant(100.0, 9, 17051), self.grant(110.0, 9, 6848)]
+        out = enc_log.attribute(grants, [self.obs(111.0, 9)])
+        self.assertEqual(out[0][1].tgid, 6848)
+
+    def test_observation_before_any_grant_is_unbound(self):
+        grants = [self.grant(100.0, 9, 17051)]
+        out = enc_log.attribute(grants, [self.obs(99.0, 9)])
+        self.assertIsNone(out[0][1])
+
+    def test_stale_grant_does_not_capture_a_much_later_observation(self):
+        # Without an age bound, one grant would own the rest of the log.
+        grants = [self.grant(100.0, 9, 17051)]
+        out = enc_log.attribute(grants, [self.obs(1000.0, 9)], max_age=30.0)
+        self.assertIsNone(out[0][1])
+
+    def test_each_receiver_keeps_its_own_timeline(self):
+        grants = [self.grant(100.0, 9, 17051), self.grant(101.0, 10, 17094)]
+        out = enc_log.attribute(
+            grants, [self.obs(102.0, 9), self.obs(102.5, 10)])
+        self.assertEqual(out[0][1].tgid, 17051)
+        self.assertEqual(out[1][1].tgid, 17094)
+
+
 if __name__ == '__main__':
     unittest.main()
