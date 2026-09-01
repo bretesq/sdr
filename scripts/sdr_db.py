@@ -259,6 +259,13 @@ _DERIVED_COLUMNS = (
     ('codes_text', 'TEXT'),
     ('codes_set_id', 'TEXT'),
     ('codes_rev', 'TEXT'),
+    # Observed encryption, written by enc_harvest.py from op25 logs. Distinct
+    # from talkgroups.enc, which is a RadioReference label describing how a
+    # talkgroup is documented rather than what a transmission carried: 367 of
+    # 377 calls on talkgroups flagged 'full' contain real speech.
+    ('enc_observed', 'TEXT'),   # 'clear' | 'encrypted' | 'mixed' | NULL unseen
+    ('enc_evidence', 'TEXT'),   # 'ess' | 'speech' | 'both' | NULL
+    ('enc_source', 'TEXT'),     # 'harvest' (authoritative) | 'live' (hint)
 )
 
 
