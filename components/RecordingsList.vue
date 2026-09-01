@@ -367,7 +367,12 @@ const codeOptions = computed(() => [
 
 async function loadCodeStats(): Promise<void> {
   try {
-    codeStats.value = await $fetch<CodeStat[]>('/api/codes/stats')
+    // minConfidence=low, not the endpoint's own 'high' default: this list
+    // feeds the filter dropdown, whose job is "how many rows will picking
+    // this option return" — and the `code` filter in listRecordings has no
+    // confidence predicate of its own, so the option counts must be drawn
+    // from that same unfiltered-by-confidence population to match.
+    codeStats.value = await $fetch<CodeStat[]>('/api/codes/stats', { query: { minConfidence: 'low' } })
   } catch {
     codeStats.value = []
   }
