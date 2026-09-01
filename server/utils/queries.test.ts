@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { sdrRoot } from './paths'
-import { listRecordings, getRecording, listTalkgroups, listCategories } from './queries'
+import { listRecordings, getRecording, listTalkgroups, listCategories, codeStats } from './queries'
 import { dbPath } from './db'
 
 /**
@@ -148,5 +148,75 @@ describe('getRecording', () => {
 
   it('returns null for an unknown file rather than throwing', () => {
     expect(getRecording('TG1_nope_20260101-000000.wav')).toBeNull()
+  })
+})
+
+describe('code filter and stats', () => {
+  it('filters recordings by an exact code', () => {
+    const { rows } = listRecordings({ code: '10-42' })
+    expect(rows.length).toBeGreaterThan(0)
+    for (const r of rows) {
+      expect(r.codes.some(c => c.canonical === '10-42')).toBe(true)
+    }
+  })
+
+  it('returns nothing for a code no call carries', () => {
+    expect(listRecordings({ code: '10-999' }).rows).toHaveLength(0)
+  })
+
+  it('does not treat the hyphen in a code as an FTS operator', () => {
+    // ftsQuery() strips '-', and FTS5 splits 10-50 into tokens '10' and '50',
+    // so the code filter must not go through FTS at all.
+    const viaCode = listRecordings({ code: '10-42' }).rows.length
+    const viaSearch = listRecordings({ search: '10-42' }).rows.length
+    expect(viaCode).toBeGreaterThan(0)
+    expect(viaCode).toBeLessThanOrEqual(viaSearch)
+  })
+
+  it('combines the code filter with a talkgroup filter', () => {
+    // tgid 17170 has ZERO 10-4 mentions (measured against the live corpus),
+    // which would let this test pass vacuously against an empty array. 17330
+    // has 18, so the loop body is actually exercised.
+    const { rows } = listRecordings({ code: '10-4', tgid: 17330 })
+    expect(rows.length).toBeGreaterThan(0)
+    for (const r of rows) expect(r.tgid).toBe(17330)
+  })
+
+  it('ships mentions with offsets into transcriptNorm', () => {
+    const { rows } = listRecordings({ code: '10-42', limit: 1 })
+    const rec = rows[0]
+    const m = rec.codes.find(c => c.canonical === '10-42')
+    expect(m).toBeDefined()
+    // scripts/tencodes.py's extract() rewrites transcript_norm by substituting
+    // the CANONICAL form in place of whatever raw text matched (e.g. "1042"
+    // in the input becomes "10-42" in the output), and off_start/off_end are
+    // computed against that rewritten output, not the input. So the offsets
+    // bound `canonical`, not `raw` — asserting m.raw here would fail for any
+    // mention whose raw surface form differs from its canonical one (as the
+    // newest 10-42 mention in this corpus, "1042", currently does).
+    expect(rec.transcriptNorm).not.toBeNull()
+    expect(rec.transcriptNorm!.slice(m!.offStart, m!.offEnd)).toBe(m!.canonical)
+  })
+
+  it('counts codes, most frequent first', () => {
+    const stats = codeStats({})
+    expect(stats.length).toBeGreaterThan(0)
+    for (let i = 1; i < stats.length; i++) {
+      expect(stats[i - 1].mentions).toBeGreaterThanOrEqual(stats[i].mentions)
+    }
+  })
+
+  it('excludes medium-confidence mentions by default', () => {
+    const dflt = codeStats({})
+    const all = codeStats({ minConfidence: 'low' })
+    const sum = (s: { mentions: number }[]) => s.reduce((a, b) => a + b.mentions, 0)
+    // Strict: the live corpus has non-high-confidence mentions today, so a
+    // default that actually excludes them must yield a strictly smaller sum,
+    // not merely a smaller-or-equal one that could pass with nothing excluded.
+    expect(sum(dflt)).toBeLessThan(sum(all))
+  })
+
+  it('existing transcript search is unchanged', () => {
+    expect(listRecordings({ search: 'suspicious' }).rows.length).toBeGreaterThan(0)
   })
 })

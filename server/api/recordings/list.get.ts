@@ -10,6 +10,7 @@ export default defineEventHandler((event) => {
     search: q.search ? String(q.search) : undefined,
     enc: q.enc ? String(q.enc) : undefined,
     tgid: q.tgid ? Number.parseInt(String(q.tgid), 10) : undefined,
+    code: q.code ? String(q.code) : undefined,
     limit: q.limit ? Number.parseInt(String(q.limit), 10) : undefined,
     offset: q.offset ? Number.parseInt(String(q.offset), 10) : undefined,
   })
