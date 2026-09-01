@@ -194,9 +194,12 @@ if [ "$STT" -eq 1 ]; then
   if pgrep -f "stt_watch\.py" >/dev/null 2>&1; then
     echo "STT watcher already running; leaving it alone"
   else
+    # Best-effort: the watcher falls back to the CPU binary if this fails, so a
+    # missing docker costs throughput rather than transcription. Idempotent.
+    "$R/scripts/stt_server.sh" start || echo "STT server unavailable; watcher will use CPU"
     python3 "$R/scripts/stt_watch.py" --dir "$R/recordings" &
     STT_PID=$!
-    echo "STT watcher started (whisper small.en on CPU)"
+    echo "STT watcher started (whisper medium.en via GPU server)"
   fi
 fi
 

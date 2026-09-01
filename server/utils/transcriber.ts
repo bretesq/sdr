@@ -29,6 +29,40 @@ import { scriptsDir, sdrRoot, recordingsDir } from './paths'
 /** Matches the watcher however it was started. `-f` matches the full argv. */
 const STT_PATTERN = 'stt_watch\\.py'
 
+/** Where the whisper-server listens. Mirrors STT_PORT in stt_server.sh. */
+const STT_URL = process.env.STT_URL || 'http://127.0.0.1:8081'
+
+/**
+ * Bring up the persistent CUDA whisper-server the watcher POSTs to.
+ *
+ * Best-effort on purpose. stt_watch.py falls back to the CPU binary when the
+ * server is unreachable, so a missing docker or a busy GPU degrades throughput
+ * instead of breaking transcription. But the fallback is ~15x slower than the
+ * server (2.5 s/clip vs 0.168 s) — slower even than the small.en pipeline this
+ * replaced — so starting a watcher without trying the server first would hand
+ * the operator a silent, large regression.
+ *
+ * FIRE AND FORGET, deliberately. `stt_server.sh start` may need to build the
+ * image, which pulls a ~2 GB base layer; awaiting that would hang
+ * POST /api/transcribe/start for as long as the pull takes. The watcher
+ * transcribes on CPU until the server answers and then picks it up on the next
+ * file, so nothing is lost by not waiting. Idempotent: the script returns
+ * immediately when a container is already up.
+ */
+function ensureSttServer(): void {
+  try {
+    const child = spawn(join(scriptsDir(), 'stt_server.sh'), ['start'], {
+      cwd: sdrRoot(),
+      detached: true,
+      stdio: 'ignore',
+    })
+    child.unref()
+  } catch {
+    // Reported through /api/transcribe/status, which surfaces server health
+    // separately from watcher liveness.
+  }
+}
+
 export function isTranscriberRunning(): boolean {
   try {
     const out = execFileSync('pgrep', ['-f', STT_PATTERN], {
@@ -49,6 +83,8 @@ export function isTranscriberRunning(): boolean {
  */
 export function startTranscriber(): boolean {
   if (isTranscriberRunning()) return false
+
+  ensureSttServer()
 
   const script = join(scriptsDir(), 'stt_watch.py')
   // Appended, not truncated: this log is the only record of what whisper did
@@ -87,5 +123,26 @@ export function stopTranscriber(): boolean {
   } catch {
     // pkill exits non-zero when it matched nothing, which is the goal state.
     return true
+  }
+}
+
+/**
+ * True if the whisper-server answers. Distinct from the watcher being up: a
+ * watcher can be running while the server is down, transcribing on CPU at
+ * roughly 15x the cost per clip.
+ *
+ * A direct HTTP probe rather than `stt_server.sh status`, because this is on a
+ * polled path (RecordingsList polls transcriber state) and that script shells
+ * out to `docker ps` — which can block for seconds on this host, where ~50
+ * containers are running. Same signal, no docker in the read path.
+ */
+export async function isSttServerRunning(): Promise<boolean> {
+  try {
+    const res = await fetch(`${STT_URL}/`, {
+      signal: AbortSignal.timeout(1500),
+    })
+    return res.status >= 200 && res.status < 500
+  } catch {
+    return false
   }
 }
