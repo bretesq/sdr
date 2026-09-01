@@ -132,3 +132,48 @@ def attribute(grants: list[Grant], obs: list[EncObs],
             active = None
         out.append((o, active))
     return out
+
+
+# ALGIDs this system is known to use. Anything else is treated as a bit error
+# rather than an unknown cipher: 0x0E, 0x45, 0xA8 and 0xB8 each appear exactly
+# once across 4,606 calls, on ESS lines whose rs_errs is non-zero.
+KNOWN_ALGIDS = frozenset({0x80, 0xAA, 0x81, 0x83, 0x84, 0x85})
+CLEAR_ALGID = 0x80
+
+# Whole transcripts whisper produces from dead air. Not speech, whatever the
+# word count. Compared case-insensitively after stripping.
+_ARTIFACTS = frozenset({
+    'thank you.', 'thank you', 'bye.', 'bye', 'you', 'you.', 'oh,', 'and', 'or',
+    '.', "i don't know.", 'or...', 'thanks for watching!', '[blank_audio]',
+    '(silence)', '[silence]',
+})
+
+
+def classify(algids: list[int]) -> str | None:
+    """Reduce a call's observed ALGIDs to one state.
+
+    Returns None when nothing usable was observed — never a guess. 'mixed' is a
+    real state: a call carrying both clear and encrypted bursts, which a single
+    algid column silently hides.
+    """
+    known = [a for a in algids if a in KNOWN_ALGIDS]
+    if not known:
+        return None
+    clear = any(a == CLEAR_ALGID for a in known)
+    enc = any(a != CLEAR_ALGID for a in known)
+    if clear and enc:
+        return 'mixed'
+    return 'clear' if clear else 'encrypted'
+
+
+def is_speech(transcript: str) -> bool:
+    """True if a transcript is evidence the audio was NOT encrypted.
+
+    Encrypted bursts are silenced by op25 -n, so intelligible speech cannot come
+    from them. Two guards keep whisper's silence confabulations from becoming
+    false evidence: an exact-match artifact list, and a two-word minimum.
+    """
+    t = (transcript or '').strip()
+    if not t or t.lower() in _ARTIFACTS:
+        return False
+    return len(t.split()) >= 2

@@ -149,5 +149,48 @@ class Attribute(unittest.TestCase):
         self.assertEqual(out[1][1].tgid, 17094)
 
 
+class Classify(unittest.TestCase):
+    def test_clear_and_encrypted(self):
+        self.assertEqual(enc_log.classify([0x80]), 'clear')
+        self.assertEqual(enc_log.classify([0xAA]), 'encrypted')
+
+    def test_a_call_carrying_both_is_mixed_not_a_coin_flip(self):
+        self.assertEqual(enc_log.classify([0x80, 0xAA]), 'mixed')
+
+    def test_no_observations_is_unknown(self):
+        self.assertIsNone(enc_log.classify([]))
+
+    def test_bit_error_algids_are_discarded_not_treated_as_ciphers(self):
+        # 0x0E/0x45/0xA8/0xB8 each appear exactly once across 4,606 calls,
+        # alongside non-zero rs_errs. Four exotic ciphers is the wrong reading.
+        self.assertIsNone(enc_log.classify([0x0E]))
+        self.assertEqual(enc_log.classify([0x80, 0x45]), 'clear')
+
+
+class Speech(unittest.TestCase):
+    """Intelligible speech proves the audio was not encrypted.
+
+    op25 -n silences encrypted bursts, so words cannot come from them. This is
+    the only evidence available for the BRPD TLK talkgroups, which have zero ESS
+    observations across 21 calls.
+    """
+
+    def test_real_dispatch_speech_counts(self):
+        self.assertTrue(enc_log.is_speech('10-4, we are en route to the scene.'))
+
+    def test_whisper_silence_artifacts_do_not_count(self):
+        # medium.en emits these on dead air (8 of 599 clips measured). Counting
+        # them would "prove" an encrypted talkgroup is clear.
+        for junk in ('Thank you.', 'Bye.', '[BLANK_AUDIO]',
+                     'Thanks for watching!', 'you', ''):
+            self.assertFalse(enc_log.is_speech(junk), junk)
+
+    def test_single_word_is_not_enough(self):
+        self.assertFalse(enc_log.is_speech('Anyway.'))
+
+    def test_artifact_matching_ignores_case_and_padding(self):
+        self.assertFalse(enc_log.is_speech('  THANK YOU.  '))
+
+
 if __name__ == '__main__':
     unittest.main()
