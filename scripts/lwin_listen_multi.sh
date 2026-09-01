@@ -210,6 +210,20 @@ VERBOSITY=2
 [ "$CENSUS" -eq 1 ] && VERBOSITY=10
 [ "$ESS" -eq 1 ] && VERBOSITY=10
 OP25_CMD="cd $A && exec python3 multi_rx.py -c $CFG -v $VERBOSITY"
+
+# ROTATE, don't truncate. script(1) truncates its output file, and at -v 10 that
+# file is the ONLY record of CIPHERTXT and ESS lines -- encrypted traffic leaves
+# no usable recording, because op25 -n silences it. A session started to listen
+# therefore used to destroy the evidence every previous session had collected.
+# One rotation was already lost that way.
+if [ -s "$LOG" ]; then
+  ROTATED="$LOG.$(date -r "$LOG" +%Y%m%d-%H%M%S 2>/dev/null || date +%Y%m%d-%H%M%S)"
+  mv "$LOG" "$ROTATED"
+  echo "rotated previous log -> $(basename "$ROTATED")"
+  # Keep the 20 most recent; at ~24 MB/hour this is bounded but generous.
+  ls -1t "$LOG".2*  2>/dev/null | tail -n +21 | xargs -r rm -f
+fi
+
 script -q -f -c "$OP25_CMD" "$LOG" >/dev/null 2>&1 &
 OP25_PID=$!
 
