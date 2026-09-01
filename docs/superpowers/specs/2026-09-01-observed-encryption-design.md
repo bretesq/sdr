@@ -177,6 +177,21 @@ silently dropped; tests pass.
 
 ### Phase 2 — Reconciliation and the override file
 
+**Correction after implementation.** Reconciliation must read ESS evidence at
+**talkgroup level, from the log** — not by aggregating `calls.enc_observed`.
+Requiring a bound call made it blind to precisely the traffic it exists to find:
+op25 `-n` silences encrypted audio, so encrypted transmissions often produce no
+recording for an ESS to attach to, and the more thoroughly a talkgroup is
+encrypted the less likely it was to appear. Measured: 168 of 214 unbound
+observations are ADP. TG19014, which RadioReference labels `clear`, carries 90
+ADP headers against 3 recorded calls and was absent from the report entirely.
+
+The grant already names the talkgroup, so call binding was never needed for a
+talkgroup-level question; it matters only for labelling an individual recording.
+ESS evidence therefore comes from the log and speech evidence from the database,
+kept separate because the database's ess-backed rows are a strict subset of the
+log's and counting both would double every recorded encrypted call.
+
 `enc_harvest.py --report` compares per-talkgroup observed behaviour against
 RadioReference and proposes a diff, with the evidence and an explicit
 minimum-observation gate:
