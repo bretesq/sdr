@@ -268,6 +268,15 @@ _DERIVED_COLUMNS = (
     ('enc_source', 'TEXT'),     # 'harvest' (authoritative) | 'live' (hint)
 )
 
+_TALKGROUP_COLUMNS = (
+    # Set by enc_harvest.apply_overrides() when a human has reviewed a
+    # reclassification, so the UI can show the label as decided rather than
+    # scraped. The scrape in reference/lwin_talkgroups.json stays untouched;
+    # the talkgroups TABLE is derived and rebuilt by import_to_sqlite.py, which
+    # is the right place for a decision to land.
+    ('enc_overridden', 'INTEGER'),
+)
+
 
 def _migrate(db: sqlite3.Connection) -> None:
     """Add derived columns and move the FTS index onto them.
@@ -279,6 +288,11 @@ def _migrate(db: sqlite3.Connection) -> None:
     for name, decl in _DERIVED_COLUMNS:
         if name not in have:
             db.execute(f'ALTER TABLE calls ADD COLUMN {name} {decl}')
+
+    have_tg = {r[1] for r in db.execute('PRAGMA table_info(talkgroups)')}
+    for name, decl in _TALKGROUP_COLUMNS:
+        if name not in have_tg:
+            db.execute(f'ALTER TABLE talkgroups ADD COLUMN {name} {decl}')
 
     if db.execute('PRAGMA user_version').fetchone()[0] >= _USER_VERSION:
         return

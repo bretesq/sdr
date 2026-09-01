@@ -184,5 +184,48 @@ class ResolveEnc(unittest.TestCase):
         self.assertIsNone(enc_harvest.resolve_enc(999, {}, {}))
 
 
+class ApplyOverrides(unittest.TestCase):
+    """Copies a reviewed decision onto the derived talkgroups table."""
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+        self.tmp.close()
+        self.db = sdr_db.connect(self.tmp.name)
+        self.db.execute(
+            "INSERT INTO talkgroups (tgid, alpha, enc) VALUES (17166, 'TLK1', 'full')")
+        self.db.commit()
+        import json
+        self.ov = os.path.join(tempfile.mkdtemp(), 'o.json')
+        with open(self.ov, 'w') as f:
+            json.dump({'_comment': 'docs',
+                       '17166': {'enc': 'clear', 'why': 'x', 'reviewed': 'y'}}, f)
+
+    def tearDown(self):
+        self.db.close()
+        for suffix in ('', '-wal', '-shm'):
+            try:
+                os.unlink(self.tmp.name + suffix)
+            except OSError:
+                pass
+
+    def test_writes_the_reviewed_class_and_marks_it(self):
+        n = enc_harvest.apply_overrides(self.db, self.ov)
+        self.assertEqual(n, 1)
+        r = self.db.execute('SELECT enc, enc_overridden FROM talkgroups '
+                            'WHERE tgid = 17166').fetchone()
+        self.assertEqual(r['enc'], 'clear')
+        self.assertEqual(r['enc_overridden'], 1)
+
+    def test_a_talkgroup_with_no_override_is_untouched(self):
+        self.db.execute(
+            "INSERT INTO talkgroups (tgid, alpha, enc) VALUES (17053, 'SO', 'full')")
+        self.db.commit()
+        enc_harvest.apply_overrides(self.db, self.ov)
+        r = self.db.execute('SELECT enc, enc_overridden FROM talkgroups '
+                            'WHERE tgid = 17053').fetchone()
+        self.assertEqual(r['enc'], 'full')
+        self.assertIsNone(r['enc_overridden'])
+
+
 if __name__ == '__main__':
     unittest.main()

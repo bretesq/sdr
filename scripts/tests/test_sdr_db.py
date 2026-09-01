@@ -584,6 +584,15 @@ class TestObservedEncryptionColumns(unittest.TestCase):
         finally:
             db.close()
 
+    def test_talkgroups_carries_the_override_marker(self):
+        """So the UI can show a reviewed reclassification as decided, not scraped."""
+        db = sdr_db.connect(self.tmp.name)
+        try:
+            cols = {r[1] for r in db.execute('PRAGMA table_info(talkgroups)')}
+            self.assertIn('enc_overridden', cols)
+        finally:
+            db.close()
+
     def test_migration_is_idempotent_for_enc_columns(self):
         """connect() runs on every open, including while the recorder holds it."""
         sdr_db.connect(self.tmp.name).close()

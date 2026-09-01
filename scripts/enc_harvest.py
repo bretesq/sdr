@@ -123,6 +123,25 @@ def load_overrides(path: str = OVERRIDES) -> dict:
                 if not k.startswith('_')}
 
 
+def apply_overrides(db, path: str = OVERRIDES) -> int:
+    """Copy reviewed overrides onto talkgroups.enc so the web layer sees them.
+
+    reference/lwin_talkgroups.json stays untouched — it is the upstream scrape,
+    and fetch_lwin_db.py must be able to re-run without clobbering a decision.
+    The talkgroups TABLE is derived (import_to_sqlite.py rebuilds it from that
+    JSON), so it is the right place for a human decision to land, and
+    enc_overridden marks it as one rather than as scraped fact.
+    """
+    n = 0
+    for tgid, enc in load_overrides(path).items():
+        cur = db.execute(
+            'UPDATE talkgroups SET enc = ?, enc_overridden = 1 WHERE tgid = ?',
+            (enc, tgid))
+        n += cur.rowcount
+    db.commit()
+    return n
+
+
 def resolve_enc(tgid: int, ref: dict, overrides: dict) -> str | None:
     """The encryption class to act on: a reviewed override, else the scrape."""
     if tgid in overrides:

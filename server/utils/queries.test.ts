@@ -22,6 +22,29 @@ beforeAll(() => {
   }
 })
 
+describe('observed encryption', () => {
+  /**
+   * The reported symptom: a recording said its talkgroup was "fully encrypted"
+   * while playing clear voice. enc is the scraped RadioReference label for the
+   * talkgroup; encObserved is what this call actually carried.
+   */
+  it('exposes the observed state and the evidence behind it', () => {
+    const rows = listRecordings({ limit: 1 }).rows
+    expect(rows[0]).toHaveProperty('encObserved')
+    expect(rows[0]).toHaveProperty('encEvidence')
+  })
+
+  it('has observed states populated by the harvester', () => {
+    const rows = listRecordings({ limit: 500 }).rows
+    const observed = rows.filter(r => r.encObserved !== null)
+    expect(observed.length).toBeGreaterThan(0)
+    // Only the four states the classifier can produce.
+    for (const r of observed) {
+      expect(['clear', 'encrypted', 'mixed']).toContain(r.encObserved)
+    }
+  })
+})
+
 describe('listTalkgroups', () => {
   it('returns the Baton Rouge area subset by default', () => {
     // 601 is also the size make_whitelist.py selects for the BR area.
