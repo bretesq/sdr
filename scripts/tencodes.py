@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 # Bump whenever a change alters extraction output. It feeds codes_rev, so a
 # bump makes every stored row detectably stale.
-EXTRACTOR_VERSION = 'v1'
+EXTRACTOR_VERSION = 'v2'
 
 _NUMBER_WORDS = {
     'zero': 0, 'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6,
@@ -61,6 +61,23 @@ _ADDRESS_WORDS = frozenset({
 # window lets that false positive through.
 _GUARD_TOKENS = 5
 
+# A hyphenated code reads equally well as a numeric RANGE: "10-15 minutes ago"
+# is a duration, not a prisoner in custody. The tell is a unit of measure
+# IMMEDIATELY after the code.
+#
+# Only the immediately-following word counts, and this list is deliberately
+# narrow rather than reusing _ADDRESS_WORDS. Measured on the corpus: applying
+# the address-word guard to separated forms as well would wrongly suppress 4
+# legitimate resolved codes ("10-4 4 23. He's got room coming out"), while a
+# wider window here would kill "10-4, we'll be there in 10 minutes".
+_RANGE_UNITS = frozenset({
+    'second', 'seconds', 'sec', 'secs', 'minute', 'minutes', 'min', 'mins',
+    'hour', 'hours', 'hr', 'hrs', 'day', 'days', 'week', 'weeks',
+    'month', 'months', 'year', 'years',
+    'foot', 'feet', 'ft', 'yard', 'yards', 'mile', 'miles', 'mph',
+    'pound', 'pounds', 'lbs', 'degree', 'degrees', 'percent',
+})
+
 
 @dataclass(frozen=True)
 class Mention:
@@ -95,6 +112,17 @@ def _spelled_to_digits(text: str) -> str:
             return f'10-{n} {unit}'
         return f'10-{n}'
     return _TEN_WORD.sub(repl, text)
+
+
+def _followed_by_range_unit(text: str, end: int) -> bool:
+    """True when the very next word is a unit of measure.
+
+    Adjacency is the whole point. "10-15 minutes ago" is a range; "10-4, we'll
+    be there in 10 minutes" is a real acknowledgement, and any window wider
+    than one word suppresses it.
+    """
+    m = re.match(r'[\s\-]+([A-Za-z]+)', text[end:])
+    return m is not None and m.group(1).lower() in _RANGE_UNITS
 
 
 def _near_address_word(text: str, start: int, end: int) -> bool:
@@ -139,6 +167,11 @@ def extract(text: str, codes: dict) -> tuple[str, list[Mention]]:
         else:
             kind, key, conf = 'response', str(int(resp_n)), None
             canonical = f'code {key}'
+
+        # A range reading only arises for the ten-code forms ("10-15" also
+        # spells "10 to 15"); "signal 20 minutes" is not a thing.
+        if kind == 'ten' and _followed_by_range_unit(text, m.end()):
+            continue
 
         entry = codes[kind].get(key)
         if conf is None:

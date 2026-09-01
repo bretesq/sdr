@@ -183,6 +183,64 @@ class TestOffsets(unittest.TestCase):
             self.assertEqual(norm[m.off_start:m.off_end], m.canonical)
 
 
+class TestRangeGuard(unittest.TestCase):
+    """A code-shaped token followed by a unit of measure is a range.
+
+    The real corpus case: "advising that 10-15 minutes ago Kiaira and Kamaiah
+    was having suicidal thoughts" was annotated "Prisoner in custody".
+    """
+
+    def test_corpus_false_positive_is_no_longer_a_code(self):
+        text = ('Can you be in route to Oxbow Hall for a welfare check on a '
+                'Kamaiah Guhardo, her ex, Kiaira Montero, called advising that '
+                '10-15 minutes ago Kiaira and Kamaiah was having suicidal thoughts?')
+        norm, mentions = tencodes.extract(text, CODES)
+        self.assertEqual(mentions, [])
+        self.assertEqual(norm, text)
+
+    def test_various_units_suppress(self):
+        for unit in ('minutes', 'min', 'hours', 'days', 'feet', 'miles', 'mph',
+                     'seconds', 'weeks', 'degrees', 'percent'):
+            with self.subTest(unit=unit):
+                _, m = tencodes.extract(f'about 10-15 {unit} out', CODES)
+                self.assertEqual(m, [], f'10-15 {unit} should not be a code')
+
+    def test_a_distant_unit_word_does_not_suppress(self):
+        """Adjacency matters: this is a real 10-4."""
+        _, m = tencodes.extract("10-4, we'll be there in 10 minutes", CODES)
+        self.assertEqual(len(m), 1)
+        self.assertEqual(m[0].canonical, '10-4')
+
+    def test_an_ordinary_following_word_does_not_suppress(self):
+        for tail in ('at Sherwood Street', 'and route to the parish',
+                     'in custody', 'copy', 'thank you'):
+            with self.subTest(tail=tail):
+                _, m = tencodes.extract(f'show me 10-15 {tail}', CODES)
+                self.assertEqual(len(m), 1, f'10-15 {tail} should stay a code')
+
+    def test_hyphenated_unit_suppresses(self):
+        _, m = tencodes.extract('give it 10-15-minutes', CODES)
+        self.assertEqual(m, [])
+
+    def test_signal_and_response_codes_are_unaffected(self):
+        """No range reading exists for these forms."""
+        _, m = tencodes.extract('signal 20 minutes ago', CODES)
+        self.assertEqual(len(m), 1)
+        self.assertEqual(m[0].canonical, 'signal 20')
+        _, m = tencodes.extract('code 4 minutes ago', CODES)
+        self.assertEqual(len(m), 1)
+
+    def test_concatenated_form_is_guarded_too(self):
+        _, m = tencodes.extract('about 1015 minutes out', CODES)
+        self.assertEqual(m, [])
+
+    def test_trailing_unit_number_still_parses(self):
+        """Regression: the guard must not break the run-together unit case."""
+        _, m = tencodes.extract('10-4-1-4-31', CODES)
+        self.assertEqual(len(m), 1)
+        self.assertEqual(m[0].canonical, '10-4')
+
+
 class TestNonBmpOffsets(unittest.TestCase):
     """Offsets must stay valid when the text contains non-BMP characters.
 
