@@ -61,6 +61,42 @@ def rank(pairs: list) -> list:
                                         p.tx_index if p.tx_index >= 0 else 1 << 30))
 
 
+def _write_superframes(algid: int, keyid: int, pairs: list, limit: int) -> None:
+    """Write one adp_brute_cuda --pairs file per superframe.
+
+    Codewords sharing an MI belong to one superframe, and adp_brute_cuda tests
+    every codeword in a --pairs file against the SAME keystream. The RC4 PRGA
+    runs to byte 469 whatever offset is wanted, so 18 candidates cost what 1
+    does — measured 3.99 s vs 4.01 s per 400M keys. One superframe per run is
+    therefore ~18 chances at the idle codeword for the price of one.
+
+    Superframes are ordered by their earliest tx_index: a radio is keyed before
+    the operator speaks, so the transmission's first superframe is the likeliest
+    to contain an idle frame.
+    """
+    by_mi: dict = collections.OrderedDict()
+    for p in pairs:
+        by_mi.setdefault(' '.join(p.mi), []).append(p)
+
+    def earliest(item):
+        idxs = [q.tx_index for q in item[1] if q.tx_index >= 0]
+        return (not idxs, min(idxs) if idxs else 1 << 30)
+
+    for n, (mi, group) in enumerate(sorted(by_mi.items(), key=earliest)[:limit]):
+        out = f'{R}/results/adp_sf_0x{algid:02X}_0x{keyid:X}_{n:02d}.txt'
+        idxs = [q.tx_index for q in group if q.tx_index >= 0]
+        with open(out, 'w') as f:
+            f.write(f'# superframe {n}: {len(group)} codeword(s) sharing one MI\n')
+            f.write(f'# MI {mi}\n')
+            f.write(f'# earliest tx_index: {min(idxs) if idxs else "unknown"}\n')
+            f.write(f'# run:\n#   {R}/adp_brute_cuda "{mi}" '
+                    f'"{"00 " * 10}00" "{IDLE_PT}" 512 --pairs {out} --progress\n')
+            for q in group:
+                f.write(f'{q.frame.lower()} {q.position} {" ".join(q.ct)}\n')
+        print(f'  superframe {n}: {len(group):>2} codewords, '
+              f'earliest tx_index={min(idxs) if idxs else "-"} -> {os.path.basename(out)}')
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('log', nargs='?', default=f'{R}/results/op25_multi.log')
@@ -68,6 +104,8 @@ def main() -> int:
                     help='target key id, e.g. 0x2F08; default: every group found')
     ap.add_argument('--top', type=int, default=8,
                     help='candidates to print per key group')
+    ap.add_argument('--superframes', type=int, default=5,
+                    help='how many superframe --pairs files to write per key group')
     a = ap.parse_args()
 
     with open(a.log, errors='ignore') as f:
@@ -84,6 +122,7 @@ def main() -> int:
     for algid, keyid in groups:
         pairs = enc_pair.extract_pairs(text, algid=algid, keyid=keyid)
         ranked = rank(pairs)
+        _write_superframes(algid, keyid, pairs, a.superframes)
         starts = [p for p in ranked if 0 <= p.tx_index < 4]
         print(f'\n=== algid 0x{algid:02X} keyid 0x{keyid:X}: {len(pairs)} pair(s), '
               f'{len(starts)} within 4 codewords of a transmission start ===')
