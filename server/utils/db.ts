@@ -54,6 +54,22 @@ export function getDb(): DatabaseSync {
   // WAL lets this read while udp_audio_record.py writes. busy_timeout covers
   // the brief exclusive lock SQLite takes when the writer checkpoints.
   db.exec('PRAGMA busy_timeout = 5000')
+
+  // The Python layer owns schema. If it has not run since these columns were
+  // introduced, fail loudly with the command to run rather than throwing an
+  // opaque "no such column" from deep inside a query — same policy as the
+  // missing-database case above.
+  const cols = db.prepare('PRAGMA table_info(calls)').all() as { name: string }[]
+  if (!cols.some(c => c.name === 'transcript_norm')) {
+    db.close()
+    db = null
+    throw createError({
+      statusCode: 503,
+      statusMessage: 'Database predates the 10-code migration. '
+        + 'Run: python3 scripts/backfill_codes.py',
+    })
+  }
+
   return db
 }
 
@@ -117,6 +133,7 @@ export interface CallRow {
   dur: number
   ended_at: number | null
   transcript: string | null
+  transcript_norm: string | null
   alpha: string | null
   description: string | null
   cat: string | null

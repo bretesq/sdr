@@ -58,7 +58,12 @@
       <InputText
         v-model="search" class="flex-1"
         aria-label="Search recordings"
-        placeholder="Search talkgroup, alpha, description, category, filename or transcript text"
+        placeholder="Search talkgroup, alpha, description, category, filename, transcript or code meaning"
+      />
+      <Select
+        v-model="codeFilter" :options="codeOptions"
+        option-label="label" option-value="value" class="w-12rem"
+        aria-label="Filter by radio code"
       />
       <Select
         v-model="encFilter" :options="encOptions"
@@ -106,7 +111,12 @@
             v-if="data.transcript"
             class="transcript"
             :class="{ blank: isBlank(data.transcript) }"
-          >{{ data.transcript }}</div>
+          ><span
+            v-for="(seg, i) in segments(data.transcriptNorm ?? data.transcript, data.codes)"
+            :key="i"
+            :class="{ tencode: isAnnotated(seg.code) }"
+            :title="isAnnotated(seg.code) ? codeTitle(seg.code!) : undefined"
+          >{{ seg.text }}</span></div>
           <span v-else class="text-color-secondary">—</span>
         </template>
       </Column>
@@ -194,8 +204,31 @@
             v-else-if="transcript"
             class="m-0 text-sm line-height-3"
             :class="{ blank: isBlank(transcript) }"
-          >{{ transcript }}</p>
+          ><span
+            v-for="(seg, i) in segments(transcriptNorm || transcript, selected?.codes ?? [])"
+            :key="i"
+            :class="{ tencode: isAnnotated(seg.code) }"
+            :title="isAnnotated(seg.code) ? codeTitle(seg.code!) : undefined"
+          >{{ seg.text }}</span></p>
           <p v-else class="m-0 text-sm text-color-secondary">No transcript for this call.</p>
+        </div>
+
+        <div v-if="selected?.codes.length">
+          <h3 class="text-base font-bold mb-2">Codes</h3>
+          <ul class="m-0 pl-3 text-sm">
+            <li v-for="(c, i) in selected.codes" :key="i" class="mb-1">
+              <strong>{{ c.canonical }}</strong>
+              <template v-if="c.meaning"> — {{ c.meaning }}</template>
+              <template v-else>
+                <span class="text-color-secondary">
+                  — no definition in this agency's code set
+                </span>
+              </template>
+              <span v-if="c.confidence !== 'high'" class="text-color-secondary">
+                (inferred from "{{ c.raw }}")
+              </span>
+            </li>
+          </ul>
         </div>
       </div>
     </Dialog>
@@ -203,6 +236,61 @@
 </template>
 
 <script setup lang="ts">
+interface CodeMention {
+  raw: string
+  canonical: string
+  kind: 'ten' | 'signal' | 'response'
+  meaning: string | null
+  confidence: 'high' | 'medium' | 'low'
+  offStart: number
+  offEnd: number
+}
+
+interface Segment {
+  text: string
+  code?: CodeMention
+}
+
+/**
+ * Split transcript text into plain and code-bearing segments using the
+ * offsets the server supplies.
+ *
+ * Rendered with v-for rather than v-html: no injection surface, and no
+ * re-running the extractor's regex in the browser.
+ */
+function segments(text: string | null, codes: CodeMention[]): Segment[] {
+  if (!text) return []
+  if (codes.length === 0) return [{ text }]
+
+  const out: Segment[] = []
+  let pos = 0
+  for (const c of codes) {
+    if (c.offStart < pos || c.offEnd > text.length) continue
+    if (c.offStart > pos) out.push({ text: text.slice(pos, c.offStart) })
+    out.push({ text: text.slice(c.offStart, c.offEnd), code: c })
+    pos = c.offEnd
+  }
+  if (pos < text.length) out.push({ text: text.slice(pos) })
+  return out
+}
+
+/**
+ * 10-4 is ~40% of all mentions. Annotating the one code everyone knows would
+ * turn the column into a field of underlines, so a resolved code is only
+ * marked when its meaning adds something. Unresolved codes are never marked —
+ * there is nothing to show.
+ */
+const COMMON_CODES = new Set(['10-4'])
+
+function isAnnotated(c: CodeMention | undefined): boolean {
+  return !!c && !!c.meaning && !COMMON_CODES.has(c.canonical)
+}
+
+function codeTitle(c: CodeMention): string {
+  const base = `${c.canonical} — ${c.meaning}`
+  return c.confidence === 'medium' ? `${base} (inferred from "${c.raw}")` : base
+}
+
 interface Recording {
   file: string
   tgid: number | null
@@ -213,6 +301,8 @@ interface Recording {
   start: number
   dur: number
   transcript: string | null
+  transcriptNorm: string | null
+  codes: CodeMention[]
   // P25 metadata read from op25's own output, per call. All optional: a null
   // means "not observed for this call", never zero or unknown-as-a-value.
   srcAddr: number | null
@@ -234,6 +324,7 @@ const encFilter = ref('all')
 const dialogOpen = ref(false)
 const selected = ref<Recording | null>(null)
 const transcript = ref('')
+const transcriptNorm = ref('')
 const loadingTranscript = ref(false)
 
 // Real vocabulary: 'full', never 'encrypted'. 'none' covers a recording whose
@@ -250,12 +341,52 @@ const encOptions = [
   { value: 'none',    label: 'Unlabelled' },
 ]
 
+const codeFilter = ref('all')
+
+interface CodeStat {
+  canonical: string
+  meaning: string | null
+  kind: string
+  calls: number
+  mentions: number
+}
+
+const codeStats = ref<CodeStat[]>([])
+
+// Only codes actually present in the corpus are offered, so the list never
+// suggests a filter that returns nothing.
+const codeOptions = computed(() => [
+  { value: 'all', label: 'All codes' },
+  ...codeStats.value.map(s => ({
+    value: s.canonical,
+    label: s.meaning
+      ? `${s.canonical} · ${s.meaning} (${s.calls})`
+      : `${s.canonical} (${s.calls})`,
+  })),
+])
+
+async function loadCodeStats(): Promise<void> {
+  try {
+    // minConfidence=low, not the endpoint's own 'high' default: this list
+    // feeds the filter dropdown, whose job is "how many rows will picking
+    // this option return" — and the `code` filter in listRecordings has no
+    // confidence predicate of its own, so the option counts must be drawn
+    // from that same unfiltered-by-confidence population to match.
+    codeStats.value = await $fetch<CodeStat[]>('/api/codes/stats', { query: { minConfidence: 'low' } })
+  } catch {
+    codeStats.value = []
+  }
+}
+
 // Filtering happens in SQL now, so `filtered` is simply what the server
 // returned. Transcript matching is an FTS5 index lookup rather than
 // String.includes across every transcript in the browser.
 const filtered = computed(() => recordings.value)
 
 // `total` is the unfiltered corpus size, so the footer can say "N of M".
+// Only updated from a response fetched with every filter at 'all' — the
+// server's `total` reflects whatever WHERE clause the request used, so a
+// filtered response's total must never overwrite the full-corpus figure.
 const total = ref(0)
 
 /**
@@ -268,7 +399,7 @@ const total = ref(0)
  */
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 
-watch([search, encFilter], () => {
+watch([search, encFilter, codeFilter], () => {
   if (searchTimer) clearTimeout(searchTimer)
   searchTimer = setTimeout(load, 250)
 })
@@ -364,6 +495,7 @@ let sttTimer: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
   load()
+  loadCodeStats()
   refreshStt()
   // Its state changes for reasons outside this page — a --stt session starting
   // one, or the watcher exiting on its own — so it is polled rather than
@@ -434,6 +566,7 @@ async function load(silent = false): Promise<void> {
       { query: {
         search: search.value.trim() || undefined,
         enc: encFilter.value === 'all' ? undefined : encFilter.value,
+        code: codeFilter.value === 'all' ? undefined : codeFilter.value,
       } },
     )
     if (seq !== requestSeq) return          // superseded; drop it
@@ -441,7 +574,10 @@ async function load(silent = false): Promise<void> {
       if (silent) mergeRows(res.data)
       else recordings.value = res.data
       pending.value = 0
-      if (typeof res.total === 'number' && !search.value.trim() && encFilter.value === 'all') {
+      if (
+        typeof res.total === 'number'
+        && !search.value.trim() && encFilter.value === 'all' && codeFilter.value === 'all'
+      ) {
         total.value = res.total
       }
       error.value = ''
@@ -481,17 +617,23 @@ async function open(rec: Recording): Promise<void> {
 
   if (rec.transcript) {
     transcript.value = rec.transcript
+    transcriptNorm.value = rec.transcriptNorm ?? rec.transcript
     return
   }
 
   transcript.value = ''
+  transcriptNorm.value = ''
   loadingTranscript.value = true
   try {
     transcript.value = await $fetch<string>(
       `/api/recordings/${rec.file.replace(/\.wav$/, '.txt')}`,
     )
+    // The .txt fallback is raw whisper output with no derived companion, so
+    // there is nothing to annotate against and the raw text is shown as-is.
+    transcriptNorm.value = ''
   } catch {
     transcript.value = ''
+    transcriptNorm.value = ''
   } finally {
     loadingTranscript.value = false
   }
@@ -568,5 +710,16 @@ function encSeverity(enc: string | null): string {
   white-space: pre-wrap;
   line-height: 1.3;
   scrollbar-width: thin;
+}
+
+/*
+  Dotted underline only — no padding, no background, no border box. The
+  virtual scroller needs a constant row height, and .transcript above is
+  already capped at 3.9em with internal scrolling, so inline marks are safe
+  provided they do not change the line box. A padded chip would.
+*/
+.tencode {
+  border-bottom: 1px dotted var(--p-primary-color);
+  cursor: help;
 }
 </style>

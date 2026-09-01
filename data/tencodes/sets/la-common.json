@@ -1,0 +1,32 @@
+{
+  "id": "la-common",
+  "name": "Louisiana — codes shared across all disciplines",
+  "discipline": "any",
+  "sources": [
+    { "ref": "s1", "url": "https://police-codes.com/united-states/louisiana",
+      "retrieved": "2026-08-31", "note": "Louisiana ten-code and signal-code list" },
+    { "ref": "s2",
+      "url": "https://forums.radioreference.com/threads/louisiana-10-codes.479431/",
+      "retrieved": "2026-08-31",
+      "note": "red8 (Louisiana law), YardDart63 (north LA), N508SP1 (SE LA fire/EMS)" },
+    { "ref": "s3", "url": "sdr.db — LWIN capture 2026-08-30/31",
+      "retrieved": "2026-08-31", "note": "Observed usage in transcribed traffic on this system" }
+  ],
+  "ten": {
+    "4":  { "meaning": "Acknowledged",        "src": "s2", "common": true },
+    "7":  { "meaning": "Out of service",      "src": "s2" },
+    "8":  { "meaning": "In service",          "src": "s2" },
+    "9":  { "meaning": "Repeat transmission", "src": "s2" },
+    "20": { "meaning": "Location",            "src": "s2" },
+    "97": { "meaning": "Arrived on scene",    "src": "s2" }
+  },
+  "signal": {},
+  "response": {
+    "1": { "meaning": "Routine response, no lights or siren", "src": "s3" },
+    "2": { "meaning": "Elevated priority response",           "src": "s3" },
+    "4": { "meaning": "Scene secure, no further units needed", "src": "s2" }
+  },
+  "conflicts": {
+    "response.3": "Not observed in the corpus and not attested by s1 or s2. Commonly 'emergency, lights and siren' elsewhere in the US, but unverified for this area — deliberately omitted."
+  }
+}

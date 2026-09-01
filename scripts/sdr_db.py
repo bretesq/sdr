@@ -33,7 +33,11 @@ Usage:
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
+
+import tencodes
+import tencode_sets
 
 R = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(R, 'sdr.db')
@@ -95,6 +99,15 @@ CREATE TABLE IF NOT EXISTS calls (
   ended_at   REAL,                  -- from TDU/TDULC (DUID 0x3 / 0xf)
   transcript TEXT,
   session_id INTEGER REFERENCES sessions(id),
+
+  -- ---- derived code annotation ------------------------------------------
+  -- All re-derivable from the .txt files by scripts/backfill_codes.py.
+  -- `transcript` above is only ever raw whisper output and is never written
+  -- by the annotation layer.
+  transcript_norm TEXT,
+  codes_text      TEXT,
+  codes_set_id    TEXT,
+  codes_rev       TEXT,
 
   -- ---- P25 per-call metadata -------------------------------------------
   -- All nullable: none of it is guaranteed present on a given call, and a
@@ -183,20 +196,24 @@ INSERT OR IGNORE INTO algorithms (algid, name) VALUES
 -- Full-text over transcripts. The web app was doing String.includes across
 -- 3,220 transcripts on every keystroke; this makes it an indexed lookup.
 CREATE VIRTUAL TABLE IF NOT EXISTS calls_fts USING fts5(
-  transcript,
+  transcript_norm, codes_text,
   content = 'calls',
   content_rowid = 'id'
 );
 
 CREATE TRIGGER IF NOT EXISTS calls_ai AFTER INSERT ON calls BEGIN
-  INSERT INTO calls_fts(rowid, transcript) VALUES (new.id, new.transcript);
+  INSERT INTO calls_fts(rowid, transcript_norm, codes_text)
+  VALUES (new.id, new.transcript_norm, new.codes_text);
 END;
 CREATE TRIGGER IF NOT EXISTS calls_ad AFTER DELETE ON calls BEGIN
-  INSERT INTO calls_fts(calls_fts, rowid, transcript) VALUES('delete', old.id, old.transcript);
+  INSERT INTO calls_fts(calls_fts, rowid, transcript_norm, codes_text)
+  VALUES ('delete', old.id, old.transcript_norm, old.codes_text);
 END;
 CREATE TRIGGER IF NOT EXISTS calls_au AFTER UPDATE ON calls BEGIN
-  INSERT INTO calls_fts(calls_fts, rowid, transcript) VALUES('delete', old.id, old.transcript);
-  INSERT INTO calls_fts(rowid, transcript) VALUES (new.id, new.transcript);
+  INSERT INTO calls_fts(calls_fts, rowid, transcript_norm, codes_text)
+  VALUES ('delete', old.id, old.transcript_norm, old.codes_text);
+  INSERT INTO calls_fts(rowid, transcript_norm, codes_text)
+  VALUES (new.id, new.transcript_norm, new.codes_text);
 END;
 
 -- ---------------------------------------------------------------- sessions
@@ -214,7 +231,117 @@ CREATE TABLE IF NOT EXISTS sessions (
   ended_at   REAL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
+
+CREATE TABLE IF NOT EXISTS call_codes (
+  id         INTEGER PRIMARY KEY,
+  call_id    INTEGER NOT NULL REFERENCES calls(id) ON DELETE CASCADE,
+  raw        TEXT NOT NULL,
+  canonical  TEXT NOT NULL,
+  kind       TEXT NOT NULL CHECK (kind IN ('ten', 'signal', 'response')),
+  meaning    TEXT,
+  set_id     TEXT,
+  confidence TEXT NOT NULL CHECK (confidence IN ('high', 'medium', 'low')),
+  off_start  INTEGER NOT NULL,
+  off_end    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_call_codes_call  ON call_codes(call_id);
+CREATE INDEX IF NOT EXISTS idx_call_codes_canon ON call_codes(canonical, call_id);
 """
+
+
+# Bumped when the FTS layout changes. `CREATE TABLE IF NOT EXISTS` cannot
+# express "add a column to an existing table", and ALTER TABLE is not
+# idempotent, so this is the minimum migration mechanism the schema needs.
+_USER_VERSION = 1
+
+_DERIVED_COLUMNS = (
+    ('transcript_norm', 'TEXT'),
+    ('codes_text', 'TEXT'),
+    ('codes_set_id', 'TEXT'),
+    ('codes_rev', 'TEXT'),
+)
+
+
+def _migrate(db: sqlite3.Connection) -> None:
+    """Add derived columns and move the FTS index onto them.
+
+    Runs on every connect and must stay cheap and idempotent: after the first
+    pass it is two PRAGMA reads.
+    """
+    have = {r[1] for r in db.execute('PRAGMA table_info(calls)')}
+    for name, decl in _DERIVED_COLUMNS:
+        if name not in have:
+            db.execute(f'ALTER TABLE calls ADD COLUMN {name} {decl}')
+
+    if db.execute('PRAGMA user_version').fetchone()[0] >= _USER_VERSION:
+        return
+
+    # calls_fts is an external-content table, so its columns must be columns of
+    # `calls`. Indexing transcript_norm rather than transcript is deliberate:
+    # normalization only ever rewrites code tokens, and codes_text carries the
+    # raw forms too, so nothing becomes unsearchable.
+    #
+    # Everything below runs inside one BEGIN IMMEDIATE .. COMMIT: dropping and
+    # recreating calls_fts as separate autocommitted statements leaves a
+    # window where a concurrent reader (the recording pipeline is always
+    # live) sees "no such table: calls_fts" — a SQLITE_ERROR that
+    # busy_timeout does nothing for, since that only retries SQLITE_BUSY.
+    #
+    # The UPDATE seeds transcript_norm from the existing raw transcript
+    # BEFORE the rebuild. Without it, every pre-migration row has
+    # transcript_norm = NULL, so 'rebuild' would index nothing for any of
+    # them and search on the whole existing corpus would go dark from the
+    # moment this migration lands until a later backfill task overwrites
+    # these placeholder values with normalized text. Seeding first means
+    # search keeps working (over raw text) the instant the migration runs.
+    #
+    # The UPDATE runs AFTER the DROP TRIGGERs/TABLE, not before: SCHEMA above
+    # uses `CREATE TRIGGER IF NOT EXISTS` for all three triggers, so on a
+    # database where SCHEMA's own run left any one of the three legacy
+    # triggers missing (by name) while calls_fts itself still exists old-
+    # shaped, SCHEMA would have just (re)created that one trigger against the
+    # NEW column names — a trigger that would then fire on this UPDATE
+    # against the OLD, not-yet-recreated calls_fts and fail with "table
+    # calls_fts has no column named transcript_norm". Dropping first removes
+    # every trigger before anything touches `calls`, so the UPDATE can never
+    # be caught between two mismatched schema generations.
+    db.executescript(f"""
+        BEGIN IMMEDIATE;
+
+        DROP TRIGGER IF EXISTS calls_ai;
+        DROP TRIGGER IF EXISTS calls_au;
+        DROP TRIGGER IF EXISTS calls_ad;
+        DROP TABLE IF EXISTS calls_fts;
+
+        UPDATE calls SET transcript_norm = transcript
+          WHERE transcript_norm IS NULL AND transcript IS NOT NULL;
+
+        CREATE VIRTUAL TABLE calls_fts USING fts5(
+          transcript_norm, codes_text,
+          content = 'calls', content_rowid = 'id'
+        );
+
+        CREATE TRIGGER calls_ai AFTER INSERT ON calls BEGIN
+          INSERT INTO calls_fts(rowid, transcript_norm, codes_text)
+          VALUES (new.id, new.transcript_norm, new.codes_text);
+        END;
+        CREATE TRIGGER calls_ad AFTER DELETE ON calls BEGIN
+          INSERT INTO calls_fts(calls_fts, rowid, transcript_norm, codes_text)
+          VALUES ('delete', old.id, old.transcript_norm, old.codes_text);
+        END;
+        CREATE TRIGGER calls_au AFTER UPDATE ON calls BEGIN
+          INSERT INTO calls_fts(calls_fts, rowid, transcript_norm, codes_text)
+          VALUES ('delete', old.id, old.transcript_norm, old.codes_text);
+          INSERT INTO calls_fts(rowid, transcript_norm, codes_text)
+          VALUES (new.id, new.transcript_norm, new.codes_text);
+        END;
+
+        INSERT INTO calls_fts(calls_fts) VALUES('rebuild');
+
+        PRAGMA user_version = {_USER_VERSION};
+
+        COMMIT;
+    """)
 
 
 def connect(path: str = DB_PATH) -> sqlite3.Connection:
@@ -222,6 +349,7 @@ def connect(path: str = DB_PATH) -> sqlite3.Connection:
     db = sqlite3.connect(path, timeout=5.0)
     db.row_factory = sqlite3.Row
     db.executescript(SCHEMA)
+    _migrate(db)
     return db
 
 
@@ -269,11 +397,71 @@ def upsert_call(db: sqlite3.Connection, *, file: str, tgid: int | None,
     )
 
 
+_TG_PREFIX = re.compile(r'^TG(\d+)_')
+
+
+def tgid_from_filename(file: str) -> int | None:
+    """Recordings are named TG16505_17-EBRP-FD1_20260830-210810.wav.
+
+    Reading the talkgroup from the name rather than the row matters because
+    set_transcript creates a stub row when the recorder's row has not landed
+    yet, and at that moment calls.tgid is NULL.
+    """
+    m = _TG_PREFIX.match(os.path.basename(file))
+    return int(m.group(1)) if m else None
+
+
+def code_context(db: sqlite3.Connection, tgid: int | None) -> tuple[str, dict, str]:
+    """(set_id, resolved set, rev) for a talkgroup."""
+    cat = tag = None
+    if tgid is not None:
+        row = db.execute(
+            'SELECT cat, tag FROM talkgroups WHERE tgid = ?', (tgid,)).fetchone()
+        if row is not None:
+            cat, tag = row['cat'], row['tag']
+    set_id = tencode_sets.resolve_set_id(cat, tag)
+    resolved = tencode_sets.resolve(set_id)
+    return set_id, resolved, tencode_sets.set_rev(resolved, tencodes.EXTRACTOR_VERSION)
+
+
 def set_transcript(db: sqlite3.Connection, file: str, transcript: str) -> None:
-    """Attach a transcript, creating a stub row if the call is not indexed yet."""
-    cur = db.execute('UPDATE calls SET transcript = ? WHERE file = ?', (transcript, file))
+    """Attach a transcript and its derived codes, creating a stub row if needed.
+
+    transcript, transcript_norm, codes_text, codes_set_id and codes_rev are
+    written in ONE statement so the calls_au trigger fires once with every
+    column populated. `transcript` itself is only ever the raw whisper output —
+    the .txt file remains the durable copy and everything else is derived.
+    """
+    set_id, resolved, rev = code_context(db, tgid_from_filename(file))
+    norm, mentions = tencodes.extract(transcript, resolved)
+    blob = tencodes.codes_text(mentions)
+
+    cur = db.execute(
+        """UPDATE calls
+              SET transcript = ?, transcript_norm = ?, codes_text = ?,
+                  codes_set_id = ?, codes_rev = ?
+            WHERE file = ?""",
+        (transcript, norm, blob, set_id, rev, file),
+    )
     if cur.rowcount == 0:
         db.execute(
-            'INSERT OR IGNORE INTO calls (file, start, dur, transcript) VALUES (?, 0, 0, ?)',
-            (file, transcript),
+            """INSERT OR IGNORE INTO calls
+                 (file, start, dur, transcript, transcript_norm, codes_text,
+                  codes_set_id, codes_rev)
+               VALUES (?, 0, 0, ?, ?, ?, ?, ?)""",
+            (file, transcript, norm, blob, set_id, rev),
         )
+
+    row = db.execute('SELECT id FROM calls WHERE file = ?', (file,)).fetchone()
+    if row is None:
+        return
+    call_id = row['id']
+    db.execute('DELETE FROM call_codes WHERE call_id = ?', (call_id,))
+    db.executemany(
+        """INSERT INTO call_codes
+             (call_id, raw, canonical, kind, meaning, set_id, confidence,
+              off_start, off_end)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        [(call_id, m.raw, m.canonical, m.kind, m.meaning, m.set_id,
+          m.confidence, m.off_start, m.off_end) for m in mentions],
+    )

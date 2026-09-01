@@ -34,7 +34,7 @@ import sys
 import wave
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from sdr_db import DB_PATH, connect  # noqa: E402
+from sdr_db import DB_PATH, connect, set_transcript  # noqa: E402
 
 R = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REC = os.path.join(R, 'recordings')
@@ -141,15 +141,23 @@ def import_calls(db, dry):
             pass
 
         if not dry:
+            # Metadata first, transcript second: set_transcript() derives
+            # transcript_norm/codes_text/codes_set_id/codes_rev and the
+            # call_codes rows from `txt`, so it must run through it rather
+            # than writing the raw column directly — otherwise this
+            # recovery path (named as such by stt_watch.py) leaves every
+            # derived column NULL and the FTS rebuild below indexes nothing
+            # for these rows.
             db.execute(
-                """INSERT INTO calls (file, tgid, start, dur, transcript)
-                   VALUES (?,?,?,?,?)
+                """INSERT INTO calls (file, tgid, start, dur)
+                   VALUES (?,?,?,?)
                    ON CONFLICT(file) DO UPDATE SET
-                     tgid       = COALESCE(excluded.tgid, calls.tgid),
-                     start      = CASE WHEN excluded.start > 0 THEN excluded.start ELSE calls.start END,
-                     dur        = CASE WHEN excluded.dur   > 0 THEN excluded.dur   ELSE calls.dur   END,
-                     transcript = COALESCE(excluded.transcript, calls.transcript)""",
-                (fname, tgid, start, dur, txt))
+                     tgid  = COALESCE(excluded.tgid, calls.tgid),
+                     start = CASE WHEN excluded.start > 0 THEN excluded.start ELSE calls.start END,
+                     dur   = CASE WHEN excluded.dur   > 0 THEN excluded.dur   ELSE calls.dur   END""",
+                (fname, tgid, start, dur))
+            if txt:
+                set_transcript(db, fname, txt)
         inserted += 1
         if txt:
             transcripts += 1

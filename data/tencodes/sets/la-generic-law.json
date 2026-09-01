@@ -1,0 +1,40 @@
+{
+  "id": "la-generic-law",
+  "name": "Louisiana — law enforcement (generic)",
+  "discipline": "law",
+  "extends": "la-common",
+  "sources": [
+    { "ref": "s1", "url": "https://police-codes.com/united-states/louisiana",
+      "retrieved": "2026-08-31", "note": "Louisiana ten-code and signal-code list" },
+    { "ref": "s2",
+      "url": "https://forums.radioreference.com/threads/louisiana-10-codes.479431/",
+      "retrieved": "2026-08-31",
+      "note": "Posters red8 ('CORRECT 10 DASH for Louisiana'), YardDart63 (north LA), N508SP1 (SE LA)" },
+    { "ref": "s3", "url": "sdr.db — LWIN capture 2026-08-30/31",
+      "retrieved": "2026-08-31", "note": "Observed usage in transcribed traffic on this system" }
+  ],
+  "ten": {
+    "6":  { "meaning": "Busy, stand by",            "src": "s1" },
+    "15": { "meaning": "Prisoner in custody",       "src": "s1" },
+    "19": { "meaning": "Return to station",         "src": "s2" },
+    "21": { "meaning": "Call office by telephone",  "src": "s2" },
+    "22": { "meaning": "Disregard, take no further action", "src": "s2" },
+    "28": { "meaning": "Registration check",        "src": "s1" },
+    "42": { "meaning": "End of tour, off duty",     "src": "s3" }
+  },
+  "signal": {
+    "18": { "meaning": "Disabled or stranded motorist", "src": "s2" },
+    "20": { "meaning": "Vehicle crash",                 "src": "s2" }
+  },
+  "response": {},
+  "conflicts": {
+    "ten.26": "s1 'Call (personal)' vs s2 'Driver's license check'. Not settled by the corpus.",
+    "ten.50": "s1 'No traffic for you' vs s2 north-LA 'No/negative' vs s2 SE-LA 'Not available'. Zero corpus occurrences.",
+    "ten.10": "s1 'Available' vs s2 'Out of service, subject to call' — opposite meanings.",
+    "ten.11": "s1 'Talking too fast' vs s2 SE-LA 'In service at other location'.",
+    "ten.12": "s1 'Officials or visitors' vs s2 north-LA 'Civilians present'. Close but not equivalent; corpus silent.",
+    "ten.14": "s1 'Send EMS unit' vs s2 'Convoy or escort' — unrelated meanings.",
+    "ten.16": "s1 'Send rescue unit' vs s2 'Pickup prisoner at'.",
+    "signal.31": "s1 'Drunk'. The single corpus occurrence ('His Signal 31 pregnant girlfriend is on scene and slapped him') does not support it and does not settle an alternative."
+  }
+}
