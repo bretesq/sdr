@@ -105,3 +105,4 @@ dist/
 sdr.db
 sdr.db-wal
 sdr.db-shm
+adp_brute_cuda

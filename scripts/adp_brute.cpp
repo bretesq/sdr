@@ -1,17 +1,27 @@
 // adp_brute.cpp — recover the 5-byte (40-bit) ADP/RC4 key for LWIN (KID 0x8) by
 // brute force, using a single known-plaintext / known-ciphertext pair captured from
-// an encrypted LDU2 voice frame. Mirrors op25_crypt_adp.cc exactly: 5 key bytes,
+// an encrypted LDU1/LDU2 voice frame. Mirrors op25_crypt_adp.cc exactly: 5 key bytes,
 // 8 cleartext MI bytes appended to form a 13-byte schedule, repeated over 256,
 // RC4 KSA, then the 469-byte keystream.
 //
 // Build:  g++ -O3 -march=native -fopenmp -o adp_brute adp_brute.cpp
 // Run:     ./adp_brute <mi_hex> <ct_hex> <pt_hex> [nthreads]
-//   mi_hex: 9 MI bytes (72-bit MI), hex (from the LDU2 ESS at -v 10)
-//   ct_hex:  encrypted LDU2 11-byte codeword, hex
+//   mi_hex: 9 MI bytes (72-bit MI), hex -- the MI that KEYED this codeword. In op25
+//           the MI printed inside an LDU2 keys the *next* superframe, not the codewords
+//           beneath it, so let scripts/extract_enc_pair.py pick it; don't eyeball the log.
+//   ct_hex:  encrypted 11-byte codeword, hex
 //   pt_hex:  expected plaintext for that codeword (11 bytes), hex
 //
 // Sharding (cross-machine):
-//   ./adp_brute <mi> <ct> <pt> <nthreads> [--start N] [--count M] [--found-file PATH]
+//   ./adp_brute <mi> <ct> <pt> <nthreads> [--frame ldu1|ldu2] [--position P] [--start N] [--count M] [--found-file PATH]
+//   --frame F:    ldu1 (keystream base 0) or ldu2 (base 101). Default ldu2.
+//   --position P: the codeword's index WITHIN its own LDU (0..8), NOT a count of frames in
+//                 the call -- op25 resets d_position to 0 in prepare() every LDU. The
+//                 keystream offset is: base + P*11 + 267 (+2 when P==8):
+//                    LDU1: 267, 278, 289, 300, 311, 322, 333, 344, 357
+//                    LDU2: 368, 379, 390, 401, 412, 423, 434, 445, 458
+//                 --position -1 is a back-compat alias for --frame ldu1 --position 0.
+//                 extract_enc_pair.py prints the right --frame/--position for each pair.
 //   --start N:  first key index to scan (default 0)
 //   --count M:  how many keys this shard scans (default = 2^40 total)
 //   --found-file PATH: optional shared file path. If present, the worker polls it each
@@ -50,7 +60,7 @@ static std::vector<uint8_t> hex_to_bytes(const char *s) {
 
 // Replicates op25_crypt_adp::prepare() byte-for-byte.
 static bool try_key(const uint8_t key5[5], const uint8_t mi[8],
-                    const uint8_t ct[11], const uint8_t pt[11]) {
+                    const uint8_t ct[11], const uint8_t pt[11], size_t offset) {
     uint8_t adp_key[13], S[256], K[256];
     for (int i = 0; i < 5; ++i) adp_key[i] = key5[i];
     for (int i = 5; i < 13; ++i) adp_key[i] = mi[i - 5];
@@ -69,7 +79,6 @@ static bool try_key(const uint8_t key5[5], const uint8_t mi[8],
         std::swap(S[ii], S[jj]);
         ks[k] = S[(S[ii] + S[jj]) & 0xFF];
     }
-    const size_t offset = 101 + 267; // LDU2, position 0, phase 1 FDMA
     for (int n = 0; n < 11; ++n)
         if ((ct[n] ^ ks[offset + n]) != pt[n]) return false;
     return true;
@@ -84,6 +93,8 @@ struct ShardOpts {
     uint64_t count;
     std::string found_file;
     bool found_file_set;
+    int position;
+    std::string frame;   // "ldu1" (base 0) or "ldu2" (base 101)
 };
 
 static bool parse_flags(int argc, char **argv, int first, ShardOpts &o) {
@@ -92,9 +103,21 @@ static bool parse_flags(int argc, char **argv, int first, ShardOpts &o) {
     o.count = (1ULL << 40);
     o.found_file = "";
     o.found_file_set = false;
+    o.position = 0;
+    o.frame = "ldu2";
     for (int i = first; i < argc; ++i) {
         std::string a = argv[i];
-        if (a == "--start") {
+        if (a == "--position") {
+            if (i + 1 >= argc) { fprintf(stderr, "--position needs a value\n"); return false; }
+            o.position = atoi(argv[++i]);
+        } else if (a == "--frame") {
+            if (i + 1 >= argc) { fprintf(stderr, "--frame needs a value (ldu1|ldu2)\n"); return false; }
+            o.frame = argv[++i];
+            if (o.frame != "ldu1" && o.frame != "ldu2") {
+                fprintf(stderr, "--frame must be ldu1 or ldu2, got %s\n", o.frame.c_str());
+                return false;
+            }
+        } else if (a == "--start") {
             if (i + 1 >= argc) { fprintf(stderr, "--start needs a value\n"); return false; }
             o.start = strtoull(argv[++i], nullptr, 10);
         } else if (a == "--count") {
@@ -144,7 +167,7 @@ static void found_file_write(const std::string &path, const uint8_t key5[5]) {
 int main(int argc, char **argv) {
     if (argc < 4) {
         fprintf(stderr,
-            "usage: %s <mi_9bytes_hex> <ct_11bytes_hex> <pt_11bytes_hex> [nthreads] [--start N] [--count M] [--found-file PATH]\n", argv[0]);
+            "usage: %s <mi_9bytes_hex> <ct_11bytes_hex> <pt_11bytes_hex> [nthreads] [--position P] [--start N] [--count M] [--found-file PATH]\n", argv[0]);
         return 1;
     }
     std::vector<uint8_t> mi_v = hex_to_bytes(argv[1]);
@@ -161,6 +184,23 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 8; ++i) mi[i] = mi_v[i];
     const uint8_t *ct = ct_v.data();
     const uint8_t *pt = pt_v.data();
+
+    // op25_crypt_adp.cc keystream offset for FDMA voice codeword `position` (0..8)
+    // of an LDU: offset = base + position*11 + 267 (+2 when position==8), where the
+    // per-frame base is 0 for LDU1 and 101 for LDU2. position is the codeword index
+    // WITHIN its own LDU (op25 resets d_position to 0 in prepare() each frame).
+    //   LDU1: 267, 278, 289, 300, 311, 322, 333, 344, 357
+    //   LDU2: 368, 379, 390, 401, 412, 423, 434, 445, 458
+    // Back-compat: --position -1 is an alias for --frame ldu1 --position 0.
+    if (opts.position == -1) { opts.frame = "ldu1"; opts.position = 0; }
+    if (opts.position < 0 || opts.position > 8) {
+        fprintf(stderr, "--position must be 0..8 (or -1 for LDU1 codeword 0), got %d\n", opts.position);
+        return 1;
+    }
+    size_t base = (opts.frame == "ldu1") ? 0 : 101;
+    size_t offset = base + (size_t)opts.position * 11 + 267 + (opts.position >= 8 ? 2 : 0);
+    fprintf(stderr, "%s position %d -> keystream offset %zu\n",
+            opts.frame.c_str(), opts.position, offset);
 
     const uint64_t TOTAL = 1ULL << 40;
     uint64_t start = opts.start;
@@ -197,7 +237,7 @@ int main(int argc, char **argv) {
             uint8_t key5[5];
             uint64_t v = k;
             for (int i = 0; i < 5; ++i) { key5[i] = (uint8_t)(v & 0xFF); v >>= 8; }
-            if (try_key(key5, mi, ct, pt)) {
+            if (try_key(key5, mi, ct, pt, offset)) {
                 for (int i = 0; i < 5; ++i) found_key[i] = key5[i];
                 found = true;
                 if (opts.found_file_set) found_file_write(opts.found_file, found_key);
@@ -220,7 +260,7 @@ int main(int argc, char **argv) {
         for (int i = 0; i < 5; ++i) fprintf(stdout, "%02x ", report_key[i]);
         fprintf(stdout, "\n");
 
-        // Re-run KSA with the found key to print the LDU2 keystream prefix (offset 368).
+        // Re-run KSA with the found key to print the LDU2 keystream prefix at the active offset.
         uint8_t adp_key[13], S[256], K[256];
         for (int i = 0; i < 5; ++i) adp_key[i] = report_key[i];
         for (int i = 5; i < 13; ++i) adp_key[i] = mi[i - 5];
@@ -239,8 +279,8 @@ int main(int argc, char **argv) {
             std::swap(S[ii], S[jj]);
             ks[k2] = S[(S[ii] + S[jj]) & 0xFF];
         }
-        fprintf(stdout, "keystream[368..399]: ");
-        for (int k2 = 0; k2 < 32; ++k2) fprintf(stdout, "%02x ", ks[368 + k2]);
+        fprintf(stdout, "keystream[%zu..%zu]: ", offset, offset + 31);
+        for (int k2 = 0; k2 < 32; ++k2) fprintf(stdout, "%02x ", ks[offset + k2]);
         fprintf(stdout, "\n");
         return 0;
     }
