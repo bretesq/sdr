@@ -168,5 +168,21 @@ class Overrides(unittest.TestCase):
         self.assertEqual(enc_harvest.load_overrides(p), {17166: 'clear'})
 
 
+class ResolveEnc(unittest.TestCase):
+    """The override layer, isolated from file and CLI concerns."""
+
+    def test_override_wins_over_the_scraped_flag(self):
+        ref = {'17166': {'enc': 'full'}}
+        self.assertEqual(
+            enc_harvest.resolve_enc(17166, ref, {17166: 'clear'}), 'clear')
+
+    def test_without_an_override_the_scrape_stands(self):
+        ref = {'17166': {'enc': 'full'}}
+        self.assertEqual(enc_harvest.resolve_enc(17166, ref, {}), 'full')
+
+    def test_unknown_talkgroup_is_none(self):
+        self.assertIsNone(enc_harvest.resolve_enc(999, {}, {}))
+
+
 if __name__ == '__main__':
     unittest.main()

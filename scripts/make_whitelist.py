@@ -6,9 +6,12 @@ partially-encrypted talkgroups (which carry mostly clear traffic — see OBSERVA
 op25's -n still silences any encrypted frames. `--include-encrypted` adds fully-encrypted
 talkgroups, which will record as silence.
 """
-import json, re, sys, argparse, collections
+import json, os, re, sys, argparse, collections
 
-R = '/home/besquivel/rtl'
+# SDR_ROOT so the script can be exercised against a worktree or a test fixture
+# instead of only the live tree. enc_harvest.py and stt_backend.py already
+# resolve their root this way; unset, the behaviour is unchanged.
+R = os.environ.get('SDR_ROOT', '/home/besquivel/rtl')
 BR_AREA = ('East Baton Rouge', 'Baton Rouge', 'LSU', 'Southern University',
            'State Police - Troop A', 'West Baton Rouge', 'Livingston', 'Ascension',
            'Iberville', 'Feliciana', 'Pointe Coupee', 'EMS Agencies',
@@ -39,6 +42,25 @@ ap.add_argument('-l', '--list', action='store_true', help='print selection, do n
 a = ap.parse_args()
 
 db = json.load(open(f'{R}/reference/lwin_talkgroups.json'))
+
+# Overlay reviewed reclassifications onto the in-memory copy.
+#
+# RadioReference's `enc` says how a talkgroup is DOCUMENTED, not what it
+# transmits: 367 of 377 calls on talkgroups flagged 'full' carry real speech,
+# and TG17282 is flagged 'clear' while carrying encrypted traffic. Overrides are
+# how a human records the observed truth without editing the upstream scrape.
+#
+# Applied here rather than at each `v['enc']` site so the filter, the listing
+# and the summary counters all agree. Safe to mutate: this script only ever
+# reads lwin_talkgroups.json, so the overlay cannot reach the file on disk.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import enc_harvest                                            # noqa: E402
+_overrides = enc_harvest.load_overrides()
+for _k, _v in db.items():
+    _ov = _overrides.get(int(_k))
+    if _ov is not None:
+        _v['enc'] = _ov
+
 allowed = {'clear'}
 if a.include_partial:   allowed.add('partial')
 if a.include_encrypted: allowed.add('full')
