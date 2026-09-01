@@ -115,8 +115,10 @@ For each receiver `[N]` independently:
    `op25_log.py` already parses exactly this.
 2. Attribute each ESS / CIPHERTXT observation to the grant active on **that
    receiver** at that timestamp.
-3. Match `(tgid, freq, timestamp)` to the `calls` row whose `start` ..
-   `ended_at` interval brackets it.
+3. Match `(tgid, freq, timestamp)` to the `calls` row whose interval brackets
+   it. The interval is `start .. start + dur`, **not** `start .. ended_at`:
+   `ended_at` is NULL on 3247 of 4606 rows (70%), so binding on it would skip
+   most of the corpus. `dur` is always present.
 
 Grant boundaries are the reset, replacing the 12-second window. An observation
 matching no call interval is recorded as **unbound and reported** — never
@@ -199,15 +201,34 @@ semantics are unchanged.
 No automatic reclassification. A wrong auto-promotion changes what the receivers
 follow, and at 19% ESS coverage small-N decisions are not trustworthy.
 
-### Phase 3 — UI
+### Phase 3 — UI (mostly already built)
 
-The recording badge shows the **observed** value when one exists, and the
-RadioReference flag marked unverified when it does not, so `full` is never
-asserted over audibly clear voice. Tooltip states which: "RadioReference says
-full; no ESS observed for this call".
+**Correction after reading the code.** The UI already does most of what this
+phase originally proposed. `RecordingsList.vue` already has:
 
-The existing enc *filter* keeps filtering on the talkgroup flag — that is what it
-means today, and changing both at once would muddy the vocabulary.
+- an **Enc** column (`:150`) showing the static reference flag,
+- an **Observed** column (`:153-163`) showing this call's ESS ALGID, blank when
+  op25 ran without `--ess`,
+- a detail-dialog block (`:199-215`) contrasting the two, which already prints
+  *"This call transmitted in the clear despite that label."* when
+  `algid === 128 && enc !== 'clear'`,
+- an `algorithms` table joined for cipher names (`queries.ts:54-58`).
+
+So the original symptom is not a missing display. It is that **Observed reads
+`—` on 81% of calls**, leaving only the static flag visible. Phase 1 is what
+actually fixes the reported problem, by populating that column.
+
+What remains for this phase is therefore small:
+
+1. Surface `enc_observed` in the existing **Observed** column when there is no
+   ESS but speech evidence exists, visually distinguished from an ESS-backed
+   value (ESS is authoritative for that transmission; speech only proves the
+   audio was not encrypted). Do not silently merge the two into one badge.
+2. Where an entry in `reference/enc_overrides.json` applies, mark the **Enc**
+   column so a reviewed reclassification is visible as such.
+
+Explicitly unchanged: the enc *filter* keeps filtering on the talkgroup flag,
+and the existing dialog wording stays. No new columns.
 
 ### Phase 4 — Live-path ESS reset
 
