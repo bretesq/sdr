@@ -178,5 +178,34 @@ class TestUnencryptedCallProducesNothing(unittest.TestCase):
         self.assertEqual(enc_pair.extract_pairs(log), [])
 
 
+class TxIndex(unittest.TestCase):
+    """Codeword index since the HDU, used to rank known-plaintext candidates.
+
+    A radio is keyed before the operator speaks, so the earliest codewords of a
+    transmission are the likeliest to carry the idle codeword — the only known
+    plaintext available against encrypted traffic.
+    """
+
+    def test_counts_from_the_hdu(self):
+        log = '\n'.join([hdu(MI_H), ldu1(), ct(CT_A), ct(CT_B), ct(CT_C)])
+        pairs = enc_pair.extract_pairs(log, algid=0xAA, keyid=8)
+        self.assertEqual([p.tx_index for p in pairs], [0, 1, 2])
+
+    def test_a_new_hdu_restarts_the_count(self):
+        log = '\n'.join([hdu(MI_H), ldu1(), ct(CT_A), ct(CT_B),
+                         tdu15(),
+                         hdu(MI_1), ldu1(), ct(CT_C)])
+        pairs = enc_pair.extract_pairs(log, algid=0xAA, keyid=8)
+        self.assertEqual([p.tx_index for p in pairs], [0, 1, 0])
+
+    def test_codewords_with_no_preceding_hdu_are_unranked(self):
+        # op25 routinely joins a call already in progress. Those codewords may
+        # still be idle, but nothing about their position argues for it, so they
+        # must not compete with a real transmission start.
+        log = '\n'.join([ldu2_ess(MI_1), ldu1(), ct(CT_A)])
+        pairs = enc_pair.extract_pairs(log, algid=0xAA, keyid=8)
+        self.assertTrue(all(p.tx_index == -1 for p in pairs), tuples(pairs))
+
+
 if __name__ == '__main__':
     unittest.main()
