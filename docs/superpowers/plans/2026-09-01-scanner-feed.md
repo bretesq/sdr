@@ -1461,7 +1461,7 @@ Deliverable: pressing Play produces audio from the selected talkgroups. The pane
 
 **Interfaces:**
 - Consumes: `/api/listen/followed` (Task 4), `/api/recordings/list` with `afterId`/`tgids` returning `maxId` (Task 2), `utils/scannerQueue.ts` (Task 5).
-- Produces: `useScannerFeed()` returning `{ followed, heldKeyIds, selected, armed, stalenessSec, settingPersists, entries, skipped, nowPlaying, streamOk, radioBusy, tracked, error, load, arm, disarm }`. Used by Task 7. In Task 6 `settingPersists` is `ref(true)` and unused; Task 7 gives it meaning.
+- Produces: `useScannerFeed()` returning `{ followed, heldKeyIds, selected, armed, stalenessSec, settingPersists, entries, skipped, failed, nowPlaying, streamOk, radioBusy, tracked, error, load, arm, disarm }`. Used by Task 7. In Task 6 `settingPersists` is `ref(true)` and unused; Task 7 gives it meaning.
 
 - [ ] **Step 1: Write the composable**
 
@@ -1471,7 +1471,7 @@ Create `composables/useScannerFeed.ts`:
 import { ref, computed, onUnmounted } from 'vue'
 import {
   createQueue, admit, prune, takeNext,
-  type FeedCall, type ScannerQueue,
+  type FeedCall, type QueueEntry, type ScannerQueue,
 } from '~/utils/scannerQueue'
 
 interface FollowedTalkgroup {
@@ -1510,6 +1510,31 @@ interface ListResponse {
  */
 const PAGE = 500
 
+/**
+ * A clip must BEGIN within this long, or it is abandoned.
+ *
+ * Separate from the total deadline below because the two failures have very
+ * different costs. A 32-second clip that never starts would burn 35 seconds
+ * against the total deadline alone — longer than the default 30-second
+ * staleness bound, so the entire queued backlog would prune while the feed sat
+ * on one dead clip. Two seconds is far beyond what a ~70 KB file over a LAN
+ * needs, and `playing` clears it the moment audio actually starts.
+ */
+const START_DEADLINE_MS = 2000
+
+/**
+ * Slack added to a clip's own duration for its total deadline.
+ *
+ * The asymmetry matters: a deadline that fires late costs dead air, one that
+ * fires early truncates real audio — so this is deliberately generous.
+ * Background-tab throttling only delays timers, which fails in the safe
+ * direction.
+ */
+const CLIP_SLACK_MS = 3000
+
+/** `dur` comes from the database and is not validated there. */
+const MAX_CLIP_SEC = 60
+
 export function useScannerFeed() {
   const followed = ref<FollowedTalkgroup[]>([])
   const heldKeyIds = ref<number[]>([])
@@ -1526,9 +1551,36 @@ export function useScannerFeed() {
   const error = ref('')
 
   const queue: ScannerQueue = createQueue()
-  const entries = ref(queue.entries)
+  // NOT `ref(queue.entries)`: aliasing the live array here would leave this ref
+  // pointing at queue state that mutates underneath Vue without notifying it.
+  // `sync()` assigns a fresh array on every change instead.
+  const entries = ref<QueueEntry[]>([])
+
+  /**
+   * Clips abandoned because playback failed, deliberately NOT folded into
+   * `skipped`.
+   *
+   * `skipped` means "playable calls dropped for age" and Task 7 surfaces it as
+   * the signal for whether the staleness bound is too tight. A clip that
+   * stalled after playing most of its audio is a different event, and
+   * `skipped` is the pure module's state — the transport does not own it.
+   */
+  const failed = ref(0)
 
   let lastSeenId = 0
+  // Guards `arm` across its await, and serialises pumps. Without the first, a
+  // double-click runs `arm` twice and orphans the first EventSource — never
+  // closed, doubling the poll rate for the life of the page. Without the
+  // second, two change-frames inside one fetch round-trip both query the same
+  // `afterId`; a call the first pump already handed to `takeNext` is no longer
+  // in `entries`, so `admit`'s dedupe misses it and it plays twice.
+  let armInFlight = false
+  let pumpInFlight = false
+  // Bumped by `disarm`, so an `arm` still awaiting its seed fetch can tell it
+  // was cancelled and must not resurrect the feed.
+  let armGeneration = 0
+  let startTimer: ReturnType<typeof setTimeout> | null = null
+  let clipTimer: ReturnType<typeof setTimeout> | null = null
   let es: EventSource | null = null
   // ONE element, created on the first arm and reused for every clip.
   //
@@ -1563,6 +1615,16 @@ export function useScannerFeed() {
     // An armed feed with nothing selected must be silent. The query layer also
     // refuses an empty selection; this avoids the round trip.
     if (!armed.value || selected.value.length === 0) return
+    if (pumpInFlight) return
+    pumpInFlight = true
+    try {
+      await pumpOnce()
+    } finally {
+      pumpInFlight = false
+    }
+  }
+
+  async function pumpOnce(): Promise<void> {
     let res: ListResponse
     try {
       res = await $fetch<ListResponse>('/api/recordings/list', {
@@ -1576,6 +1638,8 @@ export function useScannerFeed() {
       error.value = e instanceof Error ? e.message : 'Feed fetch failed'
       return
     }
+    // Clear on success, or a single transient failure stays on screen forever.
+    error.value = ''
 
     // Rows arrive oldest-first because the query orders by rowid whenever
     // `afterId` is set, so they are admitted in the order the calls finished
@@ -1595,29 +1659,108 @@ export function useScannerFeed() {
     playIfIdle()
   }
 
+  function clearTimers(): void {
+    if (startTimer) { clearTimeout(startTimer); startTimer = null }
+    if (clipTimer) { clearTimeout(clipTimer); clipTimer = null }
+  }
+
+  /**
+   * The ONE way a clip ends. Clears the interlock, then advances.
+   *
+   * Every advance path must go through here. `nowPlaying` is the interlock
+   * `playIfIdle` tests, so clearing it inline and calling `playIfIdle`
+   * separately — or in the wrong order — makes the handler early-return and
+   * reintroduces the wedge this whole mechanism exists to prevent.
+   */
+  function finishClip(didFail: boolean): void {
+    clearTimers()
+    if (didFail) failed.value += 1
+    nowPlaying.value = null
+    playIfIdle()
+  }
+
   function playIfIdle(): void {
-    if (!audio || !audio.paused) return
+    if (!armed.value) return
+    if (!audio) return
+    // The interlock is OUR state, never the element's.
+    //
+    // `audio.paused` cannot serve here: `play()` resolves only when playback
+    // begins, so a clip that never starts leaves `paused` false forever,
+    // `ended` never fires, and every later tick early-returns — the feed goes
+    // permanently off the air with no error anywhere. That failure was
+    // observed during this task's implementation and misread as environmental.
+    if (nowPlaying.value !== null) return
+
     const call = takeNext(queue, Date.now(), stalenessSec.value * 1000)
     sync()
-    if (!call) {
-      nowPlaying.value = null
-      return
-    }
+    if (!call) return
+
     nowPlaying.value = call
     audio.src = `/api/recordings/${encodeURIComponent(call.file)}`
+
+    // Both timers verify they still own the current clip before acting, so a
+    // stale timer surviving any exit path is inert rather than cutting off the
+    // clip that just started.
+    startTimer = setTimeout(() => {
+      if (nowPlaying.value?.id !== call.id) return
+      finishClip(true)
+    }, START_DEADLINE_MS)
+
+    const dur = Number.isFinite(call.dur)
+      ? Math.max(0, Math.min(call.dur, MAX_CLIP_SEC))
+      : 0
+    clipTimer = setTimeout(() => {
+      if (nowPlaying.value?.id !== call.id) return
+      finishClip(true)
+    }, dur * 1000 + CLIP_SLACK_MS)
+
     audio.play().catch((e: unknown) => {
-      // Autoplay refused, or the file vanished. Drop this clip and move on
-      // rather than wedging the queue on it.
+      if (nowPlaying.value?.id !== call.id) return
+      // `disarm`'s pause() rejects a pending play() with AbortError. That is
+      // us stopping deliberately, not a clip failure — surfacing it puts a red
+      // banner on screen every time the operator presses Stop.
+      if (e instanceof DOMException && e.name === 'AbortError') return
       error.value = e instanceof Error ? e.message : 'Playback failed'
-      nowPlaying.value = null
+      finishClip(true)
     })
   }
 
   async function arm(): Promise<void> {
-    // Created inside the click handler so the user gesture unlocks THIS element.
+    // Re-entry guard. Two rapid Play clicks would otherwise run this twice and
+    // orphan the first EventSource — unreachable, never closed, doubling the
+    // poll rate and holding the server's 1s data_version timer open until the
+    // page unloads.
+    if (armInFlight || armed.value) return
+    armInFlight = true
+    const generation = ++armGeneration
+
+    try {
+    // Created inside the click handler so the user gesture unlocks THIS
+    // element — and ACTIVATED here too, which construction alone does not do.
+    //
+    // WebKit blesses a media element only when play() or load() is invoked
+    // during the gesture. Without this load(), the first play() happens on a
+    // later SSE tick, outside any gesture, on an element iOS/Safari has never
+    // seen a gesture-driven call on — every clip then throws NotAllowedError
+    // and the feed never plays at all. Desktop Chrome and Firefox grant
+    // document-level sticky activation from the click, which is exactly why
+    // this hides during desktop testing.
     if (!audio) {
       audio = new Audio()
-      audio.addEventListener('ended', playIfIdle)
+      audio.load()
+
+      audio.addEventListener('playing', () => {
+        // Playback actually began; only the total deadline still applies.
+        if (startTimer) { clearTimeout(startTimer); startTimer = null }
+      })
+      audio.addEventListener('ended', () => finishClip(false))
+      audio.addEventListener('error', () => {
+        // disarm's removeAttribute('src') + load() fires an empty-src error on
+        // Chrome. That is teardown, not a clip failure, and advancing on it
+        // would make Stop pull the next clip on its way out.
+        if (nowPlaying.value === null) return
+        finishClip(true)
+      })
     }
 
     // Seed the cursor at arm time, not at mount: starting from MAX(id) means
@@ -1634,8 +1777,17 @@ export function useScannerFeed() {
       return
     }
 
-    queue.entries = []
+    // Cancelled while awaiting the seed. Without this, Play -> Stop during the
+    // fetch resumes here and leaves the feed armed with a live EventSource
+    // after the operator asked it to stop.
+    if (generation !== armGeneration) return
+
+    // length = 0 rather than a fresh array: prune and takeNext both mutate in
+    // place, and the queue's identity contract says the array a caller holds
+    // stays valid.
+    queue.entries.length = 0
     queue.skipped = 0
+    failed.value = 0
     sync()
     armed.value = true
 
@@ -1649,20 +1801,29 @@ export function useScannerFeed() {
       streamOk.value = true
       void pump()
     }
+    } finally {
+      armInFlight = false
+    }
   }
 
   function disarm(): void {
+    // Invalidates any arm() still awaiting its seed fetch.
+    armGeneration++
     armed.value = false
     streamOk.value = false
+    clearTimers()
     es?.close()
     es = null
+    // Cleared BEFORE the teardown below, so the error listener sees a null
+    // nowPlaying and treats the empty-src error as teardown rather than a
+    // failed clip.
+    nowPlaying.value = null
     if (audio) {
       audio.pause()
       audio.removeAttribute('src')
       audio.load()
     }
-    nowPlaying.value = null
-    queue.entries = []
+    queue.entries.length = 0
     sync()
   }
 
@@ -1670,7 +1831,7 @@ export function useScannerFeed() {
 
   return {
     followed, heldKeyIds, selected, armed, stalenessSec, settingPersists,
-    entries, skipped, nowPlaying, streamOk, radioBusy, tracked, error,
+    entries, skipped, failed, nowPlaying, streamOk, radioBusy, tracked, error,
     load, arm, disarm,
   }
 }
