@@ -92,8 +92,15 @@
         </span>
         <span>{{ e.call.dur.toFixed(1) }}s</span>
         <span v-if="e.kind === 'locked'">
-          keyid 0x{{ (e.call.keyid ?? 0).toString(16).toUpperCase() }} · no key held ·
-          crack target
+          <!-- `?? 0` here would be a lie, not a default. classify() locks a
+               call whenever algid is ADP and the keyid is not one we hold —
+               and a NULL keyid satisfies that, so this row really can render
+               with no key id at all. Printing 0x0 would assert a specific,
+               valid key id that was never observed, and this row feeds crack
+               targeting directly. Say unknown when it is unknown. -->
+          keyid {{ e.call.keyid === null ? 'unknown'
+                 : '0x' + e.call.keyid.toString(16).toUpperCase() }} ·
+          no key held · crack target
         </span>
       </div>
     </div>
@@ -101,7 +108,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 
 const feed = useScannerFeed()
 const {
@@ -137,11 +144,28 @@ const sessionLabel = computed(() => {
   return 'radio idle'
 })
 
+/**
+ * A ticking clock, because Date.now() is not reactive.
+ *
+ * Reading Date.now() straight from a computed recomputes only when its other
+ * dependencies change — so "behind live" froze at whatever it was when the
+ * clip started and sat there, which is most visibly wrong on a long
+ * transmission. This drives it instead, and only while armed, so an idle panel
+ * costs nothing.
+ */
+const nowMs = ref(Date.now())
+let tick: ReturnType<typeof setInterval> | null = null
+watch(armed, (on) => {
+  if (tick) { clearInterval(tick); tick = null }
+  if (on) tick = setInterval(() => { nowMs.value = Date.now() }, 1000)
+}, { immediate: true })
+onUnmounted(() => { if (tick) clearInterval(tick) })
+
 const behindLive = computed(() => {
   const c = nowPlaying.value
   if (!c) return '0'
   const ended = (c.endedAt ?? c.start + c.dur) * 1000
-  return Math.max(0, (Date.now() - ended) / 1000).toFixed(0)
+  return Math.max(0, (nowMs.value - ended) / 1000).toFixed(0)
 })
 
 onMounted(feed.load)

@@ -89,17 +89,32 @@ export function useScannerFeed() {
   const settingPersists = ref(true)
 
   const DEFAULT_STALENESS = 30
-  try {
-    const saved = Number.parseInt(localStorage.getItem('scanner-staleness') ?? '', 10)
-    stalenessSec.value = Number.isInteger(saved) && saved >= 10 && saved <= 300
-      ? saved
-      : DEFAULT_STALENESS
-  } catch {
-    // Reading was refused, so nothing was stored for us to honour. Fall back
-    // explicitly and record that writes will fail too.
-    stalenessSec.value = DEFAULT_STALENESS
-    settingPersists.value = false
+
+  /**
+   * Read on the CLIENT only.
+   *
+   * Nuxt runs composable setup during server render too, where localStorage
+   * does not exist. Reading it unguarded there throws, the catch sets
+   * settingPersists false, and the server emits the "won't persist" warning —
+   * which the client then contradicts after hydration. That is not a cosmetic
+   * flash: server and client produce different DOM, which Vue reports as a
+   * hydration mismatch. Guarding on import.meta.client means the server
+   * renders the defaults and the client fills in the stored value.
+   */
+  function loadStaleness(): void {
+    try {
+      const saved = Number.parseInt(localStorage.getItem('scanner-staleness') ?? '', 10)
+      stalenessSec.value = Number.isInteger(saved) && saved >= 10 && saved <= 300
+        ? saved
+        : DEFAULT_STALENESS
+    } catch {
+      // Reading was refused — a private window, or site data blocked. Nothing
+      // was stored for us to honour, and writes will fail the same way.
+      stalenessSec.value = DEFAULT_STALENESS
+      settingPersists.value = false
+    }
   }
+  if (import.meta.client) loadStaleness()
   watch(stalenessSec, (v) => {
     try {
       localStorage.setItem('scanner-staleness', String(v))
