@@ -1,8 +1,16 @@
+# pnpm 11 runs a dependency-status check before every `pnpm run <script>`, and
+# an unacknowledged ignored build fails that check — which took `pnpm test`,
+# `pnpm lint` and `pnpm typecheck` down with it.
+#
+# `allowBuilds` is pnpm 11's key for that acknowledgement and it expects
+# booleans. The block pnpm scaffolds carries the literal placeholder strings
+# "set this to true or false", which acknowledge nothing and leave the check
+# failing; the older `ignoredBuiltDependencies` key no longer satisfies it.
+#
+# Both are declined rather than allowed: esbuild's postinstall only symlinks
+# its platform binary, and every @esbuild/linux-x64 package (0.21.5, 0.27.7,
+# 0.28.2) is already installed by pnpm as an optional dep. unrs-resolver ships
+# prebuilt binaries the same way.
 allowBuilds:
-  esbuild: set this to true or false
-# esbuild's postinstall only symlinks its platform binary, and both
-# @esbuild/linux-x64 packages (0.21.5, 0.28.2) are already installed by pnpm as
-# optional deps. Acknowledging the skip here silences pnpm's hard failure on
-# every subsequent `pnpm run <script>`.
-ignoredBuiltDependencies:
-  - esbuild
+  esbuild: false
+  unrs-resolver: false

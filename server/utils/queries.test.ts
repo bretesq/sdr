@@ -1,8 +1,11 @@
 import { describe, it, expect, beforeAll } from 'vitest'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { sdrRoot } from './paths'
-import { listRecordings, getRecording, listTalkgroups, listCategories, codeStats } from './queries'
+import { sdrRoot, whitelistPath } from './paths'
+import {
+  listRecordings, getRecording, listTalkgroups, listCategories, codeStats,
+  followedTalkgroups,
+} from './queries'
 import { dbPath } from './db'
 
 /**
@@ -35,7 +38,13 @@ describe('observed encryption', () => {
   })
 
   it('has observed states populated by the harvester', () => {
-    const rows = listRecordings({ limit: 500 }).rows
+    // Scoped to the whole corpus, not the newest page. enc_observed is written
+    // by a later reconciliation pass (scripts/enc_harvest.py), so calls from a
+    // capture still in progress carry NULL. Taking the newest 500 rows during
+    // a live session found zero harvested rows and went red — the newest 500
+    // were all from that session.
+    const { total } = listRecordings({ limit: 1 })
+    const rows = listRecordings({ limit: total }).rows
     const observed = rows.filter(r => r.encObserved !== null)
     expect(observed.length).toBeGreaterThan(0)
     // Only the four states the classifier can produce.
@@ -103,7 +112,14 @@ describe('listRecordings', () => {
     // here goes red the moment the radio runs — the same mistake an earlier
     // whitelist test made. Assert the invariants: there is a substantial
     // corpus, and it is ordered newest-first.
-    const { rows, total } = listRecordings()
+    //
+    // `rows` is a PAGE of `total`, never all of it: listRecordings applies a
+    // default limit of 5000. Comparing rows.length against the unfiltered
+    // total was the same class of bug this comment warns about, one line
+    // lower — it held only while the corpus stayed under the cap and went red
+    // when the 5,000th call landed. Ask for a page big enough to hold it.
+    const { total } = listRecordings({ limit: 1 })
+    const { rows } = listRecordings({ limit: total })
     expect(total).toBeGreaterThanOrEqual(3240)
     expect(rows).toHaveLength(total)
     for (let i = 1; i < rows.length; i++) {
@@ -241,5 +257,212 @@ describe('code filter and stats', () => {
 
   it('existing transcript search is unchanged', () => {
     expect(listRecordings({ search: 'suspicious' }).rows.length).toBeGreaterThan(0)
+  })
+})
+
+describe('feed projection', () => {
+  it('projects the call id, which the live feed uses as its cursor', () => {
+    const rows = listRecordings({ limit: 5 }).rows
+    expect(rows.length).toBeGreaterThan(0)
+    for (const r of rows) {
+      expect(typeof r.id).toBe('number')
+      expect(r.id).toBeGreaterThan(0)
+    }
+  })
+
+  it('projects endedAt, which the live feed uses to measure staleness', () => {
+    // CallRow declared ended_at long before CALL_SELECT selected it, so this
+    // read used to yield undefined and any arithmetic on it produced NaN.
+    const rows = listRecordings({ limit: 200 }).rows
+    const ended = rows.filter(r => r.endedAt !== null)
+    expect(ended.length).toBeGreaterThan(0)
+    for (const r of ended) {
+      expect(Number.isFinite(r.endedAt)).toBe(true)
+      // A call cannot end before it starts.
+      expect(r.endedAt as number).toBeGreaterThanOrEqual(r.start)
+    }
+  })
+})
+
+describe('live feed cursor', () => {
+  it('returns maxId, the seed the client arms its cursor with', () => {
+    const { maxId } = listRecordings({ limit: 1 })
+    expect(typeof maxId).toBe('number')
+    expect(maxId).toBeGreaterThan(0)
+  })
+
+  it('reports the same maxId regardless of filters', () => {
+    // The cursor is global, not per-filter: seeding it from a filtered
+    // maximum would replay every call on a talkgroup selected later.
+    const all = listRecordings({ limit: 1 }).maxId
+    const filtered = listRecordings({ limit: 1, enc: 'full' }).maxId
+    // `>=`, not `toBe`: the corpus grows every few seconds, so a call
+    // committing between these two queries would fail an equality assertion
+    // through no fault of the code. A maxId computed under the filter could
+    // only be SMALLER than the unfiltered one, so `>=` disproves filtering
+    // with no timing window at all.
+    expect(filtered).toBeGreaterThanOrEqual(all)
+  })
+
+  it('afterId returns only rows with a greater id', () => {
+    const { maxId } = listRecordings({ limit: 1 })
+    const cutoff = maxId - 50
+    const rows = listRecordings({ afterId: cutoff, limit: 500 }).rows
+    expect(rows.length).toBeGreaterThan(0)
+    for (const r of rows) expect(r.id).toBeGreaterThan(cutoff)
+  })
+
+  /**
+   * The regression that decided the cursor design.
+   *
+   * calls.id is assigned at commit. A long transmission STARTS before a short
+   * one but COMMITS after it, so ordering by time and asking for "rows newer
+   * than my last timestamp" silently drops it — and by construction the dropped
+   * rows are the longest transmissions, the ones most worth hearing. Two such
+   * inversions were measured in a single 3-hour window on 2026-09-01.
+   *
+   * This asserts the id cursor keeps every row a naive endedAt cursor loses.
+   */
+  it('keeps rows a timestamp cursor would silently skip', () => {
+    const rows = listRecordings({ limit: 2000 }).rows
+      .filter(r => r.endedAt !== null)
+      .sort((a, b) => a.id - b.id)
+    expect(rows.length).toBeGreaterThan(100)
+
+    // The guarantee, asserted on a fixed sample so this test can never pass
+    // vacuously: `afterId: id - 1` always returns the row with that id.
+    const sample = rows.slice(-25)
+    expect(sample.length).toBe(25)
+    for (const r of sample) {
+      const fetched = listRecordings({ afterId: r.id - 1, limit: 2000 }).rows
+      expect(fetched.some(f => f.id === r.id)).toBe(true)
+    }
+
+    // The same guarantee, aimed at the rows that motivated it: those whose
+    // predecessor by id ended LATER than they did. A cursor advancing on
+    // endedAt would already be past these and would never fetch them. This
+    // loop is living documentation of the bug — it is deliberately NOT
+    // asserted to be non-empty, because requiring inversions to exist would
+    // be the same data-dependent assumption that broke two baseline tests.
+    // The fixed sample above is what keeps the test honest on any corpus.
+    const inversions = rows.filter(
+      (r, i) => i > 0 && (r.endedAt as number) < (rows[i - 1].endedAt as number),
+    )
+    for (const r of inversions) {
+      const fetched = listRecordings({ afterId: r.id - 1, limit: 2000 }).rows
+      expect(fetched.some(f => f.id === r.id)).toBe(true)
+    }
+  })
+})
+
+describe('live feed ordering', () => {
+  it('pages a feed query from the oldest pending row, ascending', () => {
+    // A truncated page must be a PREFIX of the pending set, so the caller can
+    // advance to the last row it received and continue. Newest-first would
+    // make a truncated page the SUFFIX and silently drop everything before it.
+    const { maxId } = listRecordings({ limit: 1 })
+    const rows = listRecordings({ afterId: maxId - 40, limit: 10 }).rows
+    expect(rows.length).toBe(10)
+    for (let i = 1; i < rows.length; i++) {
+      expect(rows[i].id).toBeGreaterThan(rows[i - 1].id)
+    }
+    // The page starts at the cursor, not at the head of the corpus.
+    expect(rows[0].id).toBeLessThan(maxId)
+  })
+
+  it('drains losslessly across successive truncated pages', () => {
+    // The property the client depends on: advance to the last id received,
+    // ask again, and no row between the two pages is skipped.
+    const { maxId } = listRecordings({ limit: 1 })
+    const start = maxId - 40
+    const first = listRecordings({ afterId: start, limit: 10 }).rows
+    const second = listRecordings({ afterId: first[first.length - 1].id, limit: 10 }).rows
+    const all = listRecordings({ afterId: start, limit: 20 }).rows
+    expect([...first, ...second].map(r => r.id)).toEqual(all.map(r => r.id))
+  })
+
+  it('leaves newest-first ordering alone when afterId is absent', () => {
+    // RecordingsList depends on this and passes no cursor.
+    const rows = listRecordings({ limit: 50 }).rows
+    for (let i = 1; i < rows.length; i++) {
+      expect(rows[i].start).toBeLessThanOrEqual(rows[i - 1].start)
+    }
+  })
+})
+
+describe('live feed talkgroup filter', () => {
+  it('tgids restricts to the listed talkgroups', () => {
+    const sample = listRecordings({ limit: 200 }).rows
+      .map(r => r.tgid)
+      .filter((t): t is number => t !== null)
+    const wanted = [...new Set(sample)].slice(0, 2)
+    expect(wanted.length).toBe(2)
+
+    const rows = listRecordings({ tgids: wanted, limit: 500 }).rows
+    expect(rows.length).toBeGreaterThan(0)
+    for (const r of rows) expect(wanted).toContain(r.tgid)
+  })
+
+  /**
+   * An armed feed with nothing selected must be silent, not a firehose.
+   *
+   * The builder pushes clauses, so the natural `if (q.tgids?.length)` idiom
+   * would push NO clause for an empty array and match everything. The
+   * composable also declines to fetch in this state (Task 6); this is the
+   * second line of defence, at the layer where the trap actually lives.
+   */
+  it('matches nothing when tgids is present but empty', () => {
+    const { rows, total } = listRecordings({ tgids: [], limit: 500 })
+    expect(rows).toEqual([])
+    expect(total).toBe(0)
+  })
+
+  it('still reports maxId when tgids is empty', () => {
+    // The client seeds its cursor before anything is selected.
+    expect(listRecordings({ tgids: [], limit: 1 }).maxId).toBeGreaterThan(0)
+  })
+})
+
+describe('followed talkgroups', () => {
+  it('lists the talkgroups the running session actually follows', () => {
+    const rows = followedTalkgroups()
+    expect(rows.length).toBeGreaterThan(0)
+    for (const r of rows) {
+      expect(typeof r.tgid).toBe('number')
+      expect(typeof r.recentCalls).toBe('number')
+      expect(r.recentCalls).toBeGreaterThanOrEqual(0)
+    }
+  })
+
+  it('matches the whitelist file exactly', () => {
+    // op25 only emits audio for whitelisted talkgroups, so a selector offering
+    // anything outside this set would present rows that can never play.
+    const wanted = readFileSync(whitelistPath(), 'utf-8')
+      .split('\n')
+      .map(l => Number.parseInt(l.trim(), 10))
+      .filter(n => Number.isInteger(n))
+    const got = followedTalkgroups().map(r => r.tgid)
+    expect([...got].sort((a, b) => a - b)).toEqual([...wanted].sort((a, b) => a - b))
+  })
+
+  it('ranks by recent activity, busiest first', () => {
+    // Only 15 of 100 followed talkgroups produced a call in 6 hours, so
+    // without ranking the live ones are buried under 85 silent rows.
+    const rows = followedTalkgroups()
+    for (let i = 1; i < rows.length; i++) {
+      expect(rows[i - 1].recentCalls).toBeGreaterThanOrEqual(rows[i].recentCalls)
+    }
+  })
+
+  it('keeps talkgroups that have no row in the talkgroups table', () => {
+    // The whitelist is authoritative for what op25 follows; a talkgroup absent
+    // from the scraped reference data still produces audio and must still be
+    // selectable, with null metadata.
+    const rows = followedTalkgroups()
+    for (const r of rows) {
+      expect(r).toHaveProperty('alpha')
+      expect(r).toHaveProperty('desc')
+      expect(r).toHaveProperty('cat')
+    }
   })
 })

@@ -9,6 +9,7 @@ import Dialog from 'primevue/dialog'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
+import MultiSelect from 'primevue/multiselect'
 import ProgressSpinner from 'primevue/progressspinner'
 import Select from 'primevue/select'
 import SelectButton from 'primevue/selectbutton'
@@ -27,6 +28,7 @@ export default defineNuxtPlugin((nuxtApp) => {
   nuxtApp.vueApp.component('InputNumber', InputNumber)
   nuxtApp.vueApp.component('InputText', InputText)
   nuxtApp.vueApp.component('Message', Message)
+  nuxtApp.vueApp.component('MultiSelect', MultiSelect)
   nuxtApp.vueApp.component('ProgressSpinner', ProgressSpinner)
   nuxtApp.vueApp.component('Select', Select)
   nuxtApp.vueApp.component('SelectButton', SelectButton)

@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs'
 import { getDb } from './db'
 import type { CallRow, TalkgroupRow } from './db'
+import { whitelistPath } from './paths'
 
 /**
  * All database reads live here, so the API routes stay thin and every query is
@@ -28,6 +30,9 @@ export interface CodeMention {
 
 /** Shape the API returns for a recording. `desc` rather than `description`. */
 export interface Recording {
+  /** Assigned at commit; monotonic across the recorder processes. The live
+   *  feed cursors on this rather than on a timestamp — see toRecording below. */
+  id: number
   file: string
   tgid: number | null
   alpha: string | null
@@ -36,6 +41,9 @@ export interface Recording {
   enc: 'clear' | 'partial' | 'full' | null
   start: number
   dur: number
+  /** Unix seconds at which the recorder closed this call's WAV. Staleness in
+   *  the live feed is measured from here, never from `start`. */
+  endedAt: number | null
   transcript: string | null
   transcriptNorm: string | null
   codes: CodeMention[]
@@ -56,7 +64,8 @@ export interface Recording {
 }
 
 const CALL_SELECT = `
-  SELECT c.file, c.tgid, c.start, c.dur, c.transcript, c.transcript_norm,
+  SELECT c.id, c.file, c.tgid, c.start, c.dur, c.ended_at,
+         c.transcript, c.transcript_norm,
          c.src_addr, c.algid, c.keyid, c.freq, c.rfss, c.site,
          c.enc_observed, c.enc_evidence, c.enc_source,
          t.alpha, t.description, t.cat, t.enc, t.enc_overridden,
@@ -125,6 +134,7 @@ function codesFor(files: string[]): Map<string, CodeMention[]> {
 
 function toRecording(r: CallRow, codes: CodeMention[] = []): Recording {
   return {
+    id: r.id,
     file: r.file,
     tgid: r.tgid,
     alpha: r.alpha,
@@ -133,6 +143,7 @@ function toRecording(r: CallRow, codes: CodeMention[] = []): Recording {
     enc: r.enc,
     start: r.start,
     dur: r.dur,
+    endedAt: r.ended_at,
     transcript: r.transcript,
     transcriptNorm: r.transcript_norm,
     codes,
@@ -153,6 +164,21 @@ export interface RecordingQuery {
   search?: string
   enc?: string
   tgid?: number
+  /**
+   * Talkgroups for the live feed. ANDs with `tgid` — each is an independent
+   * narrowing. An empty array matches NOTHING, deliberately: an armed feed
+   * with no selection must be silent rather than a firehose.
+   */
+  tgids?: number[]
+  /**
+   * Live feed cursor: return only calls committed after this rowid.
+   *
+   * Must be an id, never a timestamp. calls.id is assigned at commit and is
+   * monotonic across the recorder processes, so `id > afterId` cannot skip a
+   * row. A long call starts before a short one but commits after it, so a
+   * timestamp cursor drops it silently.
+   */
+  afterId?: number
   /** Exact canonical code, e.g. "10-42". Goes through call_codes, not FTS. */
   code?: string
   limit?: number
@@ -174,7 +200,38 @@ function ftsQuery(search: string): string {
   return terms.join(' AND ')
 }
 
-export function listRecordings(q: RecordingQuery = {}): { rows: Recording[], total: number } {
+/**
+ * A `<column> IN (...)` clause with BOUND parameters, appending the values to
+ * `params` in clause order.
+ *
+ * Chunked at 500 and OR'd together, which is exactly how `codesFor` (line 99)
+ * handles the same SQLITE_MAX_VARIABLE_NUMBER question. Binding rather than
+ * interpolating is not a precaution against a limit — node:sqlite bundles
+ * SQLite with the Node runtime rather than linking a system library, and 4,163
+ * ids (the "all" preset, the largest whitelist there is) bind without
+ * complaint against the 32766 default. It is so that this function and its
+ * neighbour give the same answer to the same question, and so no interpolation
+ * helper sits here waiting to be generalised to a value class where the input
+ * is not constrained to numeric literals.
+ *
+ * `column` is always a literal from this file, never caller input.
+ */
+function tgidInClause(
+  column: string,
+  ids: number[],
+  params: (string | number)[],
+): string {
+  const CHUNK = 500
+  const groups: string[] = []
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const batch = ids.slice(i, i + CHUNK)
+    groups.push(`${column} IN (${batch.map(() => '?').join(',')})`)
+    params.push(...batch)
+  }
+  return `(${groups.join(' OR ')})`
+}
+
+export function listRecordings(q: RecordingQuery = {}): { rows: Recording[], total: number, maxId: number } {
   const db = getDb()
   const where: string[] = []
   const params: (string | number)[] = []
@@ -182,6 +239,21 @@ export function listRecordings(q: RecordingQuery = {}): { rows: Recording[], tot
   if (q.tgid !== undefined) {
     where.push('c.tgid = ?')
     params.push(q.tgid)
+  }
+
+  if (q.tgids !== undefined) {
+    // An empty selection matches nothing. `1 = 0` rather than an early return
+    // so `total` and `maxId` below are still computed the same way.
+    //
+    // tgidInClause pushes its values onto `params` as it builds the clause, so
+    // this must stay in the same relative position as every other push — the
+    // builder relies on clause order and param order corresponding.
+    where.push(q.tgids.length ? tgidInClause('c.tgid', q.tgids, params) : '1 = 0')
+  }
+
+  if (q.afterId !== undefined) {
+    where.push('c.id > ?')
+    params.push(q.afterId)
   }
 
   if (q.enc && q.enc !== 'all') {
@@ -228,14 +300,47 @@ export function listRecordings(q: RecordingQuery = {}): { rows: Recording[], tot
 
   const limit = q.limit ?? 5000
   const offset = q.offset ?? 0
+
+  // Read before the paged query so the cursor seed and the page describe the
+  // same instant; a write landing between them would otherwise hand a client a
+  // seed newer than anything it was given.
+  const maxRow = db.prepare(
+    'SELECT COALESCE(MAX(id), 0) AS n FROM calls',
+  ).get() as { n: number }
+
+  // Feed queries page from the OLDEST pending row; everything else keeps
+  // newest-first.
+  //
+  // This is what makes `afterId` lossless under truncation. With
+  // `ORDER BY c.start DESC LIMIT L`, a page that truncates returns the L
+  // LATEST-starting pending rows and silently discards the earliest-starting
+  // ones — which is exactly "a long call starts before a short one but commits
+  // after it", the failure the id cursor exists to prevent, reintroduced by the
+  // pagination. Ordering by rowid instead means a truncated page is a prefix:
+  // the caller advances its cursor to the last row it received and the next
+  // request continues from there.
+  //
+  // It is also the right playback order. `id` is assigned at COMMIT, which for
+  // the recorder is end-of-transmission, so ascending id is the order calls
+  // finished. Ordering by `start` would play a long call that began earlier
+  // ahead of a short one that had already finished.
+  //
+  // Every other caller (RecordingsList) passes no `afterId` and is unaffected.
+  const order = q.afterId !== undefined ? 'c.id ASC' : 'c.start DESC'
   const rows = db.prepare(
-    `${CALL_SELECT} ${clause} ORDER BY c.start DESC LIMIT ? OFFSET ?`,
+    `${CALL_SELECT} ${clause} ORDER BY ${order} LIMIT ? OFFSET ?`,
   ).all(...params, limit, offset) as unknown as CallRow[]
 
   const byFile = codesFor(rows.map(r => r.file))
   return {
     rows: rows.map(r => toRecording(r, byFile.get(r.file) ?? [])),
     total: total.n,
+    // Unfiltered on purpose. The cursor is global, so seeding it from a
+    // filtered maximum would replay every call on a talkgroup selected later.
+    // It is also a separate aggregate on purpose: this query orders by
+    // c.start DESC, so limit=1 returns the newest call by START TIME, whose id
+    // is not necessarily the maximum.
+    maxId: maxRow.n,
   }
 }
 
@@ -462,4 +567,97 @@ export function codeStats(q: CodeStatsQuery = {}): CodeStat[] {
     calls: Number(r.calls),
     mentions: Number(r.mentions),
   }))
+}
+
+// ---------------------------------------------------------- followed feed
+
+/** A talkgroup the running session follows, with its recent activity. */
+export interface FollowedTalkgroup {
+  tgid: number
+  alpha: string | null
+  desc: string | null
+  cat: string | null
+  /** Calls in the trailing window. Display ordering only. */
+  recentCalls: number
+}
+
+interface TalkgroupMetaRow {
+  tgid: number
+  alpha: string | null
+  description: string | null
+  cat: string | null
+}
+
+interface TgidCountRow {
+  tgid: number
+  n: number
+}
+
+/**
+ * The talkgroups op25 is currently following, busiest first.
+ *
+ * Sourced from lwin_active_whitelist.txt rather than from the talkgroups table
+ * or from sessionStore, for two reasons:
+ *
+ *   op25 emits audio ONLY for whitelisted talkgroups, so this is the exact set
+ *   that can produce sound. A selector built from the reference table would
+ *   offer rows that are silent forever with no error anywhere.
+ *
+ *   lwin_listen_multi.sh:117 writes the file at session start regardless of
+ *   who launched the session, so this works for a session started from a shell
+ *   as well as one started from the console.
+ *
+ * The file is NOT proof that anything is running — it persists unchanged after
+ * a session dies. Callers pair it with isRadioBusy(); see the route.
+ *
+ * Ranking is load-bearing rather than cosmetic: only a fraction of the
+ * followed talkgroups produce a call in a given window, so unranked the live
+ * ones sit below a wall of silent rows.
+ */
+export function followedTalkgroups(sinceSec = 6 * 3600): FollowedTalkgroup[] {
+  let ids: number[]
+  try {
+    ids = readFileSync(whitelistPath(), 'utf-8')
+      .split('\n')
+      .map(l => Number.parseInt(l.trim(), 10))
+      .filter(n => Number.isInteger(n) && n > 0)
+  } catch {
+    return []          // no session has ever run on this checkout
+  }
+  if (!ids.length) return []
+
+  const db = getDb()
+
+  const metaParams: (string | number)[] = []
+  const metaClause = tgidInClause('tgid', ids, metaParams)
+  const meta = db.prepare(
+    `SELECT tgid, alpha, description, cat FROM talkgroups WHERE ${metaClause}`,
+  ).all(...metaParams) as unknown as TalkgroupMetaRow[]
+  const byTgid = new Map(meta.map(m => [m.tgid, m]))
+
+  // cutoff must be pushed onto countParams BEFORE tgidInClause builds its
+  // clause below — the builder appends to the array it is given in clause
+  // order, so the bound values and the placeholders they fill must line up.
+  const cutoff = Math.floor(Date.now() / 1000) - sinceSec
+  const countParams: (string | number)[] = [cutoff]
+  const countClause = tgidInClause('tgid', ids, countParams)
+  const counts = db.prepare(
+    `SELECT tgid, COUNT(*) AS n FROM calls
+      WHERE start > ? AND ${countClause} GROUP BY tgid`,
+  ).all(...countParams) as unknown as TgidCountRow[]
+  const countByTgid = new Map(counts.map(c => [c.tgid, c.n]))
+
+  return ids
+    .map((tgid) => {
+      const m = byTgid.get(tgid)
+      return {
+        tgid,
+        alpha: m?.alpha ?? null,
+        desc: m?.description ?? null,
+        cat: m?.cat ?? null,
+        recentCalls: countByTgid.get(tgid) ?? 0,
+      }
+    })
+    // Busiest first, then by id so the order is stable between calls.
+    .sort((a, b) => b.recentCalls - a.recentCalls || a.tgid - b.tgid)
 }

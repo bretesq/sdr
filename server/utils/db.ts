@@ -127,6 +127,7 @@ export interface TalkgroupRow {
 }
 
 export interface CallRow {
+  id: number
   file: string
   tgid: number | null
   start: number
