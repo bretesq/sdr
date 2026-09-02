@@ -256,3 +256,27 @@ describe('code filter and stats', () => {
     expect(listRecordings({ search: 'suspicious' }).rows.length).toBeGreaterThan(0)
   })
 })
+
+describe('feed projection', () => {
+  it('projects the call id, which the live feed uses as its cursor', () => {
+    const rows = listRecordings({ limit: 5 }).rows
+    expect(rows.length).toBeGreaterThan(0)
+    for (const r of rows) {
+      expect(typeof r.id).toBe('number')
+      expect(r.id).toBeGreaterThan(0)
+    }
+  })
+
+  it('projects endedAt, which the live feed uses to measure staleness', () => {
+    // CallRow declared ended_at long before CALL_SELECT selected it, so this
+    // read used to yield undefined and any arithmetic on it produced NaN.
+    const rows = listRecordings({ limit: 200 }).rows
+    const ended = rows.filter(r => r.endedAt !== null)
+    expect(ended.length).toBeGreaterThan(0)
+    for (const r of ended) {
+      expect(Number.isFinite(r.endedAt)).toBe(true)
+      // A call cannot end before it starts.
+      expect(r.endedAt as number).toBeGreaterThanOrEqual(r.start)
+    }
+  })
+})

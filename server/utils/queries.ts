@@ -28,6 +28,9 @@ export interface CodeMention {
 
 /** Shape the API returns for a recording. `desc` rather than `description`. */
 export interface Recording {
+  /** Assigned at commit; monotonic across the recorder processes. The live
+   *  feed cursors on this rather than on a timestamp — see toRecording below. */
+  id: number
   file: string
   tgid: number | null
   alpha: string | null
@@ -36,6 +39,9 @@ export interface Recording {
   enc: 'clear' | 'partial' | 'full' | null
   start: number
   dur: number
+  /** Unix seconds at which the recorder closed this call's WAV. Staleness in
+   *  the live feed is measured from here, never from `start`. */
+  endedAt: number | null
   transcript: string | null
   transcriptNorm: string | null
   codes: CodeMention[]
@@ -56,7 +62,8 @@ export interface Recording {
 }
 
 const CALL_SELECT = `
-  SELECT c.file, c.tgid, c.start, c.dur, c.transcript, c.transcript_norm,
+  SELECT c.id, c.file, c.tgid, c.start, c.dur, c.ended_at,
+         c.transcript, c.transcript_norm,
          c.src_addr, c.algid, c.keyid, c.freq, c.rfss, c.site,
          c.enc_observed, c.enc_evidence, c.enc_source,
          t.alpha, t.description, t.cat, t.enc, t.enc_overridden,
@@ -125,6 +132,7 @@ function codesFor(files: string[]): Map<string, CodeMention[]> {
 
 function toRecording(r: CallRow, codes: CodeMention[] = []): Recording {
   return {
+    id: r.id,
     file: r.file,
     tgid: r.tgid,
     alpha: r.alpha,
@@ -133,6 +141,7 @@ function toRecording(r: CallRow, codes: CodeMention[] = []): Recording {
     enc: r.enc,
     start: r.start,
     dur: r.dur,
+    endedAt: r.ended_at,
     transcript: r.transcript,
     transcriptNorm: r.transcript_norm,
     codes,
