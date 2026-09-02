@@ -19,20 +19,54 @@ export function keysPath(): string {
   return join(sdrRoot(), 'lwin_keys.json')
 }
 
-export function heldKeyIds(): number[] {
+/**
+ * `path` exists so tests can point at a fixture instead of the live keyfile.
+ *
+ * Not a general-purpose knob: production always takes the default. It is here
+ * because the alternative — asserting exact key ids against the live,
+ * unversioned keyfile — gives anyone facing a red test a one-line, no-diff way
+ * to make it green by editing operational secret material instead of code.
+ * That is not hypothetical; it happened during this task's first
+ * implementation.
+ */
+export function heldKeyIds(path: string = keysPath()): number[] {
   let parsed: unknown
   try {
-    parsed = JSON.parse(readFileSync(keysPath(), 'utf-8'))
+    parsed = JSON.parse(readFileSync(path, 'utf-8'))
   } catch {
     return []
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     return []
   }
-  return Object.keys(parsed)
+
+  const ids: number[] = []
+  const dropped: string[] = []
+  for (const raw of Object.keys(parsed)) {
     // Keys are written "0x1", "0x8", "0x2F08". parseInt with radix 16 accepts
     // the 0x prefix, so both spellings parse.
-    .map(k => Number.parseInt(k, 16))
-    .filter(n => Number.isInteger(n))
-    .sort((a, b) => a - b)
+    const n = Number.parseInt(raw, 16)
+    if (Number.isInteger(n)) ids.push(n)
+    else dropped.push(raw)
+  }
+
+  // A dropped id is the one silence here that loses information.
+  //
+  // Every other failure is all-or-nothing and announces itself: an absent or
+  // corrupt keyfile yields an empty set, so nothing decodes and the operator
+  // notices immediately. But ONE malformed id among many valid ones returns
+  // successfully with every other key intact — and surfaces only as a single
+  // talkgroup that will not decode, with nothing pointing at the keyfile.
+  //
+  // Key IDS are not secret: they travel in the clear in every P25 ESS field.
+  // Key BYTES are. Log the id only, never the entry it maps to.
+  if (dropped.length > 0) {
+    console.warn(
+      `heldKeyIds: ignoring ${dropped.length} unparseable key id(s) in ${path}: `
+      + dropped.join(', '),
+    )
+  }
+
+  // Deduped: "0x8" and "8" are different JSON keys that parse to the same id.
+  return [...new Set(ids)].sort((a, b) => a - b)
 }
