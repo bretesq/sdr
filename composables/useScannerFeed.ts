@@ -1,4 +1,4 @@
-import { ref, computed, onUnmounted } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import {
   createQueue, admit, prune, takeNext,
   type FeedCall, type QueueEntry, type ScannerQueue,
@@ -70,9 +70,44 @@ export function useScannerFeed() {
   const heldKeyIds = ref<number[]>([])
   const selected = ref<number[]>([])
   const armed = ref(false)
+  /**
+   * How long a call may wait before it is dropped rather than played late.
+   *
+   * Client state; the server has no opinion about it. Read defensively because
+   * localStorage throws in some contexts rather than returning null.
+   */
   const stalenessSec = ref(30)
-  /** Task 7 gives this meaning; declared here so the return shape is stable. */
+  /**
+   * False once a write has been refused — a private window, or a browser
+   * blocking site data. Surfaced in the panel so the operator is told the
+   * setting will not survive a reload, rather than discovering it later.
+   *
+   * Handled visibly rather than swallowed: a comment-only catch would leave
+   * the failure invisible, and a console.warn would fire on every change of
+   * the control.
+   */
   const settingPersists = ref(true)
+
+  const DEFAULT_STALENESS = 30
+  try {
+    const saved = Number.parseInt(localStorage.getItem('scanner-staleness') ?? '', 10)
+    stalenessSec.value = Number.isInteger(saved) && saved >= 10 && saved <= 300
+      ? saved
+      : DEFAULT_STALENESS
+  } catch {
+    // Reading was refused, so nothing was stored for us to honour. Fall back
+    // explicitly and record that writes will fail too.
+    stalenessSec.value = DEFAULT_STALENESS
+    settingPersists.value = false
+  }
+  watch(stalenessSec, (v) => {
+    try {
+      localStorage.setItem('scanner-staleness', String(v))
+      settingPersists.value = true
+    } catch {
+      settingPersists.value = false
+    }
+  })
   const skipped = ref(0)
   const nowPlaying = ref<FeedCall | null>(null)
   const streamOk = ref(false)
