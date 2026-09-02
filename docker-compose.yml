@@ -112,7 +112,12 @@ services:
       - --no-cpu-fallback
 
   web:
-    image: node:24-slim
+    # node:24-slim on its own has no pgrep/pkill (no procps package) — see
+    # docker/web/Dockerfile for why that silently breaks isRadioBusy() and
+    # radio release under pid: host.
+    build:
+      context: ./docker/web
+    image: rtl-web-node
     container_name: rtl-web
     restart: unless-stopped
     user: "1000:1000"
