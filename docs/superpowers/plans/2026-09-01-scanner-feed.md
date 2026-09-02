@@ -494,6 +494,26 @@ function parseTgids(raw: string): number[] {
 export default defineEventHandler((event) => {
   const q = getQuery(event)
 
+  // The cursor is validated on SHAPE — a run of digits — not on whether it
+  // coerces to a number, and this is the one parameter here that is guarded.
+  //
+  // `?afterId=abc` parses to NaN, and NaN is not undefined, so it would be
+  // bound: node:sqlite binds NaN as NULL, `id > NULL` is NULL, and the feed
+  // returns zero rows forever with no exception and no log entry.
+  //
+  // Testing `Number.isInteger(Number(...))` instead looks equivalent and is
+  // not. `Number('')` is 0, so `?afterId=` would become a real cursor of 0 —
+  // and because the ordering below keys off the parameter being PRESENT, that
+  // does not merely add a no-op `id > 0` predicate, it silently flips the page
+  // into `c.id ASC` across the whole corpus. The same guard would also accept
+  // `1e3` as cursor 1000 and coerce a repeated `?afterId=1&afterId=2` into
+  // `"1,2"` → 12. A digit run cannot impersonate a number the way an empty
+  // string can.
+  //
+  // `afterId=0` stays legal and means "cursor at the very beginning": absence
+  // of the key is what means "no cursor", never the value being zero.
+  const rawAfterId = q.afterId === undefined ? '' : String(q.afterId).trim()
+
   // Search, encryption and talkgroup filtering all happen in SQL now. The old
   // route shipped every row plus all 3,220 transcripts so the browser could
   // filter with String.includes; transcript matching is an FTS5 index lookup.
@@ -505,12 +525,7 @@ export default defineEventHandler((event) => {
     // the parameter's presence, not its truthiness — `tgids=` must not read as
     // "no filter".
     tgids: q.tgids !== undefined ? parseTgids(String(q.tgids)) : undefined,
-    // Guarded, unlike its neighbours: `?afterId=abc` parses to NaN, and NaN is
-    // not undefined so it would be bound — where node:sqlite binds it as NULL,
-    // `id > NULL` is NULL, and the feed returns zero rows forever with no
-    // error anywhere. A silently dead feed is the exact failure this route
-    // exists to prevent, so a malformed cursor is dropped rather than bound.
-    afterId: Number.isInteger(Number(q.afterId)) ? Number(q.afterId) : undefined,
+    afterId: /^\d+$/.test(rawAfterId) ? Number(rawAfterId) : undefined,
     code: q.code ? String(q.code) : undefined,
     limit: q.limit ? Number.parseInt(String(q.limit), 10) : undefined,
     offset: q.offset ? Number.parseInt(String(q.offset), 10) : undefined,
@@ -530,6 +545,12 @@ Run:
 ```bash
 curl -s 'localhost:3000/api/recordings/list?limit=1' | head -c 200; echo
 curl -s 'localhost:3000/api/recordings/list?tgids=&limit=5' | python3 -c 'import json,sys; d=json.load(sys.stdin); print("empty selection ->", len(d["data"]), "rows, maxId", d["maxId"])'
+# A malformed or empty cursor must NOT be honoured, and must NOT flip ordering.
+for v in abc '' 1e3 -1 5.5; do
+  echo -n "afterId=$v -> "
+  curl -s "localhost:3000/api/recordings/list?afterId=$v&limit=3" \
+    | python3 -c 'import json,sys; r=json.load(sys.stdin)["data"]; print("newest-first" if len(r)<2 or r[0]["start"]>=r[1]["start"] else "ASCENDING — BUG", [x["id"] for x in r])'
+done
 ```
 
 Expected: the first prints a JSON object containing `"maxId"`. The second prints `empty selection -> 0 rows, maxId <n>` with `n > 0`.
