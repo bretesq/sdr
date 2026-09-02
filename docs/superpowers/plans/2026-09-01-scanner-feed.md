@@ -226,13 +226,25 @@ describe('live feed cursor', () => {
       .sort((a, b) => a.id - b.id)
     expect(rows.length).toBeGreaterThan(100)
 
-    // Rows whose predecessor by id ended LATER than they did. A cursor that
-    // advanced on endedAt would already be past these and never fetch them.
+    // The guarantee, asserted on a fixed sample so this test can never pass
+    // vacuously: `afterId: id - 1` always returns the row with that id.
+    const sample = rows.slice(-25)
+    expect(sample.length).toBe(25)
+    for (const r of sample) {
+      const fetched = listRecordings({ afterId: r.id - 1, limit: 2000 }).rows
+      expect(fetched.some(f => f.id === r.id)).toBe(true)
+    }
+
+    // The same guarantee, aimed at the rows that motivated it: those whose
+    // predecessor by id ended LATER than they did. A cursor advancing on
+    // endedAt would already be past these and would never fetch them. This
+    // loop is living documentation of the bug — it is deliberately NOT
+    // asserted to be non-empty, because requiring inversions to exist would
+    // be the same data-dependent assumption that broke two baseline tests.
+    // The fixed sample above is what keeps the test honest on any corpus.
     const inversions = rows.filter(
       (r, i) => i > 0 && (r.endedAt as number) < (rows[i - 1].endedAt as number),
     )
-    // If this ever reads 0 the corpus changed shape; the guarantee below still
-    // has to hold, so assert it unconditionally rather than skipping.
     for (const r of inversions) {
       const fetched = listRecordings({ afterId: r.id - 1, limit: 2000 }).rows
       expect(fetched.some(f => f.id === r.id)).toBe(true)
@@ -1184,7 +1196,7 @@ Deliverable: pressing Play produces audio from the selected talkgroups. The pane
 
 **Interfaces:**
 - Consumes: `/api/listen/followed` (Task 4), `/api/recordings/list` with `afterId`/`tgids` returning `maxId` (Task 2), `utils/scannerQueue.ts` (Task 5).
-- Produces: `useScannerFeed()` returning `{ followed, heldKeyIds, selected, armed, stalenessSec, entries, skipped, nowPlaying, streamOk, radioBusy, tracked, error, load, arm, disarm }`. Used by Task 7.
+- Produces: `useScannerFeed()` returning `{ followed, heldKeyIds, selected, armed, stalenessSec, settingPersists, entries, skipped, nowPlaying, streamOk, radioBusy, tracked, error, load, arm, disarm }`. Used by Task 7. In Task 6 `settingPersists` is `ref(true)` and unused; Task 7 gives it meaning.
 
 - [ ] **Step 1: Write the composable**
 
@@ -1238,6 +1250,8 @@ export function useScannerFeed() {
   const selected = ref<number[]>([])
   const armed = ref(false)
   const stalenessSec = ref(30)
+  /** Task 7 gives this meaning; declared here so the return shape is stable. */
+  const settingPersists = ref(true)
   const skipped = ref(0)
   const nowPlaying = ref<FeedCall | null>(null)
   const streamOk = ref(false)
@@ -1391,7 +1405,7 @@ export function useScannerFeed() {
   onUnmounted(disarm)
 
   return {
-    followed, heldKeyIds, selected, armed, stalenessSec,
+    followed, heldKeyIds, selected, armed, stalenessSec, settingPersists,
     entries, skipped, nowPlaying, streamOk, radioBusy, tracked, error,
     load, arm, disarm,
   }
@@ -1561,17 +1575,35 @@ In `composables/useScannerFeed.ts`, replace the `stalenessSec` declaration:
    * localStorage throws in some contexts rather than returning null.
    */
   const stalenessSec = ref(30)
+  /**
+   * False once a write has been refused — a private window, or a browser
+   * blocking site data. Surfaced in the panel so the operator is told the
+   * setting will not survive a reload, rather than discovering it later.
+   *
+   * Handled visibly rather than swallowed: a comment-only catch would leave
+   * the failure invisible, and a console.warn would fire on every change of
+   * the control.
+   */
+  const settingPersists = ref(true)
+
+  const DEFAULT_STALENESS = 30
   try {
     const saved = Number.parseInt(localStorage.getItem('scanner-staleness') ?? '', 10)
-    if (Number.isInteger(saved) && saved >= 10 && saved <= 300) stalenessSec.value = saved
+    stalenessSec.value = Number.isInteger(saved) && saved >= 10 && saved <= 300
+      ? saved
+      : DEFAULT_STALENESS
   } catch {
-    // Private window, or site data blocked. The default is fine.
+    // Reading was refused, so nothing was stored for us to honour. Fall back
+    // explicitly and record that writes will fail too.
+    stalenessSec.value = DEFAULT_STALENESS
+    settingPersists.value = false
   }
   watch(stalenessSec, (v) => {
     try {
       localStorage.setItem('scanner-staleness', String(v))
+      settingPersists.value = true
     } catch {
-      // Nothing to do; the setting simply will not survive a reload.
+      settingPersists.value = false
     }
   })
 ```
@@ -1632,6 +1664,9 @@ Replace the `<template>` block of `components/ScannerFeed.vue`:
           show-buttons
           class="w-full"
         />
+        <small v-if="!settingPersists" class="text-color-secondary">
+          won't persist in this browser
+        </small>
       </div>
     </div>
 
@@ -1691,7 +1726,7 @@ import { computed, onMounted } from 'vue'
 
 const feed = useScannerFeed()
 const {
-  selected, armed, stalenessSec, entries, skipped, nowPlaying,
+  selected, armed, stalenessSec, settingPersists, entries, skipped, nowPlaying,
   streamOk, error, arm, disarm,
 } = feed
 
@@ -1741,7 +1776,7 @@ With `pnpm dev` running and a capture session live, open `http://localhost:3000`
 1. The header shows `radio busy · untracked session` (or `console session` if started from the console), and `live` once armed.
 2. The talkgroup label reads `N followed, M active`, with M much smaller than N.
 3. Selecting talkgroups and pressing Play produces audio; the queue list below shows pending calls.
-4. `Drop after` changes persist across a page reload.
+4. `Drop after` changes persist across a page reload. In a private window it should instead show "won't persist in this browser" beneath the control.
 5. Set `Drop after` to its 10 s minimum during a busy period and confirm the `skipped` tag appears and increments.
 6. If an unkeyed encrypted call arrives, it appears greyed with a lock icon, its keyid in hex, and `crack target` — and is not played. To confirm the rendering without waiting, temporarily select a talkgroup known to carry keyid `0x1320`.
 
