@@ -12,7 +12,10 @@
         <ListenControl />
       </div>
       <div class="col-12 lg:col-8">
-        <RecordingsList />
+        <ScannerFeed />
+        <div class="mt-3">
+          <RecordingsList />
+        </div>
       </div>
       <div class="col-12">
         <TalkgroupBrowser />
