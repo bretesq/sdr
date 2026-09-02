@@ -35,7 +35,13 @@ describe('observed encryption', () => {
   })
 
   it('has observed states populated by the harvester', () => {
-    const rows = listRecordings({ limit: 500 }).rows
+    // Scoped to the whole corpus, not the newest page. enc_observed is written
+    // by a later reconciliation pass (scripts/enc_harvest.py), so calls from a
+    // capture still in progress carry NULL. Taking the newest 500 rows during
+    // a live session found zero harvested rows and went red — the newest 500
+    // were all from that session.
+    const { total } = listRecordings({ limit: 1 })
+    const rows = listRecordings({ limit: total }).rows
     const observed = rows.filter(r => r.encObserved !== null)
     expect(observed.length).toBeGreaterThan(0)
     // Only the four states the classifier can produce.
@@ -103,7 +109,14 @@ describe('listRecordings', () => {
     // here goes red the moment the radio runs — the same mistake an earlier
     // whitelist test made. Assert the invariants: there is a substantial
     // corpus, and it is ordered newest-first.
-    const { rows, total } = listRecordings()
+    //
+    // `rows` is a PAGE of `total`, never all of it: listRecordings applies a
+    // default limit of 5000. Comparing rows.length against the unfiltered
+    // total was the same class of bug this comment warns about, one line
+    // lower — it held only while the corpus stayed under the cap and went red
+    // when the 5,000th call landed. Ask for a page big enough to hold it.
+    const { total } = listRecordings({ limit: 1 })
+    const { rows } = listRecordings({ limit: total })
     expect(total).toBeGreaterThanOrEqual(3240)
     expect(rows).toHaveLength(total)
     for (let i = 1; i < rows.length; i++) {
