@@ -41,8 +41,17 @@ ENV STT_PORT=8081
 # 25s of curl inside a 30s timeout: a healthy GPU transcribes this clip in
 # ~0.2s, and the CPU fallback path takes ~123s, so anything near the ceiling is
 # already a fault. start-period covers model load on a cold start.
+#
+# The response body is checked too, not just the HTTP status: a wedged server
+# answering 200 with an empty or garbage body is exactly the failure this probe
+# exists to catch, so `-f`'s status-only check isn't enough on its own. A real
+# transcription reply is JSON containing a "text" field (confirmed on this
+# clip: {"text":" [BLANK_AUDIO]\n"}) -- matching on the field name rather than
+# on "[BLANK_AUDIO]" itself, since that content could change with the model.
+# If curl fails, there is no body to match and grep fails closed too.
 HEALTHCHECK --interval=60s --timeout=30s --retries=2 --start-period=90s \
-  CMD curl -sf --max-time 25 -o /dev/null \
+  CMD curl -sf --max-time 25 \
       -F file=@/opt/hc/silence.wav \
       -F response_format=json \
-      "http://127.0.0.1:${STT_PORT}/inference" || exit 1
+      "http://127.0.0.1:${STT_PORT}/inference" \
+      | grep -q '"text"' || exit 1

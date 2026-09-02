@@ -11,6 +11,13 @@
 /recordings/
 captures/
 *.wav
+# scripts/silence.wav is the exception to *.wav above: it is the stt healthcheck's
+# probe payload (COPY'd into the whisper-server image), not a captured call. It is
+# verified digital silence -- every one of its 16000 samples is zero, peak 0, RMS 0,
+# 2.00s mono 16-bit 8000Hz, matching the recorder's own format -- so it carries no
+# audio content and keeps the "no real recordings in the repo" rule intact. The
+# image build needs it committed; do not widen this beyond the one file.
+!scripts/silence.wav
 *.mp3
 *.m4a
 lwin_brpd_audio.tsv
