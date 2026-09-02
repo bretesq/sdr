@@ -280,3 +280,102 @@ describe('feed projection', () => {
     }
   })
 })
+
+describe('live feed cursor', () => {
+  it('returns maxId, the seed the client arms its cursor with', () => {
+    const { maxId } = listRecordings({ limit: 1 })
+    expect(typeof maxId).toBe('number')
+    expect(maxId).toBeGreaterThan(0)
+  })
+
+  it('reports the same maxId regardless of filters', () => {
+    // The cursor is global, not per-filter: seeding it from a filtered
+    // maximum would replay every call on a talkgroup selected later.
+    const all = listRecordings({ limit: 1 }).maxId
+    const filtered = listRecordings({ limit: 1, enc: 'full' }).maxId
+    expect(filtered).toBe(all)
+  })
+
+  it('afterId returns only rows with a greater id', () => {
+    const { maxId } = listRecordings({ limit: 1 })
+    const cutoff = maxId - 50
+    const rows = listRecordings({ afterId: cutoff, limit: 500 }).rows
+    expect(rows.length).toBeGreaterThan(0)
+    for (const r of rows) expect(r.id).toBeGreaterThan(cutoff)
+  })
+
+  /**
+   * The regression that decided the cursor design.
+   *
+   * calls.id is assigned at commit. A long transmission STARTS before a short
+   * one but COMMITS after it, so ordering by time and asking for "rows newer
+   * than my last timestamp" silently drops it — and by construction the dropped
+   * rows are the longest transmissions, the ones most worth hearing. Two such
+   * inversions were measured in a single 3-hour window on 2026-09-01.
+   *
+   * This asserts the id cursor keeps every row a naive endedAt cursor loses.
+   */
+  it('keeps rows a timestamp cursor would silently skip', () => {
+    const rows = listRecordings({ limit: 2000 }).rows
+      .filter(r => r.endedAt !== null)
+      .sort((a, b) => a.id - b.id)
+    expect(rows.length).toBeGreaterThan(100)
+
+    // The guarantee, asserted on a fixed sample so this test can never pass
+    // vacuously: `afterId: id - 1` always returns the row with that id.
+    const sample = rows.slice(-25)
+    expect(sample.length).toBe(25)
+    for (const r of sample) {
+      const fetched = listRecordings({ afterId: r.id - 1, limit: 2000 }).rows
+      expect(fetched.some(f => f.id === r.id)).toBe(true)
+    }
+
+    // The same guarantee, aimed at the rows that motivated it: those whose
+    // predecessor by id ended LATER than they did. A cursor advancing on
+    // endedAt would already be past these and would never fetch them. This
+    // loop is living documentation of the bug — it is deliberately NOT
+    // asserted to be non-empty, because requiring inversions to exist would
+    // be the same data-dependent assumption that broke two baseline tests.
+    // The fixed sample above is what keeps the test honest on any corpus.
+    const inversions = rows.filter(
+      (r, i) => i > 0 && (r.endedAt as number) < (rows[i - 1].endedAt as number),
+    )
+    for (const r of inversions) {
+      const fetched = listRecordings({ afterId: r.id - 1, limit: 2000 }).rows
+      expect(fetched.some(f => f.id === r.id)).toBe(true)
+    }
+  })
+})
+
+describe('live feed talkgroup filter', () => {
+  it('tgids restricts to the listed talkgroups', () => {
+    const sample = listRecordings({ limit: 200 }).rows
+      .map(r => r.tgid)
+      .filter((t): t is number => t !== null)
+    const wanted = [...new Set(sample)].slice(0, 2)
+    expect(wanted.length).toBe(2)
+
+    const rows = listRecordings({ tgids: wanted, limit: 500 }).rows
+    expect(rows.length).toBeGreaterThan(0)
+    for (const r of rows) expect(wanted).toContain(r.tgid)
+  })
+
+  /**
+   * An armed feed with nothing selected must be silent, not a firehose.
+   *
+   * The builder pushes clauses, so the natural `if (q.tgids?.length)` idiom
+   * would push NO clause for an empty array and match everything. The
+   * composable also declines to fetch in this state (Task 6); this is the
+   * second line of defence, at the layer where the trap actually lives.
+   */
+  it('matches nothing when tgids is present but empty', () => {
+    const { rows, total } = listRecordings({ tgids: [], limit: 500 })
+    expect(rows).toEqual([])
+    expect(total).toBe(0)
+  })
+
+  it('still reports maxId when tgids is empty', () => {
+    // The client seeds its cursor before anything is selected.
+    expect(listRecordings({ tgids: [], limit: 1 }).maxId).toBeGreaterThan(0)
+  })
+})

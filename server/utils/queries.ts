@@ -162,6 +162,21 @@ export interface RecordingQuery {
   search?: string
   enc?: string
   tgid?: number
+  /**
+   * Talkgroups for the live feed. ANDs with `tgid` — each is an independent
+   * narrowing. An empty array matches NOTHING, deliberately: an armed feed
+   * with no selection must be silent rather than a firehose.
+   */
+  tgids?: number[]
+  /**
+   * Live feed cursor: return only calls committed after this rowid.
+   *
+   * Must be an id, never a timestamp. calls.id is assigned at commit and is
+   * monotonic across the recorder processes, so `id > afterId` cannot skip a
+   * row. A long call starts before a short one but commits after it, so a
+   * timestamp cursor drops it silently.
+   */
+  afterId?: number
   /** Exact canonical code, e.g. "10-42". Goes through call_codes, not FTS. */
   code?: string
   limit?: number
@@ -183,7 +198,23 @@ function ftsQuery(search: string): string {
   return terms.join(' AND ')
 }
 
-export function listRecordings(q: RecordingQuery = {}): { rows: Recording[], total: number } {
+/**
+ * Render a list of talkgroup ids as a SQL literal list.
+ *
+ * Inlined rather than bound as placeholders because the whitelist can hold
+ * every talkgroup in the system (preset "all" is 4,163), which overruns the
+ * 999-parameter limit on older SQLite builds. Safe because every element is
+ * proven to be a finite integer here and the function throws otherwise —
+ * nothing string-shaped can reach the query.
+ */
+function intList(values: number[]): string {
+  for (const v of values) {
+    if (!Number.isInteger(v)) throw new TypeError(`Not an integer id: ${String(v)}`)
+  }
+  return values.join(',')
+}
+
+export function listRecordings(q: RecordingQuery = {}): { rows: Recording[], total: number, maxId: number } {
   const db = getDb()
   const where: string[] = []
   const params: (string | number)[] = []
@@ -191,6 +222,17 @@ export function listRecordings(q: RecordingQuery = {}): { rows: Recording[], tot
   if (q.tgid !== undefined) {
     where.push('c.tgid = ?')
     params.push(q.tgid)
+  }
+
+  if (q.tgids !== undefined) {
+    // An empty selection matches nothing. `1 = 0` rather than an early return
+    // so `total` and `maxId` below are still computed the same way.
+    where.push(q.tgids.length ? `c.tgid IN (${intList(q.tgids)})` : '1 = 0')
+  }
+
+  if (q.afterId !== undefined) {
+    where.push('c.id > ?')
+    params.push(q.afterId)
   }
 
   if (q.enc && q.enc !== 'all') {
@@ -241,10 +283,20 @@ export function listRecordings(q: RecordingQuery = {}): { rows: Recording[], tot
     `${CALL_SELECT} ${clause} ORDER BY c.start DESC LIMIT ? OFFSET ?`,
   ).all(...params, limit, offset) as unknown as CallRow[]
 
+  const maxRow = db.prepare(
+    'SELECT COALESCE(MAX(id), 0) AS n FROM calls',
+  ).get() as { n: number }
+
   const byFile = codesFor(rows.map(r => r.file))
   return {
     rows: rows.map(r => toRecording(r, byFile.get(r.file) ?? [])),
     total: total.n,
+    // Unfiltered on purpose. The cursor is global, so seeding it from a
+    // filtered maximum would replay every call on a talkgroup selected later.
+    // It is also a separate aggregate on purpose: this query orders by
+    // c.start DESC, so limit=1 returns the newest call by START TIME, whose id
+    // is not necessarily the maximum.
+    maxId: maxRow.n,
   }
 }
 
