@@ -9,10 +9,14 @@ all pairs and reports which are gaps (silence PT matches) vs speech.
 import sys
 
 R = '/home/besquivel/rtl'
-LOG = f'{R}/results/lwin_enc_capture.log'
+LOG = f'{R}/results/lwin_enc_capture_multi.log'
 import re
 
-SIL_PT = [0x04, 0x0C, 0xFD, 0x7B, 0xFB, 0x7D, 0xF2, 0x7B, 0x3D, 0x9E, 0x44]
+# VERIFIED 2026-08-31: the xMBE vocoder (imbe_vocoder, the exact fixed-point IMBE
+# encoder op25 uses) fed a zero-WAV converges to the steady-state silence codeword
+# 01 50 20 00 00 00 00 00 00 00 00. The old 04 0c fd... value was a guess from
+# p25p1_fdma.cc's commented-out silence block and is NOT the vocoder's real output.
+SIL_PT = [0x01, 0x50, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
 
 raw = re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]|\x1b[()][A-Z0-9]', '', open(LOG, errors='ignore').read())
 

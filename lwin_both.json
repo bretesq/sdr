@@ -39,7 +39,7 @@
             "enable_analog": "off",
             "whitelist": "/home/besquivel/rtl/lwin_active_whitelist.txt",
             "blacklist": "",
-            "crypt_keys": "",
+            "crypt_keys": "/home/besquivel/rtl/lwin_keys.json",
             "crypt_behavior": 1
         },
         {
@@ -60,7 +60,7 @@
             "enable_analog": "off",
             "whitelist": "/home/besquivel/rtl/lwin_active_whitelist.txt",
             "blacklist": "",
-            "crypt_keys": "",
+            "crypt_keys": "/home/besquivel/rtl/lwin_keys.json",
             "crypt_behavior": 1
         },
         {
@@ -81,7 +81,7 @@
             "enable_analog": "off",
             "whitelist": "/home/besquivel/rtl/lwin_active_whitelist.txt",
             "blacklist": "",
-            "crypt_keys": "",
+            "crypt_keys": "/home/besquivel/rtl/lwin_keys.json",
             "crypt_behavior": 1
         },
         {
@@ -102,7 +102,7 @@
             "enable_analog": "off",
             "whitelist": "/home/besquivel/rtl/lwin_active_whitelist.txt",
             "blacklist": "",
-            "crypt_keys": "",
+            "crypt_keys": "/home/besquivel/rtl/lwin_keys.json",
             "crypt_behavior": 1
         },
         {
@@ -123,7 +123,7 @@
             "enable_analog": "off",
             "whitelist": "/home/besquivel/rtl/lwin_active_whitelist.txt",
             "blacklist": "",
-            "crypt_keys": "",
+            "crypt_keys": "/home/besquivel/rtl/lwin_keys.json",
             "crypt_behavior": 1
         },
         {
@@ -144,7 +144,7 @@
             "enable_analog": "off",
             "whitelist": "/home/besquivel/rtl/lwin_active_whitelist.txt",
             "blacklist": "",
-            "crypt_keys": "",
+            "crypt_keys": "/home/besquivel/rtl/lwin_keys.json",
             "crypt_behavior": 1
         },
         {
@@ -165,7 +165,7 @@
             "enable_analog": "off",
             "whitelist": "/home/besquivel/rtl/lwin_active_whitelist.txt",
             "blacklist": "",
-            "crypt_keys": "",
+            "crypt_keys": "/home/besquivel/rtl/lwin_keys.json",
             "crypt_behavior": 1
         },
         {
@@ -186,7 +186,7 @@
             "enable_analog": "off",
             "whitelist": "/home/besquivel/rtl/lwin_active_whitelist.txt",
             "blacklist": "",
-            "crypt_keys": "",
+            "crypt_keys": "/home/besquivel/rtl/lwin_keys.json",
             "crypt_behavior": 1
         }
     ],

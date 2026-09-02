@@ -6,9 +6,12 @@ set -e
 R=/home/besquivel/rtl
 BIN=$R/adp_brute
 
-# 1) random 5-byte key + 8-byte MI (hex strings, space-separated)
+# 1) random 5-byte key + 9-byte MI (hex strings, space-separated).
+# adp_brute demands a 9-byte MI: it copies the first 8 bytes into the 13-byte
+# RC4 schedule; the 9th byte is the trailing 0x00 that op25's ESS logs as the
+# final MI byte.
 KEY=$(python3 -c "import secrets;print(' '.join('%02X' % b for b in secrets.token_bytes(5)))")
-MI=$(python3 -c "import secrets;print(' '.join('%02X' % b for b in secrets.token_bytes(8)))")
+MI=$(python3 -c "import secrets;print(' '.join('%02X' % b for b in secrets.token_bytes(9)))")
 
 # 2) keystream[368..378] via the same KSA op25 uses
 CS=$(python3 - "$KEY" "$MI" <<'PY'
@@ -52,5 +55,6 @@ echo "MI: $MI"
 echo "CT: $CT"
 echo "PT: $PT"
 echo "--- running 2^40 brute force (8 threads) ---"
-time $BIN $MI $CT $PT 8
+# Quote each hex field: adp_brute parses one space-separated hex string per arg.
+time "$BIN" "$MI" "$CT" "$PT" 8
 echo "selftest done"
