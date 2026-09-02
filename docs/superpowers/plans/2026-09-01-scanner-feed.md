@@ -505,10 +505,10 @@ export default defineEventHandler((event) => {
   // not. `Number('')` is 0, so `?afterId=` would become a real cursor of 0 —
   // and because the ordering below keys off the parameter being PRESENT, that
   // does not merely add a no-op `id > 0` predicate, it silently flips the page
-  // into `c.id ASC` across the whole corpus. The same guard would also accept
-  // `1e3` as cursor 1000 and coerce a repeated `?afterId=1&afterId=2` into
-  // `"1,2"` → 12. A digit run cannot impersonate a number the way an empty
-  // string can.
+  // into `c.id ASC` across the whole corpus. It would also accept `1e3` as
+  // cursor 1000. A digit run cannot impersonate a number the way an empty
+  // string can, and it additionally rejects a repeated `?afterId=1&afterId=2`
+  // on the comma rather than relying on the coercion happening to fail.
   //
   // `afterId=0` stays legal and means "cursor at the very beginning": absence
   // of the key is what means "no cursor", never the value being zero.
