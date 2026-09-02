@@ -1,0 +1,145 @@
+# The console's supervised half.
+#
+# op25, the eight udp_audio_record.py recorders and the HackRFs stay on the
+# host: they need USB device access and real-time scheduling, and the host
+# already carries 34 gnuradio/osmosdr packages that would otherwise be
+# duplicated here and drift out of sync.
+name: rtl-console
+
+# Every service mounts the repository at its REAL host path. sdrRoot() returns
+# the literal string '/home/besquivel/rtl' and every script builds absolute
+# paths from it, so mounting at /app resolves to paths that do not exist — the
+# console then reports an empty corpus rather than an error.
+x-repo: &repo /home/besquivel/rtl:/home/besquivel/rtl
+
+services:
+  whisper:
+    build:
+      context: ./scripts
+      dockerfile: stt_server.Dockerfile
+    image: rtl-whisper-cuda
+    container_name: rtl-stt-server
+    restart: unless-stopped
+    # Without this, whisper-server becomes PID 1 of the container's PID
+    # namespace and inherits the kernel's PID-1 signal immunity: an unhandled
+    # SIGTERM/SIGSTOP/etc sent to it from inside that namespace is silently
+    # discarded, since whisper-server installs no handler (man 7
+    # pid_namespaces). That immunity is exactly what turned a wedged server
+    # into the original 26-hour outage — `docker restart` couldn't stop it
+    # either ("PID ... is zombie and can not be killed"), and
+    # `restart: unless-stopped` never fired because the container never
+    # exited. `init: true` runs tini as PID 1 instead, which forwards signals
+    # properly and reaps zombies, so whisper-server (now PID 2) is an ordinary,
+    # killable process again. Task 2 added the equivalent `--init` to
+    # stt_server.sh; this is that same fix, expressed in compose.
+    init: true
+    # The binaries are bind-mounted rather than baked in, so rebuilding
+    # whisper.cpp does not mean rebuilding this image.
+    volumes:
+      - ./tools/whisper.cpp/build-cuda/bin:/opt/whisper/bin:ro
+      - ./models:/models:ro
+    ports:
+      # Loopback only. The host's own stt_watch and any manual curl reach it
+      # here; the other containers reach it by service name on the compose net.
+      - "127.0.0.1:8081:8081"
+    environment:
+      # The healthcheck baked into the image probes http://127.0.0.1:${STT_PORT}.
+      # This must agree with the --port below the command serves on: Task 2
+      # added the equivalent `-e STT_PORT="$PORT"` to stt_server.sh for the
+      # same reason. If these two ever disagree, the probe queries a port
+      # nothing is bound to, and a genuinely healthy server gets marked
+      # unhealthy permanently.
+      STT_PORT: "8081"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command:
+      - /opt/whisper/bin/whisper-server
+      - -m
+      - /models/ggml-medium.en.bin
+      - --port
+      - "8081"
+      - --host
+      - 0.0.0.0
+      - --language
+      - en
+
+  stt-watch:
+    image: python:3.12-slim
+    container_name: rtl-stt-watch
+    restart: unless-stopped
+    # UID 1000: this service writes transcripts into sdr.db, and SQLite creates
+    # sdr.db-wal beside it. A root-owned WAL file stops the host's recorders
+    # writing, which stops recording.
+    user: "1000:1000"
+    working_dir: /home/besquivel/rtl
+    volumes:
+      - *repo
+    environment:
+      # stt_backend reads STT_URL; on the compose network the server is a
+      # service name, not loopback.
+      STT_URL: http://whisper:8081
+    depends_on:
+      whisper:
+        condition: service_healthy
+    # --no-cpu-fallback on purpose. The CPU path is what HID the first outage:
+    # transcription did not stop, it degraded to ~123s per clip and coverage
+    # slid from 98% to 55% while the system looked like it was working. Here a
+    # whisper outage stops transcription outright instead of degrading
+    # silently.
+    #
+    # Recovery is manual, not automatic, and deliberately so: Docker does not
+    # restart unhealthy containers — restart policies fire on container exit
+    # only, health status never triggers them (only Swarm acts on health), and
+    # `depends_on: condition: service_healthy` only gates startup ordering, not
+    # runtime. This was proven on this machine during Task 2: the whisper
+    # container sat at `unhealthy streak=2` twice with RestartCount staying 0
+    # and StartedAt unchanged under `restart: unless-stopped`. So the
+    # healthcheck's actual job here is to make a wedge visible — paired with
+    # --no-cpu-fallback making transcription stop loudly instead of degrading
+    # silently — while the operator restarts whisper by hand (see Task 4's
+    # status view). The host copy of stt_watch.py keeps its CPU fallback; this
+    # choice is scoped to the container.
+    command:
+      - python3
+      - scripts/stt_watch.py
+      - --dir
+      - /home/besquivel/rtl/recordings
+      - --no-cpu-fallback
+
+  web:
+    image: node:24-slim
+    container_name: rtl-web
+    restart: unless-stopped
+    user: "1000:1000"
+    # pid: host is what keeps isRadioBusy() and releasing the radio working —
+    # pgrep and pkill read the host's /proc and signal host processes as the
+    # same UID. Starting a capture is refused instead; see SDR_IN_CONTAINER.
+    pid: host
+    working_dir: /home/besquivel/rtl
+    volumes:
+      - *repo
+    environment:
+      SDR_IN_CONTAINER: "1"
+      SDR_ROOT: /home/besquivel/rtl
+    ports:
+      - "3002:3002"
+    # `corepack enable` (as the brief originally had it) tries to symlink pnpm
+    # shims into /usr/local/bin next to the Node install, which requires root;
+    # verified empirically against this exact image as UID 1000:1000 —
+    # `Internal Error: EACCES: permission denied, symlink
+    # '../lib/node_modules/corepack/dist/pnpm.js' -> '/usr/local/bin/pnpm'`.
+    # `corepack pnpm ...` sidesteps that: corepack resolves and runs the pinned
+    # pnpm directly without installing global shims, and was confirmed to work
+    # unprivileged in the same image. HOME needed no explicit setting either —
+    # node:24-slim already carries a passwd entry for uid 1000 ("node",
+    # HOME=/home/node), so `user: "1000:1000"` resolves to a real, writable
+    # home instead of "/".
+    command:
+      - sh
+      - -c
+      - corepack pnpm dev --host 0.0.0.0 --port 3002

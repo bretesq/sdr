@@ -124,3 +124,6 @@ sdr.db
 sdr.db-wal
 sdr.db-shm
 adp_brute_cuda
+
+# Docker Compose local overrides (per-machine tweaks; not committed).
+docker-compose.override.yml
