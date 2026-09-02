@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs'
 import { getDb } from './db'
 import type { CallRow, TalkgroupRow } from './db'
+import { whitelistPath } from './paths'
 
 /**
  * All database reads live here, so the API routes stay thin and every query is
@@ -565,4 +567,97 @@ export function codeStats(q: CodeStatsQuery = {}): CodeStat[] {
     calls: Number(r.calls),
     mentions: Number(r.mentions),
   }))
+}
+
+// ---------------------------------------------------------- followed feed
+
+/** A talkgroup the running session follows, with its recent activity. */
+export interface FollowedTalkgroup {
+  tgid: number
+  alpha: string | null
+  desc: string | null
+  cat: string | null
+  /** Calls in the trailing window. Display ordering only. */
+  recentCalls: number
+}
+
+interface TalkgroupMetaRow {
+  tgid: number
+  alpha: string | null
+  description: string | null
+  cat: string | null
+}
+
+interface TgidCountRow {
+  tgid: number
+  n: number
+}
+
+/**
+ * The talkgroups op25 is currently following, busiest first.
+ *
+ * Sourced from lwin_active_whitelist.txt rather than from the talkgroups table
+ * or from sessionStore, for two reasons:
+ *
+ *   op25 emits audio ONLY for whitelisted talkgroups, so this is the exact set
+ *   that can produce sound. A selector built from the reference table would
+ *   offer rows that are silent forever with no error anywhere.
+ *
+ *   lwin_listen_multi.sh:117 writes the file at session start regardless of
+ *   who launched the session, so this works for a session started from a shell
+ *   as well as one started from the console.
+ *
+ * The file is NOT proof that anything is running — it persists unchanged after
+ * a session dies. Callers pair it with isRadioBusy(); see the route.
+ *
+ * Ranking is load-bearing rather than cosmetic: only a fraction of the
+ * followed talkgroups produce a call in a given window, so unranked the live
+ * ones sit below a wall of silent rows.
+ */
+export function followedTalkgroups(sinceSec = 6 * 3600): FollowedTalkgroup[] {
+  let ids: number[]
+  try {
+    ids = readFileSync(whitelistPath(), 'utf-8')
+      .split('\n')
+      .map(l => Number.parseInt(l.trim(), 10))
+      .filter(n => Number.isInteger(n) && n > 0)
+  } catch {
+    return []          // no session has ever run on this checkout
+  }
+  if (!ids.length) return []
+
+  const db = getDb()
+
+  const metaParams: (string | number)[] = []
+  const metaClause = tgidInClause('tgid', ids, metaParams)
+  const meta = db.prepare(
+    `SELECT tgid, alpha, description, cat FROM talkgroups WHERE ${metaClause}`,
+  ).all(...metaParams) as unknown as TalkgroupMetaRow[]
+  const byTgid = new Map(meta.map(m => [m.tgid, m]))
+
+  // cutoff must be pushed onto countParams BEFORE tgidInClause builds its
+  // clause below — the builder appends to the array it is given in clause
+  // order, so the bound values and the placeholders they fill must line up.
+  const cutoff = Math.floor(Date.now() / 1000) - sinceSec
+  const countParams: (string | number)[] = [cutoff]
+  const countClause = tgidInClause('tgid', ids, countParams)
+  const counts = db.prepare(
+    `SELECT tgid, COUNT(*) AS n FROM calls
+      WHERE start > ? AND ${countClause} GROUP BY tgid`,
+  ).all(...countParams) as unknown as TgidCountRow[]
+  const countByTgid = new Map(counts.map(c => [c.tgid, c.n]))
+
+  return ids
+    .map((tgid) => {
+      const m = byTgid.get(tgid)
+      return {
+        tgid,
+        alpha: m?.alpha ?? null,
+        desc: m?.description ?? null,
+        cat: m?.cat ?? null,
+        recentCalls: countByTgid.get(tgid) ?? 0,
+      }
+    })
+    // Busiest first, then by id so the order is stable between calls.
+    .sort((a, b) => b.recentCalls - a.recentCalls || a.tgid - b.tgid)
 }

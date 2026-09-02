@@ -1,8 +1,11 @@
 import { describe, it, expect, beforeAll } from 'vitest'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { sdrRoot } from './paths'
-import { listRecordings, getRecording, listTalkgroups, listCategories, codeStats } from './queries'
+import { sdrRoot, whitelistPath } from './paths'
+import {
+  listRecordings, getRecording, listTalkgroups, listCategories, codeStats,
+  followedTalkgroups,
+} from './queries'
 import { dbPath } from './db'
 
 /**
@@ -417,5 +420,49 @@ describe('live feed talkgroup filter', () => {
   it('still reports maxId when tgids is empty', () => {
     // The client seeds its cursor before anything is selected.
     expect(listRecordings({ tgids: [], limit: 1 }).maxId).toBeGreaterThan(0)
+  })
+})
+
+describe('followed talkgroups', () => {
+  it('lists the talkgroups the running session actually follows', () => {
+    const rows = followedTalkgroups()
+    expect(rows.length).toBeGreaterThan(0)
+    for (const r of rows) {
+      expect(typeof r.tgid).toBe('number')
+      expect(typeof r.recentCalls).toBe('number')
+      expect(r.recentCalls).toBeGreaterThanOrEqual(0)
+    }
+  })
+
+  it('matches the whitelist file exactly', () => {
+    // op25 only emits audio for whitelisted talkgroups, so a selector offering
+    // anything outside this set would present rows that can never play.
+    const wanted = readFileSync(whitelistPath(), 'utf-8')
+      .split('\n')
+      .map(l => Number.parseInt(l.trim(), 10))
+      .filter(n => Number.isInteger(n))
+    const got = followedTalkgroups().map(r => r.tgid)
+    expect([...got].sort((a, b) => a - b)).toEqual([...wanted].sort((a, b) => a - b))
+  })
+
+  it('ranks by recent activity, busiest first', () => {
+    // Only 15 of 100 followed talkgroups produced a call in 6 hours, so
+    // without ranking the live ones are buried under 85 silent rows.
+    const rows = followedTalkgroups()
+    for (let i = 1; i < rows.length; i++) {
+      expect(rows[i - 1].recentCalls).toBeGreaterThanOrEqual(rows[i].recentCalls)
+    }
+  })
+
+  it('keeps talkgroups that have no row in the talkgroups table', () => {
+    // The whitelist is authoritative for what op25 follows; a talkgroup absent
+    // from the scraped reference data still produces audio and must still be
+    // selectable, with null metadata.
+    const rows = followedTalkgroups()
+    for (const r of rows) {
+      expect(r).toHaveProperty('alpha')
+      expect(r).toHaveProperty('desc')
+      expect(r).toHaveProperty('cat')
+    }
   })
 })
