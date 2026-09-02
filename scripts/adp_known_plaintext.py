@@ -50,15 +50,31 @@ R = os.environ.get('SDR_ROOT', '/home/besquivel/rtl')
 IDLE_PT = '04 0c fd 7b fb 7d f2 7b 3d 9e 44'
 
 
+def _distance(p) -> int:
+    """Codewords between this one and the nearest end of its transmission.
+
+    Both ends are idle-rich: a radio is keyed before the operator speaks and
+    stays keyed after they stop. tx_index measures from the head, tx_from_end
+    from the tail, and whichever is smaller is the better argument for this
+    codeword being idle. Missing values do not compete -- an unseen HDU or an
+    unseen TDU means no evidence, not evidence of distance.
+    """
+    both = [d for d in (p.tx_index, p.tx_from_end) if d >= 0]
+    return min(both) if both else (1 << 30)
+
+
 def rank(pairs: list) -> list:
     """Candidates ordered by how likely their plaintext is the idle codeword.
 
-    Earliest-in-transmission first. A codeword with no transmission context
-    (tx_index < 0, i.e. no HDU was seen before it) sorts last: it may still be
-    idle, but nothing about its position argues for it.
+    Nearest to either end of a transmission first. A codeword with neither an
+    HDU nor a TDU in the log sorts last: it may still be idle, but nothing
+    about its position argues for it.
+
+    Ranking from the tail as well as the head matters for exactly the case that
+    stalled keyid 0x1 -- all 133 of its pairs have tx_index -1, because op25
+    joined every one of those calls in progress. The TDU is still there.
     """
-    return sorted(pairs, key=lambda p: (p.tx_index < 0,
-                                        p.tx_index if p.tx_index >= 0 else 1 << 30))
+    return sorted(pairs, key=_distance)
 
 
 def _write_superframes(algid: int, keyid: int, pairs: list, limit: int) -> None:
@@ -79,22 +95,22 @@ def _write_superframes(algid: int, keyid: int, pairs: list, limit: int) -> None:
         by_mi.setdefault(' '.join(p.mi), []).append(p)
 
     def earliest(item):
-        idxs = [q.tx_index for q in item[1] if q.tx_index >= 0]
-        return (not idxs, min(idxs) if idxs else 1 << 30)
+        return min((_distance(q) for q in item[1]), default=1 << 30)
 
     for n, (mi, group) in enumerate(sorted(by_mi.items(), key=earliest)[:limit]):
         out = f'{R}/results/adp_sf_0x{algid:02X}_0x{keyid:X}_{n:02d}.txt'
-        idxs = [q.tx_index for q in group if q.tx_index >= 0]
+        idxs = [_distance(q) for q in group if _distance(q) < (1 << 30)]
         with open(out, 'w') as f:
             f.write(f'# superframe {n}: {len(group)} codeword(s) sharing one MI\n')
             f.write(f'# MI {mi}\n')
-            f.write(f'# earliest tx_index: {min(idxs) if idxs else "unknown"}\n')
+            f.write(f'# closest to a transmission edge: '
+                    f'{min(idxs) if idxs else "unknown"}\n')
             f.write(f'# run:\n#   {R}/adp_brute_cuda "{mi}" '
                     f'"{"00 " * 10}00" "{IDLE_PT}" 512 --pairs {out} --progress\n')
             for q in group:
                 f.write(f'{q.frame.lower()} {q.position} {" ".join(q.ct)}\n')
         print(f'  superframe {n}: {len(group):>2} codewords, '
-              f'earliest tx_index={min(idxs) if idxs else "-"} -> {os.path.basename(out)}')
+              f'edge distance={min(idxs) if idxs else "-"} -> {os.path.basename(out)}')
 
 
 def main() -> int:

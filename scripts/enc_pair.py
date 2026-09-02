@@ -72,14 +72,25 @@ class Pair:
     # the likeliest to carry the idle/silence codeword — which is the only
     # known plaintext available against encrypted traffic.
     tx_index: int = -1
+    # Codewords remaining until this transmission ended: 0 is the last one
+    # before the TDU. A radio stays keyed briefly after the operator stops
+    # talking, so the tail of a transmission is idle-rich for the same reason
+    # its head is -- and unlike tx_index this is knowable even when op25 joined
+    # the call in progress and never saw an HDU. -1 = the end was never seen
+    # (the log stops mid-call).
+    tx_from_end: int = -1
+    # Internal: which transmission on which receiver this codeword belongs to,
+    # used to compute tx_from_end once the whole log has been read.
+    tx_id: int = -1
 
 
 class _RxState:
     """Per-receiver mirror of op25's ess_mi chaining."""
-    __slots__ = ('key_mi', 'pending', 'frame', 'position', 'tx_index')
+    __slots__ = ('key_mi', 'pending', 'frame', 'position', 'tx_index', 'tx_id')
 
     def __init__(self):
         self.tx_index = -1      # codeword index since the HDU; -1 = no transmission
+        self.tx_id = 0          # bumped whenever this receiver's call ends
         self.key_mi = None      # MI applicable to the current frame's codewords
         self.pending = None     # LDU2's announced next MI (list), or 'BREAK'
         self.frame = None       # current frame type
@@ -103,6 +114,7 @@ def extract_pairs(log_text: str, *, algid: int = 0xAA, keyid: int = 8) -> list:
     text = ANSI.sub('', log_text)
     states: dict[int, _RxState] = {}
     pairs: list = []
+    ended: set = set()          # (rx, tx_id) whose TDU we actually saw
 
     for line in text.splitlines():
         ids = [(m.start(), int(m.group(1))) for m in RXID.finditer(line)]
@@ -133,6 +145,11 @@ def extract_pairs(log_text: str, *, algid: int = 0xAA, keyid: int = 8) -> list:
                     st.pending = None
                     st.frame = None
                     st.tx_index = -1
+                    # The end of this transmission was SEEN, so its codewords
+                    # can be ranked from the tail. Recorded before the id is
+                    # bumped, so it names the transmission that just finished.
+                    ended.add((rx, st.tx_id))
+                    st.tx_id += 1
                 else:
                     if htype == 'HDU':
                         st.tx_index = 0    # a new transmission begins here
@@ -162,9 +179,21 @@ def extract_pairs(log_text: str, *, algid: int = 0xAA, keyid: int = 8) -> list:
                         pairs.append(Pair(rx, st.frame, st.position,
                                           st.key_mi, _bytes(m.group('ctb')),
                                           algid, keyid,
-                                          st.tx_index))
+                                          st.tx_index, -1, st.tx_id))
                     st.position += 1
                     if st.tx_index >= 0:
                         st.tx_index += 1
+
+    # tx_from_end can only be computed once the whole log is read: it counts
+    # backwards from a transmission's LAST codeword, which is not known while
+    # that transmission is still in progress. Only transmissions whose TDU was
+    # observed get a value -- a call the log cuts off mid-stream has no
+    # meaningful tail, and guessing one would rank noise as a strong candidate.
+    last_index: dict = {}
+    for n, p in enumerate(pairs):
+        last_index[(p.rx_id, p.tx_id)] = n
+    for n, p in enumerate(pairs):
+        if (p.rx_id, p.tx_id) in ended:
+            p.tx_from_end = last_index[(p.rx_id, p.tx_id)] - n
 
     return pairs

@@ -207,5 +207,46 @@ class TxIndex(unittest.TestCase):
         self.assertTrue(all(p.tx_index == -1 for p in pairs), tuples(pairs))
 
 
+class TxFromEnd(unittest.TestCase):
+    """Distance to the end of the transmission, for ranking idle candidates.
+
+    A radio stays keyed briefly after the operator stops talking, so the tail of
+    a transmission carries idle frames for the same reason the head does. Unlike
+    tx_index this survives op25 joining a call in progress, which is the case
+    for every keyid 0x1 pair in the corpus (133 of 133 have tx_index -1).
+    """
+
+    def test_counts_backwards_from_the_last_codeword(self):
+        log = '\n'.join([hdu(MI_H), ldu1(), ct(CT_A), ct(CT_B), ct(CT_C), tdu15()])
+        pairs = enc_pair.extract_pairs(log, algid=0xAA, keyid=8)
+        self.assertEqual([p.tx_from_end for p in pairs], [2, 1, 0])
+
+    def test_a_transmission_with_no_observed_end_is_unranked(self):
+        # The log stops mid-call: there is no tail, and inventing one would rank
+        # arbitrary codewords as strong candidates.
+        log = '\n'.join([hdu(MI_H), ldu1(), ct(CT_A), ct(CT_B)])
+        pairs = enc_pair.extract_pairs(log, algid=0xAA, keyid=8)
+        self.assertTrue(all(p.tx_from_end == -1 for p in pairs))
+
+    def test_works_without_an_hdu(self):
+        # The case that matters: joined in progress, so tx_index is unavailable,
+        # but the TDU still marks the end.
+        log = '\n'.join([ldu2_ess(MI_1), ldu1(), ct(CT_A), ct(CT_B), tdu15()])
+        pairs = enc_pair.extract_pairs(log, algid=0xAA, keyid=8)
+        self.assertTrue(all(p.tx_index == -1 for p in pairs))
+        self.assertEqual([p.tx_from_end for p in pairs], [1, 0])
+
+    def test_each_receiver_is_ranked_independently(self):
+        log = '\n'.join([hdu(MI_H, rx=4), ldu1(rx=4), ct(CT_A, rx=4),
+                         hdu(MI_1, rx=5), ldu1(rx=5), ct(CT_B, rx=5), ct(CT_C, rx=5),
+                         tdu15(rx=5), tdu15(rx=4)])
+        pairs = enc_pair.extract_pairs(log, algid=0xAA, keyid=8)
+        by_rx = {}
+        for p in pairs:
+            by_rx.setdefault(p.rx_id, []).append(p.tx_from_end)
+        self.assertEqual(by_rx[4], [0])
+        self.assertEqual(by_rx[5], [1, 0])
+
+
 if __name__ == '__main__':
     unittest.main()
