@@ -90,9 +90,27 @@ describe('prune', () => {
     // Skipping noise that was never going to play is not a loss to report.
     const q = createQueue()
     admit(q, call({ algid: ADP_ALGID, keyid: 4896, endedAt: NOW / 1000 - 45 }), SELECTED, HELD)
+    // Assert it was actually ENQUEUED first. Without this the end state is
+    // indistinguishable from a bug where admit rejected the locked call
+    // outright and prune trivially found an empty queue.
+    expect(q.entries.length).toBe(1)
+    expect(q.entries[0].kind).toBe('locked')
     prune(q, NOW, 30_000)
     expect(q.entries.length).toBe(0)
     expect(q.skipped).toBe(0)
+  })
+
+  it('keeps the same entries array, so a held reference stays valid', () => {
+    // takeNext splices in place; prune must too. A consumer that aliases
+    // queue.entries — which a Vue ref does — would otherwise be left holding a
+    // detached array after the first prune, showing a queue frozen in time.
+    const q = createQueue()
+    const alias = q.entries
+    admit(q, call({ id: 1, endedAt: NOW / 1000 - 45 }), SELECTED, HELD)
+    admit(q, call({ id: 2, endedAt: NOW / 1000 - 2 }), SELECTED, HELD)
+    prune(q, NOW, 30_000)
+    expect(q.entries).toBe(alias)
+    expect(alias.map(e => e.call.id)).toEqual([2])
   })
 })
 

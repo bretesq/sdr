@@ -106,19 +106,28 @@ export function admit(
  * going to hear as a loss would be misleading.
  */
 export function prune(queue: ScannerQueue, nowMs: number, stalenessMs: number): number {
-  const kept: QueueEntry[] = []
+  // Mutates `entries` IN PLACE rather than reassigning it.
+  //
+  // Rebuilding into a new array and assigning `queue.entries = kept` would be
+  // simpler to read, and would quietly break any consumer holding a reference
+  // to the array — which a Vue composable does the moment it aliases it into a
+  // ref. `takeNext` already splices in place, so doing the same here keeps one
+  // uniform contract: the array identity a caller obtains stays valid for the
+  // life of the queue.
+  //
+  // Iterated backwards because splicing during a forward walk skips the
+  // element after each removal.
   let dropped = 0
-  for (const e of queue.entries) {
+  for (let i = queue.entries.length - 1; i >= 0; i--) {
+    const e = queue.entries[i]
     if (nowMs - endedAtMs(e.call) > stalenessMs) {
       if (e.kind === 'playable') {
         queue.skipped += 1
         dropped += 1
       }
-      continue
+      queue.entries.splice(i, 1)
     }
-    kept.push(e)
   }
-  queue.entries = kept
   return dropped
 }
 
