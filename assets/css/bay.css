@@ -1,0 +1,522 @@
+/* ===========================================================================
+   THE STRIP BAY
+   ---------------------------------------------------------------------------
+   Air traffic control keeps one printed strip per aircraft, on tinted card, in
+   metal holder rails. The tint says what kind of traffic it is; where the strip
+   sits says what is happening to it; a controller's pencil says the rest. Nobody
+   redraws a strip — they move it.
+
+   This console is that bay. One strip per call. Stock tint carries the call's
+   encryption class, the rail it sits in carries its state, and the transcript is
+   printed on the strip itself rather than in a pane beside it.
+
+   The discipline that keeps this from being a card grid: strips are objects in a
+   rail, not cards on a ground. They butt against their neighbours with no gap,
+   they have square corners, they cast no shadow, and the rail is the only
+   container on the page.
+   =========================================================================== */
+
+:root {
+  /* --- the bay: painted metal, read at a bench and outdoors ---------------- */
+  --board:        #23261f;   /* the bay board itself */
+  --board-deep:   #191b15;   /* the recess a rail is screwed into */
+  --board-edge:   #12140f;
+  --rail:         #383d31;   /* the holder rail */
+  --rail-lip:     #545a45;   /* the lip that catches the light */
+  --rail-shadow:  #0e100c;
+
+  /* --- strip stock: tint is the call's CLASS, never its state -------------- */
+  --stock-clear:  #e7dcbe;   /* unencrypted traffic */
+  --stock-keyed:  #cfd9bd;   /* ADP, and we hold the key — it decodes */
+  --stock-locked: #a7b0b4;   /* ADP under a key we do not hold */
+  --stock-void:   #c6b5a8;   /* recorded but nothing decoded */
+
+  /* --- ink on stock -------------------------------------------------------- */
+  --ink:          #1b1a14;
+  --ink-2:        #56513f;   /* secondary print, tinted from the stock */
+  --ink-3:        #7d775f;
+  --rule:         #a99e7d;   /* the printed hairline on a form */
+
+  /* --- pencil: the only saturated marks in the system ---------------------- */
+  --grease:       #b8371d;   /* red pencil: live, now, attention */
+  --grease-ink:   #8d2913;
+  --pencil-green: #1d6042;   /* green pencil: heard, filed clean */
+  --pencil-blue:  #24506f;   /* blue pencil: operator annotation */
+
+  /* --- type ---------------------------------------------------------------- */
+  --f-label: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  --f-body:  'Barlow Semi Condensed', system-ui, sans-serif;
+  --f-data:  'Sometype Mono', ui-monospace, 'Courier New', monospace;
+
+  /* --- rhythm: one scale, used everywhere ---------------------------------- */
+  --u: 4px;
+  --strip-pad: 7px 12px 8px;
+  --rail-gap: 1px;           /* strips butt; this is the printed separation */
+
+  --ease-file: cubic-bezier(0.16, 0.84, 0.28, 1);
+}
+
+/* ===========================================================================
+   Browser surfaces. These ship with defaults belonging to no design system.
+   =========================================================================== */
+
+::selection { background: var(--grease); color: var(--stock-clear); }
+
+html {
+  scrollbar-color: var(--rail-lip) var(--board-deep);
+  scrollbar-width: thin;
+  -webkit-text-size-adjust: 100%;
+}
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--board-deep); }
+::-webkit-scrollbar-thumb {
+  background: var(--rail);
+  border: 2px solid var(--board-deep);
+  border-radius: 0;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--rail-lip); }
+
+:focus-visible {
+  outline: 2px solid var(--grease);
+  outline-offset: 1px;
+}
+/* The bay never rounds a corner. */
+* { border-radius: 0; }
+
+input, textarea, select, button { font: inherit; color: inherit; }
+input { caret-color: var(--grease); }
+
+/* The browser's 1em paragraph margin adds 29px to every strip. On a rail of
+   sixty strips that is two screens of nothing, which is the opposite of what
+   this instrument is for. */
+p { margin: 0; }
+
+/* ===========================================================================
+   Page ground
+   =========================================================================== */
+
+html, body, #__nuxt { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--board);
+  /* the board is painted metal: a fine vertical brush, not a gradient wash */
+  background-image:
+    repeating-linear-gradient(90deg,
+      rgba(255, 255, 255, 0.014) 0 1px,
+      transparent 1px 3px);
+  color: var(--stock-clear);
+  font-family: var(--f-body);
+  font-size: 15px;
+  line-height: 1.35;
+  overflow: hidden;
+}
+
+/* ===========================================================================
+   Rails — the only container in this design system
+   =========================================================================== */
+
+.rail {
+  background: var(--board-deep);
+  border-top: 1px solid var(--rail-lip);
+  border-bottom: 1px solid var(--board-edge);
+  box-shadow: inset 0 2px 5px -2px var(--rail-shadow);
+}
+
+.rail__head {
+  display: flex;
+  align-items: baseline;
+  gap: calc(var(--u) * 2);
+  padding: 5px 12px 4px;
+  background: var(--rail);
+  border-bottom: 1px solid var(--rail-shadow);
+  box-shadow: inset 0 1px 0 var(--rail-lip);
+  font-family: var(--f-label);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #cdd2bb;
+}
+
+.rail__head .count {
+  font-family: var(--f-data);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: #9aa189;
+  font-variant-numeric: tabular-nums;
+}
+
+.rail__head .spacer { margin-left: auto; }
+
+/* ===========================================================================
+   THE STRIP
+   Every strip carries the identical printed grid, so a stack reads from its
+   edge alone. Nothing here is a card: square, flush, no shadow, no gap.
+   =========================================================================== */
+
+.strip {
+  position: relative;
+  display: block;
+  width: 100%;
+  margin: 0 0 var(--rail-gap);
+  padding: var(--strip-pad);
+  border: 0;
+  border-left: 3px solid transparent;
+  background: var(--stock-clear);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    transform 180ms var(--ease-file),
+    filter 120ms linear;
+}
+
+/* the punched holder holes down the left edge of real strip card */
+.strip::before {
+  content: '';
+  position: absolute;
+  left: -3px; top: 0; bottom: 0;
+  width: 3px;
+  background-image: repeating-linear-gradient(
+    180deg,
+    var(--ink-3) 0 3px,
+    transparent 3px 11px);
+  opacity: 0.55;
+}
+
+.strip:hover { filter: brightness(1.045); }
+.strip:active { transform: translateX(2px); }
+
+/* --- stock tints: the call's class -------------------------------------- */
+.strip--clear  { background: var(--stock-clear); }
+.strip--keyed  { background: var(--stock-keyed); }
+.strip--void   { background: var(--stock-void); }
+
+/* A locked strip is cocked out of the rail at an angle and never files.
+   It is the one strip you cannot play, and it looks wrong on purpose. */
+.strip--locked {
+  background: var(--stock-locked);
+  transform: rotate(-0.55deg) translateX(7px);
+  cursor: default;
+}
+.strip--locked:hover { filter: none; }
+
+/* --- the strip that is playing right now --------------------------------- */
+.strip--live {
+  border-left-color: var(--grease);
+  box-shadow: inset 0 0 0 1px rgba(184, 55, 29, 0.28);
+}
+
+/* --- the printed header line: identical on every strip ------------------- */
+/* Fields cluster at the left of the strip and the right side stays open, the
+   way a printed form leaves room for pencil. Stretching four fields across a
+   1,100px rail puts the clock so far from the name that the pair stops reading
+   as one line, which is the whole point of an identical grid on every strip. */
+.strip__head {
+  display: grid;
+  grid-template-columns: 5.5ch minmax(0, 24ch) 9ch 6ch;
+  justify-content: start;
+  align-items: baseline;
+  gap: 0 14px;
+  font-family: var(--f-data);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.strip__tg     { font-weight: 700; color: var(--ink); }
+.strip__alpha  {
+  font-family: var(--f-label);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.strip__time   { color: var(--ink-2); }
+.strip__dur    { color: var(--ink-2); font-weight: 500; }
+
+/* the printed hairline that separates header from body on the form */
+.strip__rule {
+  height: 1px;
+  margin: 5px 0 4px;
+  background: var(--rule);
+  opacity: 0.5;
+}
+
+.strip__body {
+  font-family: var(--f-body);
+  font-size: 14.5px;
+  line-height: 1.32;
+  color: var(--ink);
+  /* transcripts are the reason this surface exists: give them the measure */
+  max-width: 74ch;
+}
+
+.strip__body--empty {
+  color: var(--ink-3);
+  font-style: italic;
+}
+
+/* --- pencil marks: the only saturated ink on a strip --------------------- */
+.mark {
+  font-family: var(--f-label);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.mark--live   { color: var(--grease); }
+.mark--keyed  { color: var(--pencil-green); }
+.mark--locked { color: var(--pencil-blue); }
+.mark--note   { color: var(--ink-3); }
+
+/* the red pencil stroke a controller draws through a strip they are working */
+.strip--live .strip__alpha::after {
+  content: '';
+  display: inline-block;
+  width: 0.7em;
+  height: 2px;
+  margin-left: 0.45em;
+  vertical-align: 0.28em;
+  background: var(--grease);
+}
+
+/* ===========================================================================
+   Comm stack — the panel that arms the bay
+   =========================================================================== */
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--board);
+  border-right: 1px solid var(--board-edge);
+  box-shadow: inset -1px 0 0 var(--rail-lip);
+}
+
+.stack__block {
+  padding: 10px 12px 12px;
+  border-bottom: 1px solid var(--board-edge);
+  box-shadow: inset 0 -1px 0 rgba(84, 90, 69, 0.35);
+}
+
+.stack__label {
+  display: block;
+  margin-bottom: 6px;
+  font-family: var(--f-label);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #8d947b;
+}
+
+/* the frequency readout on a comm stack: big, mono, tabular */
+.readout {
+  font-family: var(--f-data);
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  color: #dfe4cd;
+}
+.readout--dim { color: #6f7660; }
+.readout__unit {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: #8d947b;
+}
+
+/* --- the arm control: a physical toggle, not a button -------------------- */
+.arm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--board-edge);
+  background: var(--rail);
+  box-shadow: inset 0 1px 0 var(--rail-lip), 0 1px 0 var(--board-edge);
+  font-family: var(--f-label);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #dfe4cd;
+  cursor: pointer;
+  transition: background 120ms linear, transform 90ms var(--ease-file);
+}
+.arm:hover:not(:disabled) { background: #434936; }
+.arm:active:not(:disabled) { transform: translateY(1px); box-shadow: inset 0 1px 3px var(--rail-shadow); }
+.arm:disabled { opacity: 0.42; cursor: not-allowed; }
+
+.arm--on {
+  background: var(--grease-ink);
+  color: #f2e6d6;
+  box-shadow: inset 0 1px 0 #d2542f, 0 1px 0 var(--board-edge);
+}
+.arm--on:hover:not(:disabled) { background: #a12f16; }
+
+.arm__lamp {
+  width: 9px; height: 9px;
+  flex: none;
+  background: #4a5040;
+  box-shadow: inset 0 0 0 1px var(--board-edge);
+}
+.arm--on .arm__lamp {
+  background: #ff6a3d;
+  box-shadow: 0 0 6px 1px rgba(255, 106, 61, 0.55), inset 0 0 0 1px #7a2a12;
+}
+
+/* ===========================================================================
+   Standby list — talkgroup selection, in strip vocabulary
+   =========================================================================== */
+
+.standby {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.standby__row {
+  display: grid;
+  grid-template-columns: 14px 5.5ch minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 12px;
+  border: 0;
+  border-bottom: 1px solid rgba(84, 90, 69, 0.22);
+  background: transparent;
+  color: #c3c9b0;
+  font-family: var(--f-data);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+  cursor: pointer;
+  transition: background 100ms linear;
+}
+.standby__row:hover { background: rgba(84, 90, 69, 0.26); }
+.standby__row--on { background: rgba(184, 55, 29, 0.16); color: #efe4d2; }
+
+.standby__tick {
+  width: 12px; height: 12px;
+  border: 1px solid #6d7460;
+  background: transparent;
+}
+.standby__row--on .standby__tick {
+  background: var(--grease);
+  border-color: var(--grease);
+  box-shadow: inset 0 0 0 2px var(--board-deep);
+}
+
+.standby__name {
+  font-family: var(--f-label);
+  font-size: 13px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.standby__n { color: #8d947b; font-size: 11px; }
+
+/* ===========================================================================
+   Search — a printed field on the board
+   =========================================================================== */
+
+.field {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--board-edge);
+  background: var(--board-deep);
+  box-shadow: inset 0 1px 3px var(--rail-shadow);
+  color: #dfe4cd;
+  font-family: var(--f-data);
+  font-size: 13px;
+}
+.field::placeholder { color: #757c66; }
+.field:focus { outline: 2px solid var(--grease); outline-offset: -1px; }
+
+/* ===========================================================================
+   Transport — the playing strip's controls
+   =========================================================================== */
+
+.transport {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  background: var(--rail);
+  border-top: 1px solid var(--rail-lip);
+  font-family: var(--f-data);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: #cdd2bb;
+}
+
+.transport__bar {
+  position: relative;
+  flex: 1;
+  height: 3px;
+  background: var(--board-edge);
+}
+/* Scaled, not widened. This bar advances every 250ms for the whole length of a
+   clip, and animating `width` would relayout the transport on every tick —
+   layout thrash on a loop, while audio is playing. transform is compositor-only. */
+.transport__fill {
+  position: absolute;
+  inset: 0 0 0 0;
+  transform-origin: left center;
+  background: var(--grease);
+  transition: transform 220ms linear;
+}
+
+/* ===========================================================================
+   Empty / idle states — a bay with no traffic is normal, not broken
+   =========================================================================== */
+
+.idle {
+  padding: 28px 16px;
+  text-align: center;
+  font-family: var(--f-label);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #6f7660;
+}
+.idle__sub {
+  margin-top: 6px;
+  font-family: var(--f-body);
+  font-size: 13px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: #5d6353;
+}
+
+/* ===========================================================================
+   Motion: one authored moment — a strip filing from live to archive.
+   =========================================================================== */
+
+.file-enter-active { transition: transform 260ms var(--ease-file), opacity 180ms linear; }
+.file-leave-active { transition: transform 220ms var(--ease-file), opacity 160ms linear; position: absolute; width: 100%; }
+.file-enter-from { transform: translateY(-14px); opacity: 0; }
+.file-leave-to   { transform: translateY(10px); opacity: 0; }
+.file-move       { transition: transform 300ms var(--ease-file); }
+
+@media (prefers-reduced-motion: reduce) {
+  .file-enter-active, .file-leave-active, .file-move,
+  .strip, .arm, .transport__fill { transition: none !important; }
+}

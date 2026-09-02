@@ -305,6 +305,37 @@ export function useScannerFeed() {
     })
   }
 
+  /**
+   * One `<audio>` element for the life of the composable, created and ACTIVATED
+   * inside whichever click reaches it first — arming the feed, or reviewing a
+   * filed strip.
+   *
+   * Construction alone does not unlock an element on WebKit: iOS and Safari
+   * bless a media element only when play() or load() is invoked *during* a user
+   * gesture. Without the load() here the first play() happens on a later SSE
+   * tick, outside any gesture, and every clip throws NotAllowedError. Desktop
+   * Chrome and Firefox grant document-level sticky activation from the click,
+   * which is exactly why this failure hides during desktop testing.
+   */
+  function ensureAudio(): void {
+    if (audio) return
+    audio = new Audio()
+    audio.load()
+
+    audio.addEventListener('playing', () => {
+      // Playback actually began; only the total deadline still applies.
+      if (startTimer) { clearTimeout(startTimer); startTimer = null }
+    })
+    audio.addEventListener('ended', () => finishClip(false))
+    audio.addEventListener('error', () => {
+      // disarm's removeAttribute('src') + load() fires an empty-src error on
+      // Chrome. That is teardown, not a clip failure, and advancing on it
+      // would make Stop pull the next clip on its way out.
+      if (nowPlaying.value === null) return
+      finishClip(true)
+    })
+  }
+
   async function arm(): Promise<void> {
     // Re-entry guard. Two rapid Play clicks would otherwise run this twice and
     // orphan the first EventSource — unreachable, never closed, doubling the
@@ -325,23 +356,7 @@ export function useScannerFeed() {
     // and the feed never plays at all. Desktop Chrome and Firefox grant
     // document-level sticky activation from the click, which is exactly why
     // this hides during desktop testing.
-    if (!audio) {
-      audio = new Audio()
-      audio.load()
-
-      audio.addEventListener('playing', () => {
-        // Playback actually began; only the total deadline still applies.
-        if (startTimer) { clearTimeout(startTimer); startTimer = null }
-      })
-      audio.addEventListener('ended', () => finishClip(false))
-      audio.addEventListener('error', () => {
-        // disarm's removeAttribute('src') + load() fires an empty-src error on
-        // Chrome. That is teardown, not a clip failure, and advancing on it
-        // would make Stop pull the next clip on its way out.
-        if (nowPlaying.value === null) return
-        finishClip(true)
-      })
-    }
+    ensureAudio()
 
     // Seed the cursor at arm time, not at mount: starting from MAX(id) means
     // arming the feed starts from now instead of replaying the whole corpus,
@@ -407,11 +422,47 @@ export function useScannerFeed() {
     sync()
   }
 
+  /**
+   * Play one already-filed call on demand, outside the live queue.
+   *
+   * Reviewing a filed strip and listening to the live feed are the same
+   * activity through the same speaker, so they share one element rather than
+   * competing: a second `<audio>` would let the operator hear two calls at
+   * once and would need its own gesture unlock. Review therefore takes the
+   * element over — the live queue keeps filling behind it and resumes at the
+   * next tick once this clip ends.
+   *
+   * Called from a click, so the gesture unlocks the element on first use even
+   * when the feed was never armed.
+   */
+  function review(call: FeedCall): void {
+    ensureAudio()
+    if (!audio) return
+    clearTimers()
+    nowPlaying.value = call
+    audio.src = `/api/recordings/${encodeURIComponent(call.file)}`
+
+    const dur = Number.isFinite(call.dur)
+      ? Math.max(0, Math.min(call.dur, MAX_CLIP_SEC))
+      : 0
+    clipTimer = setTimeout(() => {
+      if (nowPlaying.value?.id !== call.id) return
+      finishClip(true)
+    }, dur * 1000 + CLIP_SLACK_MS)
+
+    audio.play().catch((e: unknown) => {
+      if (nowPlaying.value?.id !== call.id) return
+      if (e instanceof DOMException && e.name === 'AbortError') return
+      error.value = e instanceof Error ? e.message : 'Playback failed'
+      finishClip(true)
+    })
+  }
+
   onUnmounted(disarm)
 
   return {
     followed, heldKeyIds, selected, armed, stalenessSec, settingPersists,
     entries, skipped, failed, nowPlaying, streamOk, radioBusy, tracked, error,
-    load, arm, disarm,
+    load, arm, disarm, review,
   }
 }

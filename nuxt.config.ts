@@ -5,17 +5,21 @@ export default defineNuxtConfig({
   // Self-hosted, downloaded at build time — no CDN, so the console still works
   // on an isolated LAN. Nuxt + Aura set no font-family at all, which lands on
   // the browser default (Times New Roman) and looks like a 1998 intranet.
+  // The Strip Bay's three voices. Barlow Condensed is the printed form label,
+  // Barlow Semi Condensed carries transcript prose at a readable measure, and
+  // Sometype Mono is reserved for measurement — talkgroup ids, clocks,
+  // durations, key ids — never as a costume for "technical".
   fonts: {
     families: [
-      { name: 'Inter', provider: 'google', weights: [400, 500, 600, 700] },
-      { name: 'JetBrains Mono', provider: 'google', weights: [400, 500] },
+      { name: 'Barlow Condensed', provider: 'google', weights: [500, 600, 700] },
+      { name: 'Barlow Semi Condensed', provider: 'google', weights: [400, 500, 600] },
+      { name: 'Sometype Mono', provider: 'google', weights: [400, 500, 700] },
     ],
   },
-  css: [
-    'primeicons/primeicons.css',
-    'primeflex/primeflex.css',
-    '~/assets/css/compat.css', // must come AFTER primeflex
-  ],
+  // PrimeVue's Aura theme, primeflex's grid and the compat shim built the
+  // previous console's look. This surface is a committed world of its own, so
+  // it carries no framework theme; bay.css is the whole design system.
+  css: ['~/assets/css/bay.css'],
   build: {
     transpile: ['primevue'],
   },
