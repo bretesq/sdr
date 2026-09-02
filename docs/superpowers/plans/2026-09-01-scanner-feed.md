@@ -198,7 +198,12 @@ describe('live feed cursor', () => {
     // maximum would replay every call on a talkgroup selected later.
     const all = listRecordings({ limit: 1 }).maxId
     const filtered = listRecordings({ limit: 1, enc: 'full' }).maxId
-    expect(filtered).toBe(all)
+    // `>=`, not `toBe`: the corpus grows every few seconds, so a call
+    // committing between these two queries would fail an equality assertion
+    // through no fault of the code. A maxId computed under the filter could
+    // only be SMALLER than the unfiltered one, so `>=` disproves filtering
+    // with no timing window at all.
+    expect(filtered).toBeGreaterThanOrEqual(all)
   })
 
   it('afterId returns only rows with a greater id', () => {
@@ -326,25 +331,40 @@ describe('live feed talkgroup filter', () => {
 Run: `pnpm exec vitest run server/utils/queries.test.ts -t "live feed"`
 Expected: FAIL — `maxId` is `undefined`, `afterId`/`tgids` are ignored.
 
-- [ ] **Step 3: Add the integer-list helper**
+- [ ] **Step 3: Add the bound talkgroup-IN helper**
 
 In `server/utils/queries.ts`, above `listRecordings`:
 
 ```ts
 /**
- * Render a list of talkgroup ids as a SQL literal list.
+ * A `<column> IN (...)` clause with BOUND parameters, appending the values to
+ * `params` in clause order.
  *
- * Inlined rather than bound as placeholders because the whitelist can hold
- * every talkgroup in the system (preset "all" is 4,163), which overruns the
- * 999-parameter limit on older SQLite builds. Safe because every element is
- * proven to be a finite integer here and the function throws otherwise —
- * nothing string-shaped can reach the query.
+ * Chunked at 500 and OR'd together, which is exactly how `codesFor` (line 99)
+ * handles the same SQLITE_MAX_VARIABLE_NUMBER question. Binding rather than
+ * interpolating is not a precaution against a limit — node:sqlite bundles
+ * SQLite with the Node runtime rather than linking a system library, and 4,163
+ * ids (the "all" preset, the largest whitelist there is) bind without
+ * complaint against the 32766 default. It is so that this function and its
+ * neighbour give the same answer to the same question, and so no interpolation
+ * helper sits here waiting to be generalised to a value class where the input
+ * is not constrained to numeric literals.
+ *
+ * `column` is always a literal from this file, never caller input.
  */
-function intList(values: number[]): string {
-  for (const v of values) {
-    if (!Number.isInteger(v)) throw new TypeError(`Not an integer id: ${String(v)}`)
+function tgidInClause(
+  column: string,
+  ids: number[],
+  params: (string | number)[],
+): string {
+  const CHUNK = 500
+  const groups: string[] = []
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const batch = ids.slice(i, i + CHUNK)
+    groups.push(`${column} IN (${batch.map(() => '?').join(',')})`)
+    params.push(...batch)
   }
-  return values.join(',')
+  return `(${groups.join(' OR ')})`
 }
 ```
 
@@ -385,7 +405,11 @@ In `listRecordings`, add these clauses next to the existing `q.tgid` block:
   if (q.tgids !== undefined) {
     // An empty selection matches nothing. `1 = 0` rather than an early return
     // so `total` and `maxId` below are still computed the same way.
-    where.push(q.tgids.length ? `c.tgid IN (${intList(q.tgids)})` : '1 = 0')
+    //
+    // tgidInClause pushes its values onto `params` as it builds the clause, so
+    // this must stay in the same relative position as every other push — the
+    // builder relies on clause order and param order corresponding.
+    where.push(q.tgids.length ? tgidInClause('c.tgid', q.tgids, params) : '1 = 0')
   }
 
   if (q.afterId !== undefined) {
@@ -398,6 +422,13 @@ Then change the ordering so a feed query pages from the OLDEST pending row.
 Find the `ORDER BY c.start DESC` in the paged query and make it conditional:
 
 ```ts
+  // Read before the paged query so the cursor seed and the page describe the
+  // same instant; a write landing between them would otherwise hand a client a
+  // seed newer than anything it was given.
+  const maxRow = db.prepare(
+    'SELECT COALESCE(MAX(id), 0) AS n FROM calls',
+  ).get() as { n: number }
+
   // Feed queries page from the OLDEST pending row; everything else keeps
   // newest-first.
   //
@@ -427,10 +458,6 @@ Then **replace** everything from `const byFile = codesFor(...)` to the closing b
 it in addition would redeclare `byFile`.
 
 ```ts
-  const maxRow = db.prepare(
-    'SELECT COALESCE(MAX(id), 0) AS n FROM calls',
-  ).get() as { n: number }
-
   const byFile = codesFor(rows.map(r => r.file))
   return {
     rows: rows.map(r => toRecording(r, byFile.get(r.file) ?? [])),
@@ -478,12 +505,20 @@ export default defineEventHandler((event) => {
     // the parameter's presence, not its truthiness — `tgids=` must not read as
     // "no filter".
     tgids: q.tgids !== undefined ? parseTgids(String(q.tgids)) : undefined,
-    afterId: q.afterId ? Number.parseInt(String(q.afterId), 10) : undefined,
+    // Guarded, unlike its neighbours: `?afterId=abc` parses to NaN, and NaN is
+    // not undefined so it would be bound — where node:sqlite binds it as NULL,
+    // `id > NULL` is NULL, and the feed returns zero rows forever with no
+    // error anywhere. A silently dead feed is the exact failure this route
+    // exists to prevent, so a malformed cursor is dropped rather than bound.
+    afterId: Number.isInteger(Number(q.afterId)) ? Number(q.afterId) : undefined,
     code: q.code ? String(q.code) : undefined,
     limit: q.limit ? Number.parseInt(String(q.limit), 10) : undefined,
     offset: q.offset ? Number.parseInt(String(q.offset), 10) : undefined,
   })
 
+  // `total` counts rows matching the filters actually supplied, so on a feed
+  // poll it means "calls committed since the cursor", not "calls in the
+  // corpus". Do not render it as a corpus count without checking for afterId.
   return { success: true, data: rows, total, maxId }
 })
 ```
@@ -657,7 +692,7 @@ result, so a later widening of the return shape fails rather than leaks."
 - Test: `server/utils/queries.test.ts`
 
 **Interfaces:**
-- Consumes: `intList` (Task 2), `heldKeyIds` (Task 3), `whitelistPath()` from `server/utils/paths.ts`, `isRadioBusy()` from `server/utils/processes.ts`, `sessionStore` from `server/utils/session.ts`.
+- Consumes: `tgidInClause` (Task 2), `heldKeyIds` (Task 3), `whitelistPath()` from `server/utils/paths.ts`, `isRadioBusy()` from `server/utils/processes.ts`, `sessionStore` from `server/utils/session.ts`.
 - Produces: `followedTalkgroups(sinceSec?: number): FollowedTalkgroup[]` and the route's JSON shape `{ talkgroups, heldKeyIds, radioBusy, tracked, whitelistMtime }`. Used by Task 6.
 
 - [ ] **Step 1: Write the failing test**
@@ -775,11 +810,12 @@ export function followedTalkgroups(sinceSec = 6 * 3600): FollowedTalkgroup[] {
   if (!ids.length) return []
 
   const db = getDb()
-  const list = intList(ids)
 
+  const metaParams: (string | number)[] = []
+  const metaWhere = tgidInClause('tgid', ids, metaParams)
   const meta = db.prepare(
-    `SELECT tgid, alpha, description, cat FROM talkgroups WHERE tgid IN (${list})`,
-  ).all() as unknown as Array<{
+    `SELECT tgid, alpha, description, cat FROM talkgroups WHERE ${metaWhere}`,
+  ).all(...metaParams) as unknown as Array<{
     tgid: number
     alpha: string | null
     description: string | null
@@ -788,10 +824,13 @@ export function followedTalkgroups(sinceSec = 6 * 3600): FollowedTalkgroup[] {
   const byTgid = new Map(meta.map(m => [m.tgid, m]))
 
   const cutoff = Math.floor(Date.now() / 1000) - sinceSec
+  // cutoff is pushed first so the bound order matches the clause order below.
+  const countParams: (string | number)[] = [cutoff]
+  const countWhere = tgidInClause('tgid', ids, countParams)
   const counts = db.prepare(
     `SELECT tgid, COUNT(*) AS n FROM calls
-      WHERE start > ? AND tgid IN (${list}) GROUP BY tgid`,
-  ).all(cutoff) as unknown as Array<{ tgid: number, n: number }>
+      WHERE start > ? AND ${countWhere} GROUP BY tgid`,
+  ).all(...countParams) as unknown as Array<{ tgid: number, n: number }>
   const countByTgid = new Map(counts.map(c => [c.tgid, c.n]))
 
   return ids
