@@ -66,10 +66,22 @@ cmd_start() {
   # recordings/ is deliberately NOT mounted: audio reaches the server as an HTTP
   # upload, so the container never touches the corpus. It therefore cannot leave
   # root-owned .txt files behind for the (non-root) watcher to trip over.
-  docker run -d --name "$NAME" --restart unless-stopped --gpus all \
+  #
+  # --init: without it, whisper-server runs as PID 1 of the container's PID
+  # namespace, and the kernel gives PID 1 special signal immunity — an
+  # unhandled SIGTERM/SIGSTOP/etc. sent to it from inside that namespace is
+  # silently discarded unless the process installed a handler (man 7
+  # pid_namespaces). whisper-server installs none. That immunity is exactly
+  # what turned a wedged server into a 26-hour outage: `docker restart`
+  # couldn't stop it either ("PID ... is zombie and can not be killed"), and
+  # `--restart unless-stopped` never fired because the container never exited.
+  # tini (via --init) becomes PID 1 instead, forwards signals properly, and
+  # reaps zombies, so whisper-server (now PID 2) is an ordinary process again.
+  docker run -d --name "$NAME" --restart unless-stopped --gpus all --init \
     -v "$BINDIR:/opt/whisper/bin:ro" \
     -v "$R/models:/models:ro" \
     -p "127.0.0.1:$PORT:$PORT" \
+    -e STT_PORT="$PORT" \
     "$IMAGE" \
     /opt/whisper/bin/whisper-server -m "/models/$MODEL" \
       --port "$PORT" --host 0.0.0.0 --language en >/dev/null

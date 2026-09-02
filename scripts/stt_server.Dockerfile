@@ -23,3 +23,26 @@ RUN apt-get update -qq \
  && rm -rf /var/lib/apt/lists/*
 
 ENV LD_LIBRARY_PATH=/opt/whisper/bin
+
+# The probe payload. Small, fixed, and already in the repo, so the healthcheck
+# costs the GPU almost nothing and never depends on the corpus.
+COPY silence.wav /opt/hc/silence.wav
+
+ENV STT_PORT=8081
+
+# A liveness probe has to exercise inference, not connectivity.
+#
+# A wedged whisper-server answers GET / in 0.4ms while hanging every
+# transcription forever. That exact state ran here for 26 hours: `--restart
+# unless-stopped` never fired because the container never exited, and Docker
+# could not have restarted it anyway ("PID ... is zombie and can not be
+# killed"). Only a probe that asks for real work can tell the two apart.
+#
+# 25s of curl inside a 30s timeout: a healthy GPU transcribes this clip in
+# ~0.2s, and the CPU fallback path takes ~123s, so anything near the ceiling is
+# already a fault. start-period covers model load on a cold start.
+HEALTHCHECK --interval=60s --timeout=30s --retries=2 --start-period=90s \
+  CMD curl -sf --max-time 25 -o /dev/null \
+      -F file=@/opt/hc/silence.wav \
+      -F response_format=json \
+      "http://127.0.0.1:${STT_PORT}/inference" || exit 1
