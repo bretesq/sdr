@@ -85,10 +85,62 @@ def check(key5: list, paths: list) -> dict:
     return {'idle': idle, 'plausible': plausible, 'total': total, 'mis': len(mis)}
 
 
+def scan(base: list, paths: list, span: int) -> int:
+    """Try `base` and its low-byte neighbours against harvested ciphertext.
+
+    Worth doing before any brute force. Two of the three keys recovered from
+    this system are sequential and near-zero entropy:
+
+        keyid 0x1 -> 00 00 00 07 00
+        keyid 0x8 -> 00 00 00 07 01
+
+    That is a provisioning pattern, not a weakness of ADP, and it means a
+    neighbouring value may simply be the answer. Each candidate costs an RC4
+    setup per MI -- milliseconds -- against roughly 25 minutes of GPU for a full
+    2^40 search, so the scan is close to free even when it finds nothing.
+
+    A hit here is a hypothesis, not a conclusion: re-run without --scan to see
+    it against the one-bit-off control before trusting it.
+    """
+    print(f'scanning {2 * span + 1} candidates around '
+          f'{" ".join("%02x" % b for b in base)}\n')
+    hits = []
+    for delta in range(-span, span + 1):
+        low = base[4] + delta
+        if not 0 <= low <= 0xFF:
+            continue
+        cand = base[:4] + [low]
+        r = check(cand, paths)
+        kh = ' '.join('%02x' % b for b in cand)
+        pct = 100 * r['plausible'] / r['total'] if r['total'] else 0
+        mark = ''
+        # A wrong key scores ~0: IMBE codewords are a vanishing fraction of the
+        # 2^88 possible 11-byte values, so anything above a couple of percent is
+        # worth a closer look rather than a threshold to trust blindly.
+        if r['plausible'] > 0:
+            mark = '   <-- CANDIDATE'
+            hits.append((cand, r))
+        print(f'  {kh}   idle {r["idle"]:>3}   plausible {r["plausible"]:>3}/'
+              f'{r["total"]} ({pct:.0f}%){mark}')
+    print()
+    if hits:
+        print(f'{len(hits)} candidate(s) scored above zero. Verify with:')
+        for cand, _ in hits:
+            print(f'  adp_verify_key.py {" ".join("%02x" % b for b in cand)} --files ...')
+        return 0
+    print('No candidate scored above zero. The key is not in this range; '
+          'a full search is needed.')
+    return 2
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('key', nargs='+', help='5 key bytes in hex')
     ap.add_argument('--files', nargs='+', required=True)
+    ap.add_argument('--scan', type=int, metavar='N', default=None,
+                    help='try the key and its N low-byte neighbours in each '
+                         'direction, instead of verifying one key. Use before '
+                         'committing a GPU to a new keyid.')
     a = ap.parse_args()
 
     key5 = [int(x, 16) for x in a.key]
@@ -99,6 +151,9 @@ def main() -> int:
     if not paths:
         sys.stderr.write('no superframe files matched\n')
         return 1
+
+    if a.scan is not None:
+        return scan(key5, paths, a.scan)
 
     good = check(key5, paths)
     # Same key with the last byte flipped: the control. Anything a correct key
