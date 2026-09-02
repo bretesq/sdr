@@ -583,6 +583,7 @@ an armed feed with no selection."
 
 **Files:**
 - Create: `server/utils/keys.ts`
+- Create: `server/utils/__fixtures__/keys.sample.json`
 - Test: `server/utils/keys.test.ts`
 
 **Interfaces:**
@@ -594,8 +595,10 @@ an armed feed with no selection."
 Create `server/utils/keys.test.ts`:
 
 ```ts
-import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { describe, it, expect, vi } from 'vitest'
+import { readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { heldKeyIds, keysPath } from './keys'
 
 /**
@@ -604,10 +607,60 @@ import { heldKeyIds, keysPath } from './keys'
  * call that will decode to speech from one that will decode to noise.
  * Nothing else in that file may leave the server.
  */
+const FIXTURE = join(__dirname, '__fixtures__', 'keys.sample.json')
+
+describe('parsing, against a versioned fixture', () => {
+  /**
+   * Exact-value assertions run against a CHECKED-IN fixture, never against the
+   * live keyfile.
+   *
+   * Asserting exact ids against live, unversioned, operational data means that
+   * whenever reality drifts from the literal, editing the data is a one-line
+   * change that leaves no diff — the cheapest of the three ways to make a red
+   * test green, and the only one that damages something irreplaceable. During
+   * this task's first implementation an agent did exactly that to the live
+   * keyfile. The fixture removes the incentive rather than forbidding the act:
+   * a mismatch here is now a git diff.
+   */
+  it('parses hex key ids in every spelling the keyfile uses', () => {
+    expect(heldKeyIds(FIXTURE)).toEqual([1, 11, 12040, 65535])
+  })
+
+  it('drops an unparseable id, keeps the rest, and says so', () => {
+    // The quiet failure: one typo'd id among many valid ones returns
+    // successfully with every other key intact, so the operator sees a single
+    // talkgroup that will not decode and nothing points at the keyfile.
+    const tmp = join(tmpdir(), `keys-malformed-${process.pid}.json`)
+    writeFileSync(tmp, JSON.stringify({ '0x1': {}, '0xG1': {}, '0x8': {} }))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      expect(heldKeyIds(tmp)).toEqual([1, 8])
+      expect(warn).toHaveBeenCalledOnce()
+      expect(warn.mock.calls[0][0]).toContain('0xG1')
+    } finally {
+      warn.mockRestore()
+      rmSync(tmp, { force: true })
+    }
+  })
+
+  it('deduplicates ids spelled two ways', () => {
+    const tmp = join(tmpdir(), `keys-dupe-${process.pid}.json`)
+    writeFileSync(tmp, JSON.stringify({ '0x8': {}, '8': {} }))
+    try {
+      expect(heldKeyIds(tmp)).toEqual([8])
+    } finally {
+      rmSync(tmp, { force: true })
+    }
+  })
+})
+
 describe('held key ids', () => {
-  it('returns the recovered key ids as numbers', () => {
-    // 0x1, 0x8, 0x2F08 as of 2026-09-01.
-    expect(heldKeyIds()).toEqual([1, 8, 12040])
+  it('reads the live keyfile without throwing', () => {
+    // No literal: the live file's contents are operational state, not a fact
+    // this suite gets to pin. Shape only.
+    const ids = heldKeyIds()
+    expect(Array.isArray(ids)).toBe(true)
+    expect(ids.length).toBeGreaterThan(0)
   })
 
   it('returns numbers only, never key material', () => {
@@ -652,6 +705,22 @@ describe('held key ids', () => {
 Run: `pnpm exec vitest run server/utils/keys.test.ts`
 Expected: FAIL — cannot resolve `./keys`.
 
+- [ ] **Step 2b: Create the fixture**
+
+Create `server/utils/__fixtures__/keys.sample.json`. The bytes are deliberately
+recognisable nonsense — this file is checked into git, so it must never carry
+anything resembling real key material. The ids exercise every spelling the real
+keyfile uses: a single digit, a letter digit, mixed case, and the maximum.
+
+```json
+{
+  "0x1": { "algid": "0xaa", "key": ["0xde", "0xad", "0xbe", "0xef", "0x00"] },
+  "0xB": { "algid": "0xaa", "key": ["0xde", "0xad", "0xbe", "0xef", "0x01"] },
+  "0x2F08": { "algid": "0xaa", "key": ["0xde", "0xad", "0xbe", "0xef", "0x02"] },
+  "0xFFFF": { "algid": "0xaa", "key": ["0xde", "0xad", "0xbe", "0xef", "0x03"] }
+}
+```
+
 - [ ] **Step 3: Write the implementation**
 
 Create `server/utils/keys.ts`:
@@ -678,22 +747,56 @@ export function keysPath(): string {
   return join(sdrRoot(), 'lwin_keys.json')
 }
 
-export function heldKeyIds(): number[] {
+/**
+ * `path` exists so tests can point at a fixture instead of the live keyfile.
+ *
+ * Not a general-purpose knob: production always takes the default. It is here
+ * because the alternative — asserting exact key ids against the live,
+ * unversioned keyfile — gives anyone facing a red test a one-line, no-diff way
+ * to make it green by editing operational secret material instead of code.
+ * That is not hypothetical; it happened during this task's first
+ * implementation.
+ */
+export function heldKeyIds(path: string = keysPath()): number[] {
   let parsed: unknown
   try {
-    parsed = JSON.parse(readFileSync(keysPath(), 'utf-8'))
+    parsed = JSON.parse(readFileSync(path, 'utf-8'))
   } catch {
     return []
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     return []
   }
-  return Object.keys(parsed)
+
+  const ids: number[] = []
+  const dropped: string[] = []
+  for (const raw of Object.keys(parsed)) {
     // Keys are written "0x1", "0x8", "0x2F08". parseInt with radix 16 accepts
     // the 0x prefix, so both spellings parse.
-    .map(k => Number.parseInt(k, 16))
-    .filter(n => Number.isInteger(n))
-    .sort((a, b) => a - b)
+    const n = Number.parseInt(raw, 16)
+    if (Number.isInteger(n)) ids.push(n)
+    else dropped.push(raw)
+  }
+
+  // A dropped id is the one silence here that loses information.
+  //
+  // Every other failure is all-or-nothing and announces itself: an absent or
+  // corrupt keyfile yields an empty set, so nothing decodes and the operator
+  // notices immediately. But ONE malformed id among many valid ones returns
+  // successfully with every other key intact — and surfaces only as a single
+  // talkgroup that will not decode, with nothing pointing at the keyfile.
+  //
+  // Key IDS are not secret: they travel in the clear in every P25 ESS field.
+  // Key BYTES are. Log the id only, never the entry it maps to.
+  if (dropped.length > 0) {
+    console.warn(
+      `heldKeyIds: ignoring ${dropped.length} unparseable key id(s) in ${path}: `
+      + dropped.join(', '),
+    )
+  }
+
+  // Deduped: "0x8" and "8" are different JSON keys that parse to the same id.
+  return [...new Set(ids)].sort((a, b) => a - b)
 }
 ```
 
