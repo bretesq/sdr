@@ -2114,6 +2114,12 @@ Replace the `<template>` block of `components/ScannerFeed.vue`:
         waiting for traffic…
       </div>
       <Tag v-if="skipped > 0" severity="secondary" :value="`${skipped} skipped`" />
+      <!-- Distinct from `skipped` on purpose. `skipped` means the staleness
+           bound dropped a call before it could play, so a rising count says
+           the bound is too tight. `failed` means playback itself broke on a
+           clip the feed had already chosen. Folding them together would hide
+           which of the two is actually happening. -->
+      <Tag v-if="failed > 0" severity="warn" :value="`${failed} failed`" />
     </div>
 
     <div v-if="armed" class="border-top-1 surface-border pt-2">
@@ -2151,8 +2157,8 @@ import { computed, onMounted } from 'vue'
 
 const feed = useScannerFeed()
 const {
-  selected, armed, stalenessSec, settingPersists, entries, skipped, nowPlaying,
-  streamOk, error, arm, disarm,
+  selected, armed, stalenessSec, settingPersists, entries, skipped, failed,
+  nowPlaying, streamOk, error, arm, disarm,
 } = feed
 
 // MultiSelect needs a flat label; keeping the activity count in it makes the
@@ -2203,6 +2209,7 @@ With `pnpm dev` running and a capture session live, open `http://localhost:3000`
 3. Selecting talkgroups and pressing Play produces audio; the queue list below shows pending calls.
 4. `Drop after` changes persist across a page reload. In a private window it should instead show "won't persist in this browser" beneath the control.
 5. Set `Drop after` to its 10 s minimum during a busy period and confirm the `skipped` tag appears and increments.
+5b. If a clip fails to play, confirm a separate `failed` tag appears — the two counters must stay distinguishable, since one means the staleness bound is too tight and the other means playback broke.
 6. If an unkeyed encrypted call arrives, it appears greyed with a lock icon, its keyid in hex, and `crack target` — and is not played. To confirm the rendering without waiting, temporarily select a talkgroup known to carry keyid `0x1320`.
 
 - [ ] **Step 5: Lint, typecheck, full suite**
