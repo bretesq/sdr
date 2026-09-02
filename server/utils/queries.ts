@@ -199,19 +199,34 @@ function ftsQuery(search: string): string {
 }
 
 /**
- * Render a list of talkgroup ids as a SQL literal list.
+ * A `<column> IN (...)` clause with BOUND parameters, appending the values to
+ * `params` in clause order.
  *
- * Inlined rather than bound as placeholders because the whitelist can hold
- * every talkgroup in the system (preset "all" is 4,163), which overruns the
- * 999-parameter limit on older SQLite builds. Safe because every element is
- * proven to be a finite integer here and the function throws otherwise —
- * nothing string-shaped can reach the query.
+ * Chunked at 500 and OR'd together, which is exactly how `codesFor` (line 99)
+ * handles the same SQLITE_MAX_VARIABLE_NUMBER question. Binding rather than
+ * interpolating is not a precaution against a limit — node:sqlite bundles
+ * SQLite with the Node runtime rather than linking a system library, and 4,163
+ * ids (the "all" preset, the largest whitelist there is) bind without
+ * complaint against the 32766 default. It is so that this function and its
+ * neighbour give the same answer to the same question, and so no interpolation
+ * helper sits here waiting to be generalised to a value class where the input
+ * is not constrained to numeric literals.
+ *
+ * `column` is always a literal from this file, never caller input.
  */
-function intList(values: number[]): string {
-  for (const v of values) {
-    if (!Number.isInteger(v)) throw new TypeError(`Not an integer id: ${String(v)}`)
+function tgidInClause(
+  column: string,
+  ids: number[],
+  params: (string | number)[],
+): string {
+  const CHUNK = 500
+  const groups: string[] = []
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const batch = ids.slice(i, i + CHUNK)
+    groups.push(`${column} IN (${batch.map(() => '?').join(',')})`)
+    params.push(...batch)
   }
-  return values.join(',')
+  return `(${groups.join(' OR ')})`
 }
 
 export function listRecordings(q: RecordingQuery = {}): { rows: Recording[], total: number, maxId: number } {
@@ -227,7 +242,11 @@ export function listRecordings(q: RecordingQuery = {}): { rows: Recording[], tot
   if (q.tgids !== undefined) {
     // An empty selection matches nothing. `1 = 0` rather than an early return
     // so `total` and `maxId` below are still computed the same way.
-    where.push(q.tgids.length ? `c.tgid IN (${intList(q.tgids)})` : '1 = 0')
+    //
+    // tgidInClause pushes its values onto `params` as it builds the clause, so
+    // this must stay in the same relative position as every other push — the
+    // builder relies on clause order and param order corresponding.
+    where.push(q.tgids.length ? tgidInClause('c.tgid', q.tgids, params) : '1 = 0')
   }
 
   if (q.afterId !== undefined) {
@@ -280,6 +299,13 @@ export function listRecordings(q: RecordingQuery = {}): { rows: Recording[], tot
   const limit = q.limit ?? 5000
   const offset = q.offset ?? 0
 
+  // Read before the paged query so the cursor seed and the page describe the
+  // same instant; a write landing between them would otherwise hand a client a
+  // seed newer than anything it was given.
+  const maxRow = db.prepare(
+    'SELECT COALESCE(MAX(id), 0) AS n FROM calls',
+  ).get() as { n: number }
+
   // Feed queries page from the OLDEST pending row; everything else keeps
   // newest-first.
   //
@@ -302,10 +328,6 @@ export function listRecordings(q: RecordingQuery = {}): { rows: Recording[], tot
   const rows = db.prepare(
     `${CALL_SELECT} ${clause} ORDER BY ${order} LIMIT ? OFFSET ?`,
   ).all(...params, limit, offset) as unknown as CallRow[]
-
-  const maxRow = db.prepare(
-    'SELECT COALESCE(MAX(id), 0) AS n FROM calls',
-  ).get() as { n: number }
 
   const byFile = codesFor(rows.map(r => r.file))
   return {

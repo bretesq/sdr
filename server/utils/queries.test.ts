@@ -293,7 +293,12 @@ describe('live feed cursor', () => {
     // maximum would replay every call on a talkgroup selected later.
     const all = listRecordings({ limit: 1 }).maxId
     const filtered = listRecordings({ limit: 1, enc: 'full' }).maxId
-    expect(filtered).toBe(all)
+    // `>=`, not `toBe`: the corpus grows every few seconds, so a call
+    // committing between these two queries would fail an equality assertion
+    // through no fault of the code. A maxId computed under the filter could
+    // only be SMALLER than the unfiltered one, so `>=` disproves filtering
+    // with no timing window at all.
+    expect(filtered).toBeGreaterThanOrEqual(all)
   })
 
   it('afterId returns only rows with a greater id', () => {

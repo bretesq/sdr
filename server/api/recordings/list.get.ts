@@ -22,11 +22,19 @@ export default defineEventHandler((event) => {
     // the parameter's presence, not its truthiness — `tgids=` must not read as
     // "no filter".
     tgids: q.tgids !== undefined ? parseTgids(String(q.tgids)) : undefined,
-    afterId: q.afterId ? Number.parseInt(String(q.afterId), 10) : undefined,
+    // Guarded, unlike its neighbours: `?afterId=abc` parses to NaN, and NaN is
+    // not undefined so it would be bound — where node:sqlite binds it as NULL,
+    // `id > NULL` is NULL, and the feed returns zero rows forever with no
+    // error anywhere. A silently dead feed is the exact failure this route
+    // exists to prevent, so a malformed cursor is dropped rather than bound.
+    afterId: Number.isInteger(Number(q.afterId)) ? Number(q.afterId) : undefined,
     code: q.code ? String(q.code) : undefined,
     limit: q.limit ? Number.parseInt(String(q.limit), 10) : undefined,
     offset: q.offset ? Number.parseInt(String(q.offset), 10) : undefined,
   })
 
+  // `total` counts rows matching the filters actually supplied, so on a feed
+  // poll it means "calls committed since the cursor", not "calls in the
+  // corpus". Do not render it as a corpus count without checking for afterId.
   return { success: true, data: rows, total, maxId }
 })
