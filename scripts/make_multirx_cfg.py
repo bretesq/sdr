@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 # ---------------------------------------------------------------------------
@@ -178,7 +179,7 @@ def widest_offset(leg: dict) -> float:
     return max(abs(f - leg['centre']) for f in leg['voice'] + leg['control'])
 
 
-def build(legs: list[dict], *, whitelist: str, cc_whitelist: str,
+def build(legs: list[dict], *, crypt_keys: str = '', whitelist: str, cc_whitelist: str,
           tgid_tags: str = '', base_port: int = 23460, nac: str = '0x1bd',
           sysname: str = 'LWIN-BR', usable_bw: float = 0.85,
           crypt_behavior: int = 1) -> dict:
@@ -198,6 +199,11 @@ def build(legs: list[dict], *, whitelist: str, cc_whitelist: str,
     devices, channels, port = [], [], base_port
 
     def chan(name, radio, freq, wl, port, if_rate, lo, hi):
+        # Decryption keys go on VOICE channels only: the control channel carries
+        # no voice, so loading them there would do nothing. Empty string means
+        # "no keys", which is op25's own default and leaves encrypted bursts
+        # silenced.
+        keys = crypt_keys if name.startswith('VC') else ''
         return {
             'name': name,
             'device': radio,
@@ -222,7 +228,7 @@ def build(legs: list[dict], *, whitelist: str, cc_whitelist: str,
             'enable_analog': 'off',
             'whitelist': wl,
             'blacklist': '',
-            'crypt_keys': '',
+            'crypt_keys': keys,
             'crypt_behavior': crypt_behavior,
         }
 
@@ -374,6 +380,12 @@ def main() -> int:
     ap.add_argument('--base-port', type=int, default=23460)
     ap.add_argument('--n-voice-700', type=int)
     ap.add_argument('--n-voice-800', type=int)
+    ap.add_argument('--crypt-keys', default=None,
+                    help='op25 crypt_keys JSON for the voice channels. Defaults '
+                         'to lwin_keys.json when it exists, else no keys. A '
+                         'WRONG key does not fail safe: RC4 with the wrong key '
+                         'yields random plaintext, so op25 decodes loud garbage '
+                         'instead of silencing the burst.')
     ap.add_argument('-o', '--out', required=True)
     a = ap.parse_args()
 
@@ -387,7 +399,21 @@ def main() -> int:
             leg['n_voice'] = override
         legs.append(leg)
 
-    cfg = build(legs, whitelist=a.whitelist, cc_whitelist=a.cc_whitelist,
+    # Defaults to lwin_keys.json when present. Explicit --crypt-keys '' opts
+    # out, and a missing file is silently no-keys, which is the safe direction:
+    # without it op25 leaves encrypted bursts silenced, as it does today.
+    keys = a.crypt_keys
+    if keys is None:
+        # This script lives in scripts/, so the tree root is its parent. Not a
+        # hardcoded path: the repo is checked out in worktrees too.
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        default_keys = os.path.join(root, 'lwin_keys.json')
+        keys = default_keys if os.path.exists(default_keys) else ''
+    if keys:
+        sys.stderr.write('make_multirx_cfg: voice channels reference %s\n' % keys)
+
+    cfg = build(legs, crypt_keys=keys,
+                whitelist=a.whitelist, cc_whitelist=a.cc_whitelist,
                 tgid_tags=a.tgid_tags, base_port=a.base_port)
     validate(cfg, legs)
 

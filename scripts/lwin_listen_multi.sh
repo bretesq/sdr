@@ -143,6 +143,23 @@ PY
 
 mkdir -p "$R/recordings" "$R/results"
 [ "$SECS" -eq 0 ] 2>/dev/null && RUN=99999 || RUN=$SECS
+
+# ROTATE, don't truncate. This line used to be `: > "$LOG"`, and at -v 10 that
+# file is the ONLY record of CIPHERTXT and ESS lines -- encrypted traffic leaves
+# no usable recording, because op25 -n silences it. So starting a session to
+# listen destroyed every previous session's evidence. One capture was lost that
+# way, including the only ciphertext for keyid 0x22.
+#
+# Kept here rather than beside the `script` invocation below: script(1) also
+# truncates, so rotation has to happen before ANY writer touches the file, and a
+# rotation placed later simply finds it already empty.
+if [ -s "$LOG" ]; then
+  ROTATED="$LOG.$(date -r "$LOG" +%Y%m%d-%H%M%S 2>/dev/null || date +%Y%m%d-%H%M%S)"
+  mv "$LOG" "$ROTATED"
+  echo "rotated previous log -> $(basename "$ROTATED")"
+  # Keep the 20 most recent; at ~24 MB/hour this is bounded but generous.
+  ls -1t "$LOG".2* 2>/dev/null | tail -n +21 | xargs -r rm -f
+fi
 : > "$LOG"
 
 REC_PIDS=()
@@ -210,6 +227,7 @@ VERBOSITY=2
 [ "$CENSUS" -eq 1 ] && VERBOSITY=10
 [ "$ESS" -eq 1 ] && VERBOSITY=10
 OP25_CMD="cd $A && exec python3 multi_rx.py -c $CFG -v $VERBOSITY"
+
 script -q -f -c "$OP25_CMD" "$LOG" >/dev/null 2>&1 &
 OP25_PID=$!
 

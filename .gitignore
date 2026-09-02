@@ -45,6 +45,10 @@ models/
 # NEW log name leaked by default; op25_if2.log reached 23 srcaddr entries that
 # way. Ignore the whole class instead.
 results/*.log
+# Rotated session logs. `results/*.log` does not match op25_multi.log.<stamp>,
+# and these carry srcaddr -- real 24-bit radio unit IDs -- in a public repo that
+# has already needed a history rewrite to purge them once.
+/results/*.log.*
 !results/fm_sweep.log
 !results/wide_sweep.log
 !results/rtl433_live.log
@@ -61,6 +65,13 @@ results/op25_record.log
 
 # Secrets and credentials
 lwin_keys.json
+# Recovered key material. Anchored paths, not a bare glob: this repo has
+# already had to rewrite history once to purge radio unit IDs, and it is
+# public. Keys live outside the tree in ~/rtl-keys; these rules are the
+# second line of defence, not the first.
+/results/adp_key_*
+/results/adp_triples.json
+/results/adp_known_pair.txt
 *.key
 *.pem
 *.env

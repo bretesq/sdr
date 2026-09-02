@@ -341,5 +341,34 @@ class TestValidationCatchesRealMistakes(unittest.TestCase):
             self._cfg([leg])
 
 
+class CryptKeys(unittest.TestCase):
+    """Decryption keys belong on voice channels only.
+
+    The control channel carries no voice, so keys there would do nothing. This
+    also pins the generated-file behaviour: lwin_both.json is REGENERATED on
+    every launch, so hand-editing it to add keys is silently undone — the
+    generator is the only place the setting survives.
+    """
+
+    def cfg(self, **kw):
+        return M.build([M.LEG_700, M.LEG_800],
+                       whitelist='/tmp/wl.txt', cc_whitelist='/tmp/cc.txt',
+                       tgid_tags='', base_port=23460, **kw)
+
+    def test_voice_channels_get_the_keys_and_the_control_channel_does_not(self):
+        cfg = self.cfg(crypt_keys='/tmp/keys.json')
+        for ch in cfg['channels']:
+            if ch['name'].startswith('VC'):
+                self.assertEqual(ch['crypt_keys'], '/tmp/keys.json', ch['name'])
+            else:
+                self.assertEqual(ch['crypt_keys'], '', ch['name'])
+
+    def test_default_is_no_keys(self):
+        # Absent keys leave encrypted bursts silenced, which is op25's own
+        # default and the safe direction.
+        for ch in self.cfg()['channels']:
+            self.assertEqual(ch['crypt_keys'], '')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -72,9 +72,10 @@ static bool g_remote_found = false;
 
 // One key per thread. key5 is derived from the global index.
 // k is the global key index (uint64) split into 5 bytes.
-__global__ void brute_kernel(const uint8_t *mi8, const uint8_t *ct11, const uint8_t *pt11,
-                              uint64_t start, uint64_t count, int offset,
-                              uint64_t *out_hits, uint8_t *out_key) {
+__global__ void brute_kernel(const uint8_t *mi8, const uint8_t *ct_all, const uint8_t *pt11,
+                              int ncand, const int *offsets,
+                              uint64_t start, uint64_t count,
+                              uint64_t *out_hits, uint8_t *out_key, int *out_cand) {
     uint64_t idx = (uint64_t)(blockIdx.x * blockDim.x) + threadIdx.x;
     // Stride across the whole [start, start+count) so each thread covers a
     // strided slice; this keeps load balanced without dynamic scheduling.
@@ -147,12 +148,24 @@ __global__ void brute_kernel(const uint8_t *mi8, const uint8_t *ct11, const uint
             out_byte = (uint8_t)((S[idx2 >> 2] >> ((idx2 & 3) * 8)) & 0xFF);
             ks[n] = out_byte;
         }
-        const int OFFSET = offset; // LDU2 frame position offset, set by host
-        bool ok = true;
-        for (int n = 0; n < 11; ++n) {
-            if ((ct11[n] ^ ks[OFFSET + n]) != pt11[n]) { ok = false; break; }
+        // Every candidate codeword of this superframe is tested against the SAME
+        // keystream. The PRGA above already runs to byte 469 regardless of which
+        // offset we want -- the RC4 state at offset 267 can only be reached by
+        // stepping through it -- so each extra candidate costs 11 byte-compares
+        // against ks[] and nothing else. Measured: a search at offset 267 and one
+        // at offset 458 take the same time to within noise (4.16 s vs 4.00 s per
+        // 400M keys), which is what makes 18 candidates per pass free.
+        int hit_cand = -1;
+        for (int c = 0; c < ncand && hit_cand < 0; ++c) {
+            const uint8_t *ctc = ct_all + (size_t)c * 11;
+            const int OFFSET = offsets[c];
+            bool ok = true;
+            for (int n = 0; n < 11; ++n) {
+                if ((ctc[n] ^ ks[OFFSET + n]) != pt11[n]) { ok = false; break; }
+            }
+            if (ok) hit_cand = c;
         }
-        if (ok) {
+        if (hit_cand >= 0) {
             // Record hit: write global index to out_hits, key bytes to out_key.
             // First-hit-wins via atomic CAS on out_hits[0].
             uint64_t old = out_hits[0];
@@ -160,6 +173,7 @@ __global__ void brute_kernel(const uint8_t *mi8, const uint8_t *ct11, const uint
                 if (atomicCAS((unsigned long long *)&out_hits[0], 0, (unsigned long long)k) == 0) {
                     uint64_t v = k;
                     for (int i = 0; i < 5; ++i) { out_key[i] = (uint8_t)(v & 0xFF); v >>= 8; }
+                    *out_cand = hit_cand;   // which codeword's plaintext guess was right
                 }
             }
             g_stopFlag = 1;
@@ -227,7 +241,17 @@ static void poll_found_file(std::string path, cudaStream_t stream, std::atomic<b
 int main(int argc, char **argv) {
     if (argc < 4) {
         fprintf(stderr,
-            "usage: %s <mi_9bytes_hex> <ct_11bytes_hex> <pt_11bytes_hex> [nblocks] [--position P] [--start N] [--count M] [--found-file PATH]\n", argv[0]);
+            "usage: %s <mi_9bytes_hex> <ct_11bytes_hex> <pt_11bytes_hex> [nblocks]\n"
+            "         [--frame ldu1|ldu2] [--position P] [--pairs FILE]\n"
+            "         [--start N] [--count M] [--found-file PATH] [--progress]\n"
+            "\n"
+            "  --pairs FILE  test MANY codewords of one superframe in a single pass.\n"
+            "                Lines: '<ldu1|ldu2> <position 0..8> <11 hex bytes>'.\n"
+            "                All share the MI and PT given on the command line. The\n"
+            "                RC4 keystream is built once per key regardless of which\n"
+            "                offset is wanted, so each extra codeword is ~free: 18\n"
+            "                candidates cost what 1 does. Positional <ct> is then a\n"
+            "                placeholder and is ignored.\n", argv[0]);
         return 1;
     }
     std::vector<uint8_t> mi_v = hex_to_bytes(argv[1]);
@@ -245,6 +269,7 @@ int main(int argc, char **argv) {
     uint64_t count = 1ULL << 40;
     std::string found_file;
     bool found_file_set = false;
+    std::string pairs_file;
     bool progress_on = false;
     double throughput = 840000.0; // effective keys/s (full-shard wopr measurement: 1.1B/1305s)
     int i = 4;
@@ -275,6 +300,9 @@ int main(int argc, char **argv) {
             if (i + 1 >= argc) { fprintf(stderr, "--found-file needs a value\n"); return 1; }
             found_file = argv[++i];
             found_file_set = true;
+        } else if (a == "--pairs") {
+            if (i + 1 >= argc) { fprintf(stderr, "--pairs needs a value\n"); return 1; }
+            pairs_file = argv[++i];
         } else if (a == "--progress") {
             progress_on = true;
         } else if (a == "--throughput") {
@@ -298,10 +326,76 @@ int main(int argc, char **argv) {
     // in prepare() each frame).
     //   LDU1: 267, 278, 289, 300, 311, 322, 333, 344, 357
     //   LDU2: 368, 379, 390, 401, 412, 423, 434, 445, 458
-    const int base = (frame == "ldu1") ? 0 : 101;
-    const int offset = base + position * 11 + 267 + (position >= 8 ? 2 : 0);
-    fprintf(stderr, "%s position %d -> keystream offset %d\n",
-            frame.c_str(), position, offset);
+    auto offset_of = [](const std::string &fr, int pos) {
+        const int b = (fr == "ldu1") ? 0 : 101;
+        return b + pos * 11 + 267 + (pos >= 8 ? 2 : 0);
+    };
+
+    // Candidate codewords. One by default; a --pairs file supplies a whole
+    // superframe, which costs the same because the keystream is built once.
+    std::vector<uint8_t> cand_ct;
+    std::vector<int> cand_off;
+    std::vector<std::string> cand_label;
+    if (!pairs_file.empty()) {
+        FILE *pf = fopen(pairs_file.c_str(), "r");
+        if (!pf) { fprintf(stderr, "cannot open --pairs %s\n", pairs_file.c_str()); return 1; }
+        char line[512];
+        int lineno = 0;
+        while (fgets(line, sizeof(line), pf)) {
+            lineno++;
+            std::string l(line);
+            size_t h = l.find('#');
+            if (h != std::string::npos) l = l.substr(0, h);
+            if (l.find_first_not_of(" \t\r\n") == std::string::npos) continue;
+            char fr[16] = {0};
+            int pos = -1, consumed = 0;
+            if (sscanf(l.c_str(), "%15s %d %n", fr, &pos, &consumed) < 2) {
+                fprintf(stderr, "%s:%d: expected '<ldu1|ldu2> <position> <11 hex bytes>'\n",
+                        pairs_file.c_str(), lineno);
+                fclose(pf); return 1;
+            }
+            std::string frs(fr);
+            if (frs != "ldu1" && frs != "ldu2") {
+                fprintf(stderr, "%s:%d: frame must be ldu1 or ldu2, got %s\n",
+                        pairs_file.c_str(), lineno, fr);
+                fclose(pf); return 1;
+            }
+            if (pos < 0 || pos > 8) {
+                fprintf(stderr, "%s:%d: position must be 0..8, got %d\n",
+                        pairs_file.c_str(), lineno, pos);
+                fclose(pf); return 1;
+            }
+            std::vector<uint8_t> cv = hex_to_bytes(l.c_str() + consumed);
+            if (cv.size() != 11) {
+                fprintf(stderr, "%s:%d: ct must be 11 bytes (got %zu)\n",
+                        pairs_file.c_str(), lineno, cv.size());
+                fclose(pf); return 1;
+            }
+            cand_ct.insert(cand_ct.end(), cv.begin(), cv.end());
+            cand_off.push_back(offset_of(frs, pos));
+            cand_label.push_back(frs + " position " + std::to_string(pos));
+        }
+        fclose(pf);
+        if (cand_ct.empty()) {
+            fprintf(stderr, "no candidates in %s\n", pairs_file.c_str());
+            return 1;
+        }
+    } else {
+        cand_ct = ct_v;
+        cand_off.push_back(offset_of(frame, position));
+        cand_label.push_back(frame + " position " + std::to_string(position));
+    }
+    const int ncand = (int)cand_off.size();
+    if (ncand == 1) {
+        fprintf(stderr, "%s -> keystream offset %d\n",
+                cand_label[0].c_str(), cand_off[0]);
+    } else {
+        fprintf(stderr, "%d candidate codeword(s) from %s, offsets %d..%d "
+                        "(one keystream per key covers them all)\n",
+                ncand, pairs_file.c_str(),
+                *std::min_element(cand_off.begin(), cand_off.end()),
+                *std::max_element(cand_off.begin(), cand_off.end()));
+    }
     const uint64_t TOTAL = 1ULL << 40;
     if (start + count > TOTAL) count = TOTAL - start;
     if (start >= TOTAL) { fprintf(stderr, "--start out of range\n"); return 1; }
@@ -309,13 +403,18 @@ int main(int argc, char **argv) {
     // Upload inputs
     GPUState g;
     CUDA_CHECK(cudaMalloc(&g.d_mi, 8));
-    CUDA_CHECK(cudaMalloc(&g.d_ct, 11));
+    CUDA_CHECK(cudaMalloc(&g.d_ct, cand_ct.size()));
     CUDA_CHECK(cudaMalloc(&g.d_pt, 11));
     CUDA_CHECK(cudaMalloc(&g.d_hits, sizeof(uint64_t)));
     CUDA_CHECK(cudaMalloc(&g.d_key, 5));
+    int *d_off = nullptr, *d_cand = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_off, sizeof(int) * ncand));
+    CUDA_CHECK(cudaMalloc(&d_cand, sizeof(int)));
+    CUDA_CHECK(cudaMemcpy(d_off, cand_off.data(), sizeof(int) * ncand, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemset(d_cand, 0xFF, sizeof(int)));   // -1 = no candidate matched
     CUDA_CHECK(cudaStreamCreate(&g.stream));
     CUDA_CHECK(cudaMemcpy(g.d_mi, &mi_v[0], 8, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(g.d_ct, ct_v.data(), 11, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(g.d_ct, cand_ct.data(), cand_ct.size(), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(g.d_pt, pt_v.data(), 11, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemset(g.d_hits, 0, sizeof(uint64_t)));
 
@@ -337,7 +436,8 @@ int main(int argc, char **argv) {
     }
 
     brute_kernel<<<nblocks, block, 0, g.stream>>>(
-        g.d_mi, g.d_ct, g.d_pt, start, count, offset, g.d_hits, g.d_key);
+        g.d_mi, g.d_ct, g.d_pt, ncand, d_off, start, count,
+        g.d_hits, g.d_key, d_cand);
     // Wait for the search kernel FIRST. The poller only returns when it sees a
     // remote key or is told to stop; joining it before the kernel finished would
     // hang forever whenever no other shard writes the found-file (i.e. the common
@@ -357,6 +457,14 @@ int main(int argc, char **argv) {
     bool local_found = (hits != 0);
     if (local_found) {
         CUDA_CHECK(cudaMemcpy(key5, g.d_key, 5, cudaMemcpyDeviceToHost));
+        int which = -1;
+        CUDA_CHECK(cudaMemcpy(&which, d_cand, sizeof(int), cudaMemcpyDeviceToHost));
+        if (which >= 0 && which < ncand) {
+            // Which codeword's plaintext guess held. With a whole superframe in
+            // flight the key alone does not say that, and it is the fact worth
+            // keeping: it identifies a confirmed idle frame.
+            fprintf(stdout, "MATCHED CANDIDATE: %s\n", cand_label[which].c_str());
+        }
         fprintf(stdout, "KEY FOUND: ");
         for (int i = 0; i < 5; ++i) fprintf(stdout, "%02x ", key5[i]);
         fprintf(stdout, "\n");
@@ -385,12 +493,17 @@ int main(int argc, char **argv) {
             std::swap(S[ii], S[jj]);
             ks[k2] = S[(S[ii] + S[jj]) & 0xFF];
         }
-        fprintf(stdout, "keystream[%d..%d]: ", offset, offset + 31);
-        for (int k2 = 0; k2 < 32; ++k2) fprintf(stdout, "%02x ", ks[offset + k2]);
+        // Cross-check around the codeword that actually matched, not around a
+        // single global offset -- with a superframe in flight there isn't one.
+        const int shown = (which >= 0 && which < ncand) ? cand_off[which] : cand_off[0];
+        fprintf(stdout, "keystream[%d..%d]: ", shown, shown + 31);
+        for (int k2 = 0; k2 < 32 && shown + k2 < 469; ++k2)
+            fprintf(stdout, "%02x ", ks[shown + k2]);
         fprintf(stdout, "\n");
         // Cleanup
         cudaFree(g.d_mi); cudaFree(g.d_ct); cudaFree(g.d_pt);
         cudaFree(g.d_hits); cudaFree(g.d_key);
+        cudaFree(d_off); cudaFree(d_cand);
         cudaStreamDestroy(g.stream);
         return 0;
     }
