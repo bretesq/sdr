@@ -347,6 +347,41 @@ describe('live feed cursor', () => {
   })
 })
 
+describe('live feed ordering', () => {
+  it('pages a feed query from the oldest pending row, ascending', () => {
+    // A truncated page must be a PREFIX of the pending set, so the caller can
+    // advance to the last row it received and continue. Newest-first would
+    // make a truncated page the SUFFIX and silently drop everything before it.
+    const { maxId } = listRecordings({ limit: 1 })
+    const rows = listRecordings({ afterId: maxId - 40, limit: 10 }).rows
+    expect(rows.length).toBe(10)
+    for (let i = 1; i < rows.length; i++) {
+      expect(rows[i].id).toBeGreaterThan(rows[i - 1].id)
+    }
+    // The page starts at the cursor, not at the head of the corpus.
+    expect(rows[0].id).toBeLessThan(maxId)
+  })
+
+  it('drains losslessly across successive truncated pages', () => {
+    // The property the client depends on: advance to the last id received,
+    // ask again, and no row between the two pages is skipped.
+    const { maxId } = listRecordings({ limit: 1 })
+    const start = maxId - 40
+    const first = listRecordings({ afterId: start, limit: 10 }).rows
+    const second = listRecordings({ afterId: first[first.length - 1].id, limit: 10 }).rows
+    const all = listRecordings({ afterId: start, limit: 20 }).rows
+    expect([...first, ...second].map(r => r.id)).toEqual(all.map(r => r.id))
+  })
+
+  it('leaves newest-first ordering alone when afterId is absent', () => {
+    // RecordingsList depends on this and passes no cursor.
+    const rows = listRecordings({ limit: 50 }).rows
+    for (let i = 1; i < rows.length; i++) {
+      expect(rows[i].start).toBeLessThanOrEqual(rows[i - 1].start)
+    }
+  })
+})
+
 describe('live feed talkgroup filter', () => {
   it('tgids restricts to the listed talkgroups', () => {
     const sample = listRecordings({ limit: 200 }).rows

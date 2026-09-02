@@ -279,8 +279,28 @@ export function listRecordings(q: RecordingQuery = {}): { rows: Recording[], tot
 
   const limit = q.limit ?? 5000
   const offset = q.offset ?? 0
+
+  // Feed queries page from the OLDEST pending row; everything else keeps
+  // newest-first.
+  //
+  // This is what makes `afterId` lossless under truncation. With
+  // `ORDER BY c.start DESC LIMIT L`, a page that truncates returns the L
+  // LATEST-starting pending rows and silently discards the earliest-starting
+  // ones — which is exactly "a long call starts before a short one but commits
+  // after it", the failure the id cursor exists to prevent, reintroduced by the
+  // pagination. Ordering by rowid instead means a truncated page is a prefix:
+  // the caller advances its cursor to the last row it received and the next
+  // request continues from there.
+  //
+  // It is also the right playback order. `id` is assigned at COMMIT, which for
+  // the recorder is end-of-transmission, so ascending id is the order calls
+  // finished. Ordering by `start` would play a long call that began earlier
+  // ahead of a short one that had already finished.
+  //
+  // Every other caller (RecordingsList) passes no `afterId` and is unaffected.
+  const order = q.afterId !== undefined ? 'c.id ASC' : 'c.start DESC'
   const rows = db.prepare(
-    `${CALL_SELECT} ${clause} ORDER BY c.start DESC LIMIT ? OFFSET ?`,
+    `${CALL_SELECT} ${clause} ORDER BY ${order} LIMIT ? OFFSET ?`,
   ).all(...params, limit, offset) as unknown as CallRow[]
 
   const maxRow = db.prepare(
