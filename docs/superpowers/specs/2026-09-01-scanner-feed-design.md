@@ -91,12 +91,30 @@ Add to `RecordingQuery`:
 - `afterId?: number` — emits `c.id > ?`. Cursor for the live feed.
 - `tgids?: number[]` — emits `c.tgid IN (…)`, alongside the existing single `tgid`.
   Both may be supplied; they AND together, since each is an independent narrowing.
-  An empty `tgids` array matches nothing rather than everything — an armed feed with
-  no talkgroups selected must be silent, not a firehose.
+
+**The empty-selection case is handled in the composable, not in SQL.** `listRecordings`
+builds its `WHERE` by pushing clauses, so an empty `tgids` array either emits
+`c.tgid IN ()` — a SQLite syntax error — or, under the builder's natural
+`if (q.tgids?.length)` idiom, pushes no clause and matches *everything*. An implementer
+following the existing idiom would produce exactly the firehose an armed-but-empty feed
+must not be. `useScannerFeed` therefore does not issue the request at all while no
+talkgroup is selected.
 
 Add to the return value:
 
 - `maxId: number` — an unfiltered `SELECT MAX(id) FROM calls`.
+
+Project two columns that `CALL_SELECT` does not currently select, and carry them
+through `Recording` and `toRecording`:
+
+- `c.id` — the client needs it to advance `lastSeenId`
+- `c.ended_at` — the client needs it to compute staleness
+
+These are the two fields this design rests on, and they are the two `CALL_SELECT`
+omits (`queries.ts:59-64`) — nothing in the console has needed them until now.
+`algid` and `keyid`, by contrast, are **already** projected (`CALL_SELECT:60`,
+`Recording:43,45`, `toRecording:140,142`), so encryption classification needs no
+server-side change.
 
 This extends the single query builder rather than standing up a parallel
 `listCallsSince`, consistent with the decision recorded in `stream.get.ts`.
@@ -140,6 +158,11 @@ shell rather than the console, which reads `running: false, radioBusy: true`.
 
 Reads `lwin_keys.json` and exposes **only the set of held keyids** (currently `0x1`,
 `0x8`, `0x2F08`).
+
+The client receives them as a `heldKeyids: number[]` field on the
+`/api/listen/followed` response — the same call that populates the selector, so arming
+the feed needs no extra round trip. That response shape is what the "no key material"
+test asserts against.
 
 **Key material must never cross to the browser.** That file holds live ADP key bytes.
 The client needs to know only whether a keyid is held, in order to decide whether a call
