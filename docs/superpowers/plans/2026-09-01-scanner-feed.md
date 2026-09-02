@@ -252,6 +252,41 @@ describe('live feed cursor', () => {
   })
 })
 
+describe('live feed ordering', () => {
+  it('pages a feed query from the oldest pending row, ascending', () => {
+    // A truncated page must be a PREFIX of the pending set, so the caller can
+    // advance to the last row it received and continue. Newest-first would
+    // make a truncated page the SUFFIX and silently drop everything before it.
+    const { maxId } = listRecordings({ limit: 1 })
+    const rows = listRecordings({ afterId: maxId - 40, limit: 10 }).rows
+    expect(rows.length).toBe(10)
+    for (let i = 1; i < rows.length; i++) {
+      expect(rows[i].id).toBeGreaterThan(rows[i - 1].id)
+    }
+    // The page starts at the cursor, not at the head of the corpus.
+    expect(rows[0].id).toBeLessThan(maxId)
+  })
+
+  it('drains losslessly across successive truncated pages', () => {
+    // The property the client depends on: advance to the last id received,
+    // ask again, and no row between the two pages is skipped.
+    const { maxId } = listRecordings({ limit: 1 })
+    const start = maxId - 40
+    const first = listRecordings({ afterId: start, limit: 10 }).rows
+    const second = listRecordings({ afterId: first[first.length - 1].id, limit: 10 }).rows
+    const all = listRecordings({ afterId: start, limit: 20 }).rows
+    expect([...first, ...second].map(r => r.id)).toEqual(all.map(r => r.id))
+  })
+
+  it('leaves newest-first ordering alone when afterId is absent', () => {
+    // RecordingsList depends on this and passes no cursor.
+    const rows = listRecordings({ limit: 50 }).rows
+    for (let i = 1; i < rows.length; i++) {
+      expect(rows[i].start).toBeLessThanOrEqual(rows[i - 1].start)
+    }
+  })
+})
+
 describe('live feed talkgroup filter', () => {
   it('tgids restricts to the listed talkgroups', () => {
     const sample = listRecordings({ limit: 200 }).rows
@@ -357,6 +392,34 @@ In `listRecordings`, add these clauses next to the existing `q.tgid` block:
     where.push('c.id > ?')
     params.push(q.afterId)
   }
+```
+
+Then change the ordering so a feed query pages from the OLDEST pending row.
+Find the `ORDER BY c.start DESC` in the paged query and make it conditional:
+
+```ts
+  // Feed queries page from the OLDEST pending row; everything else keeps
+  // newest-first.
+  //
+  // This is what makes `afterId` lossless under truncation. With
+  // `ORDER BY c.start DESC LIMIT L`, a page that truncates returns the L
+  // LATEST-starting pending rows and silently discards the earliest-starting
+  // ones — which is exactly "a long call starts before a short one but commits
+  // after it", the failure the id cursor exists to prevent, reintroduced by the
+  // pagination. Ordering by rowid instead means a truncated page is a prefix:
+  // the caller advances its cursor to the last row it received and the next
+  // request continues from there.
+  //
+  // It is also the right playback order. `id` is assigned at COMMIT, which for
+  // the recorder is end-of-transmission, so ascending id is the order calls
+  // finished. Ordering by `start` would play a long call that began earlier
+  // ahead of a short one that had already finished.
+  //
+  // Every other caller (RecordingsList) passes no `afterId` and is unaffected.
+  const order = q.afterId !== undefined ? 'c.id ASC' : 'c.start DESC'
+  const rows = db.prepare(
+    `${CALL_SELECT} ${clause} ORDER BY ${order} LIMIT ? OFFSET ?`,
+  ).all(...params, limit, offset) as unknown as CallRow[]
 ```
 
 Then **replace** everything from `const byFile = codesFor(...)` to the closing brace of
@@ -1238,9 +1301,10 @@ interface ListResponse {
 /**
  * How many calls to pull per SSE tick.
  *
- * At roughly 4 calls a minute a page is never close to full. If one ever is,
- * the backlog is by definition older than any sane staleness bound, so the
- * cursor jumps to the head rather than draining it — see pump().
+ * At roughly 4 calls a minute a page is never close to full. If one ever is —
+ * after a long disconnect — the query returns the oldest pending rows, this
+ * drains them a page per tick, and `prune` discards whatever is already older
+ * than the staleness bound. No special case needed; see pump().
  */
 const PAGE = 500
 
@@ -1311,18 +1375,16 @@ export function useScannerFeed() {
       return
     }
 
-    if (res.data.length >= PAGE) {
-      // A full page means we are further behind than the staleness bound could
-      // ever forgive, so draining it would only play calls that are about to be
-      // dropped anyway. Jump to the head instead of walking the backlog.
-      lastSeenId = res.maxId
-      sync()
-      playIfIdle()
-      return
-    }
-
-    // The list route orders by start DESC; play them in the order they happened.
-    for (const row of [...res.data].reverse()) {
+    // Rows arrive oldest-first because the query orders by rowid whenever
+    // `afterId` is set, so they are admitted in the order the calls finished
+    // and no reordering is needed here.
+    //
+    // A truncated page needs no special handling either: it is a prefix of the
+    // pending set, so advancing to the last row received and letting the next
+    // tick continue drains the backlog without losing a row. Anything in that
+    // backlog older than the staleness bound is dropped by `prune` on arrival,
+    // which is what stops a long absence from replaying hours of audio.
+    for (const row of res.data) {
       lastSeenId = Math.max(lastSeenId, row.id)
       admit(queue, row, selectedSet.value, heldSet.value)
     }
