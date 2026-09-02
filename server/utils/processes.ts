@@ -204,10 +204,39 @@ export function scriptFor(mode: ListenMode | undefined): string {
   return mode === 'multi' ? 'lwin_listen_multi.sh' : 'lwin_listen.sh'
 }
 
+/**
+ * Is this process the containerised web app rather than the host one?
+ *
+ * Set by docker-compose. Checked explicitly against '1' so that an empty or '0'
+ * value cannot silently disable capture start on a host run.
+ */
+export function inContainer(): boolean {
+  return process.env.SDR_IN_CONTAINER === '1'
+}
+
 export function startListening(
   opts: ListenOptions,
   sessionId?: number,
 ): { pid: number; config: ListenOptions } {
+  // The container can watch the radio but cannot start it.
+  //
+  // op25 needs the HackRFs over USB and the 34 gnuradio/osmosdr packages the
+  // web image does not carry, and entering the host's namespaces would need
+  // CAP_SYS_ADMIN — which this container deliberately lacks, because running it
+  // as root would let SQLite create root-owned sdr.db-wal files and stop the
+  // host's recorders writing.
+  //
+  // `pgrep` and `pkill` still work through `pid: host`, so isRadioBusy() and
+  // releasing the radio are unaffected. Only starting is refused, and it says
+  // exactly what to run instead.
+  if (inContainer()) {
+    throw new Error(
+      'Captures cannot be started from the container — op25 needs USB access to '
+      + 'the HackRFs. Start one on the host instead, for example: '
+      + './scripts/lwin_listen_multi.sh --ess --include-encrypted --pd 10800',
+    )
+  }
+
   const script = join(scriptsDir(), scriptFor(opts.mode))
   const fd = openSync(listenLogPath(), 'w')
   try {

@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { buildListenArgs, countCalls, scriptFor, LAUNCHERS } from './processes'
+import {
+  buildListenArgs, countCalls, scriptFor, LAUNCHERS, inContainer, startListening,
+} from './processes'
 
 describe('buildListenArgs', () => {
   it('maps a preset to --preset', () => {
@@ -119,5 +121,40 @@ describe('countCalls', () => {
 
   it('returns 0 for an empty log', () => {
     expect(countCalls('')).toBe(0)
+  })
+})
+
+describe('container mode', () => {
+  /**
+   * The web container can see host processes through `pid: host`, so reading
+   * and releasing the radio still work. Only STARTING a capture is impossible:
+   * op25 needs USB access to the HackRFs and a gnuradio stack the image does
+   * not carry. Spawning anyway would fail deep inside bash with an error the
+   * operator cannot act on.
+   */
+  it('refuses to start a capture and names the command to run instead', () => {
+    process.env.SDR_IN_CONTAINER = '1'
+    try {
+      expect(inContainer()).toBe(true)
+      expect(() => startListening({ preset: 'pd' })).toThrow(/container/i)
+      expect(() => startListening({ preset: 'pd' })).toThrow(/lwin_listen_multi\.sh/)
+    } finally {
+      delete process.env.SDR_IN_CONTAINER
+    }
+  })
+
+  it('reports host mode when the variable is absent', () => {
+    delete process.env.SDR_IN_CONTAINER
+    expect(inContainer()).toBe(false)
+  })
+
+  it('treats any value other than "1" as host mode', () => {
+    // A stray empty or "0" value must not silently disable capture start.
+    process.env.SDR_IN_CONTAINER = '0'
+    try {
+      expect(inContainer()).toBe(false)
+    } finally {
+      delete process.env.SDR_IN_CONTAINER
+    }
   })
 })
