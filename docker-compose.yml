@@ -123,7 +123,13 @@ services:
     user: "1000:1000"
     # pid: host is what keeps isRadioBusy() and releasing the radio working —
     # pgrep and pkill read the host's /proc and signal host processes as the
-    # same UID. Starting a capture is refused instead; see SDR_IN_CONTAINER.
+    # same UID. Starting a capture no longer needs pid: host for the same
+    # reason: this container still cannot reach the HackRFs itself (no USB
+    # passthrough, no hackrf_info, no gnuradio in this image — see
+    # server/utils/processes.ts's captureCapabilityGap()), but it now
+    # delegates the request to the `capture` service's control API instead of
+    # refusing outright. SDR_IN_CONTAINER below still exists for
+    # transcriber.ts's own guard, which is unrelated and unchanged.
     pid: host
     working_dir: /home/besquivel/rtl
     volumes:

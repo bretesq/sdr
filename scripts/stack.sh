@@ -26,10 +26,38 @@ host_status() {
   # radio as running whenever this script is the only thing running. That bug
   # cost this project a stalled overnight harvest and, later, a status report
   # that claimed a capture was live twenty-five minutes after op25 had died.
-  if ps -eo comm,args --no-headers | awk '$1=="python3" && /multi_rx/' | grep -q .; then
-    echo "  op25          running"
-  else
+  #
+  # op25 now runs two possible places -- directly on the host (the original
+  # setup) or inside the `capture` container (server/utils/processes.ts
+  # delegates there once it can no longer reach the HackRFs itself) -- and
+  # BOTH are visible right here: the host's own /proc always sees every
+  # process on the machine regardless of which container's PID namespace it
+  # lives in, `capture` having no `pid: host` of its own notwithstanding. A
+  # single "running"/"stopped" line would double-count or silently misattribute
+  # which half actually owns the radio, so each matching pid is resolved to
+  # host or container by checking whether its cgroup names a docker container
+  # (`/proc/<pid>/cgroup` contains a `docker-<id>.scope` or `/docker/<id>`
+  # segment for a containerised process; a bare host process has neither).
+  op25_pids="$(ps -eo pid,comm,args --no-headers | awk '$2=="python3" && /multi_rx/ {print $1}')"
+  if [ -z "$op25_pids" ]; then
     echo "  op25          stopped"
+  else
+    host_n=0
+    container_n=0
+    for pid in $op25_pids; do
+      if grep -Eq 'docker[-/]' "/proc/$pid/cgroup" 2>/dev/null; then
+        container_n=$((container_n + 1))
+      else
+        host_n=$((host_n + 1))
+      fi
+    done
+    if [ "$container_n" -gt 0 ] && [ "$host_n" -gt 0 ]; then
+      echo "  op25          running (${container_n} in the capture container, ${host_n} on the host -- unexpected, check both)"
+    elif [ "$container_n" -gt 0 ]; then
+      echo "  op25          running (in the capture container)"
+    else
+      echo "  op25          running (on the host)"
+    fi
   fi
 
   printf '  recorders     %s\n' "$(ps -eo args --no-headers | grep -c '[u]dp_audio_record' || true)"

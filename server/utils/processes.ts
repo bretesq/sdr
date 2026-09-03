@@ -1,5 +1,5 @@
 import { spawn, execFileSync } from 'node:child_process'
-import { readFileSync, statSync, openSync, readSync, closeSync } from 'node:fs'
+import { readFileSync, statSync, openSync, readSync, closeSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { scriptsDir, sdrRoot, listenLogPath } from './paths'
 
@@ -214,50 +214,261 @@ export function inContainer(): boolean {
   return process.env.SDR_IN_CONTAINER === '1'
 }
 
-export function startListening(
+/**
+ * Path to the host's USB bus device tree. Present (bind-mounted) inside the
+ * `capture` container per docker-compose.yml's `/dev/bus/usb:/dev/bus/usb`
+ * volume; absent from `web`, which carries no such mount at all. A single
+ * `existsSync` — the cheapest of the three checks below — so it runs first
+ * and short-circuits the other two the instant it already answers "no".
+ */
+const USB_BUS_PATH = '/dev/bus/usb'
+
+/** The binary op25's own launcher scripts assume is on PATH. */
+const HACKRF_INFO_BIN = 'hackrf_info'
+
+/**
+ * Is `hackrf_info` on PATH? A PATH scan via `existsSync`, deliberately NOT an
+ * execution of the binary: running it opens a HackRF, and the host (or the
+ * capture container) may already hold both of them for a live session —
+ * proving "can I list a HackRF" would itself contend for the very hardware
+ * this probe exists to ask about. Presence on PATH is everything the launcher
+ * scripts themselves ever check before invoking it.
+ */
+function hackrfInfoOnPath(): boolean {
+  const dirs = (process.env.PATH ?? '').split(':').filter(Boolean)
+  return dirs.some(dir => existsSync(join(dir, HACKRF_INFO_BIN)))
+}
+
+/**
+ * Does python3 have op25's compiled GNU Radio block importable? The one check
+ * here that has to run a subprocess — unavoidable, since "importable" is a
+ * property of the interpreter's actual sys.path and compiled-extension ABI,
+ * not something a file scan can answer. Unlike hackrf_info this is safe to
+ * execute: importing a module never opens a HackRF (op25 only does that once
+ * rx.py/multi_rx.py actually runs), so there is no hardware-contention reason
+ * to avoid it — only cost, which is why it runs last, after the two cheaper
+ * checks have already had a chance to answer "not capable" first.
+ *
+ * `web`'s image carries no python3 at all (transcriber.ts:96 already
+ * documents this for the same reason) — that surfaces here as execFileSync
+ * throwing ENOENT, treated identically to a real ImportError: either way,
+ * op25 cannot run in this process.
+ */
+function op25Importable(): boolean {
+  try {
+    execFileSync('python3', ['-c', 'import gnuradio.op25_repeater'], {
+      timeout: 5000,
+      stdio: 'ignore',
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * What, if anything, stops THIS process from running op25 itself.
+ *
+ * Replaces the old `inContainer()` guard in startListening() below, which was
+ * always a proxy for "can this process reach the HackRFs" rather than the
+ * real thing — a proxy that broke the day a SECOND container appeared:
+ * `inContainer()` is true for both `web` and `capture`, but only `web`
+ * actually lacks the hardware. `capture` has real USB passthrough, hackrf_info
+ * and gnuradio (see docker-compose.yml's `capture` service and
+ * docker/capture/Dockerfile) — asking the real question directly, instead of
+ * inferring it from where the process happens to run, is what makes this
+ * correct for both containers at once without special-casing either.
+ *
+ * @returns null if capable, otherwise a short human-readable description of
+ * the first missing capability (checks are short-circuited in cheapest-first
+ * order, so this is not necessarily an exhaustive list of everything that is
+ * missing — just the first thing that is).
+ */
+export function captureCapabilityGap(): string | null {
+  if (!existsSync(USB_BUS_PATH)) return `no USB access (${USB_BUS_PATH} does not exist)`
+  if (!hackrfInfoOnPath()) return 'hackrf_info is not on PATH'
+  if (!op25Importable()) return 'gnuradio.op25_repeater is not importable by python3'
+  return null
+}
+
+export function isCaptureCapable(): boolean {
+  return captureCapabilityGap() === null
+}
+
+/**
+ * Where the capture container's control server listens — unpublished,
+ * compose-network only (docker-compose.yml's `capture` service, port 8082;
+ * see scripts/capture_control.py's module docstring for the full contract).
+ * Overridable by env for tests and any non-standard layout, mirroring
+ * transcriber.ts's STT_URL.
+ */
+const CAPTURE_URL = process.env.CAPTURE_URL || 'http://capture:8082'
+
+/** The JSON shape scripts/capture_control.py's POST /start returns or rejects with. */
+interface ControlStartResponse {
+  started?: boolean
+  pid?: number
+  args?: string[]
+  error?: string
+}
+
+/**
+ * Turn ListenOptions into exactly the request scripts/capture_control.py's
+ * build_args() can express: `{ mode: 'multi', ess?, includeEncrypted?,
+ * durationSec }`. That server hardcodes `--pd` itself (emitted only when
+ * durationSec is present) and rejects every field outside that set
+ * (scripts/capture_control.py:96,:126) — it deliberately exposes ONE
+ * operational profile, a bounded PD multi-receiver capture, not the full
+ * surface lwin_listen_multi.sh supports when run locally.
+ *
+ * Anything ListenOptions can ask for that this shape cannot — single-receiver
+ * mode, a different preset, talkgroup/tag/match selection, per-band receiver
+ * counts, --stt, an unbounded run — is refused HERE, before any network call,
+ * rather than silently dropped or substituted. Coercing `mode` to "multi" or
+ * dropping `legs` would start a capture shaped differently from the one the
+ * operator asked for, with no way for them to tell from the response; the
+ * only safe response to a request this API cannot honor faithfully is to
+ * refuse it loudly.
+ */
+function buildControlRequest(
   opts: ListenOptions,
-  sessionId?: number,
-): { pid: number; config: ListenOptions } {
-  // The container can watch the radio but cannot start it.
-  //
-  // op25 needs the HackRFs over USB and the 34 gnuradio/osmosdr packages the
-  // web image does not carry, and entering the host's namespaces would need
-  // CAP_SYS_ADMIN — which this container deliberately lacks, because running it
-  // as root would let SQLite create root-owned sdr.db-wal files and stop the
-  // host's recorders writing.
-  //
-  // `pgrep` and `pkill` still work through `pid: host`, so isRadioBusy() and
-  // releasing the radio are unaffected. Only starting is refused, and it says
-  // exactly what to run instead.
-  if (inContainer()) {
+): { mode: 'multi'; ess?: boolean; includeEncrypted?: boolean; durationSec: number } {
+  const unsupported: string[] = []
+  if (opts.mode !== 'multi') {
+    unsupported.push(
+      `mode ${JSON.stringify(opts.mode ?? 'single')} (the capture container only runs multi-receiver captures)`,
+    )
+  }
+  if (opts.preset !== undefined && opts.preset !== 'pd') {
+    unsupported.push(`preset "${opts.preset}" (only the "pd" preset can be delegated)`)
+  }
+  if (opts.talkgroups !== undefined) unsupported.push('talkgroups (no remote talkgroup selection)')
+  if (opts.tag !== undefined) unsupported.push('tag (no remote tag selection)')
+  if (opts.match !== undefined) unsupported.push('match (no remote regex selection)')
+  if (opts.allAreas) unsupported.push('allAreas')
+  if (opts.includePartial) unsupported.push('includePartial')
+  if (opts.stt) unsupported.push('stt (the capture container does not run the transcription watcher)')
+  if (opts.legs !== undefined) unsupported.push('legs (fixed to 700,800 remotely)')
+  if (opts.nVoice700 !== undefined) unsupported.push('nVoice700 (receiver counts are fixed remotely)')
+  if (opts.nVoice800 !== undefined) unsupported.push('nVoice800 (receiver counts are fixed remotely)')
+  if (opts.census !== undefined) unsupported.push('census (fixed remotely)')
+  if (opts.duration === undefined) {
+    unsupported.push('duration (required — the remote PD preset is only emitted when a duration is given)')
+  }
+
+  if (unsupported.length > 0) {
     throw new Error(
-      'Captures cannot be started from the container — op25 needs USB access to '
-      + 'the HackRFs. Start one on the host instead, for example: '
+      'This request cannot be delegated to the capture container — unsupported: '
+      + unsupported.join('; ')
+      + '. The control API only supports a bounded PD capture '
+      + '({ mode: "multi", ess, includeEncrypted, duration }). Run the full '
+      + 'request directly on a host with HackRF access instead, for example: '
       + './scripts/lwin_listen_multi.sh --ess --include-encrypted --pd 10800',
     )
   }
 
-  const script = join(scriptsDir(), scriptFor(opts.mode))
-  const fd = openSync(listenLogPath(), 'w')
-  try {
-    const child = spawn('bash', [script, ...buildListenArgs(opts)], {
-      cwd: sdrRoot(),
-      detached: true,               // setsid: child.pid becomes the process-group leader
-      stdio: ['ignore', fd, fd],
-      // Inherited by bash and then by udp_audio_record.py, so the recorder can
-      // stamp session_id on each call without threading an argument through
-      // the shell script.
-      env: sessionId === undefined
-        ? process.env
-        : { ...process.env, SDR_SESSION_ID: String(sessionId) },
-    })
-    child.unref()
-
-    if (!child.pid) throw new Error(`failed to spawn ${scriptFor(opts.mode)}`)
-    return { pid: child.pid, config: opts }
-  } finally {
-    closeSync(fd)                   // the child holds its own dup; not closing leaks an fd per session
+  const body: { mode: 'multi'; ess?: boolean; includeEncrypted?: boolean; durationSec: number } = {
+    mode: 'multi',
+    durationSec: opts.duration as number,
   }
+  if (opts.ess !== undefined) body.ess = opts.ess
+  if (opts.includeEncrypted !== undefined) body.includeEncrypted = opts.includeEncrypted
+  return body
+}
+
+/**
+ * POST the structured request to the capture container's control API and
+ * translate its response into startListening()'s existing return shape.
+ *
+ * Never builds or sends a command line — only the small, validated object
+ * buildControlRequest() produces. Building argv is scripts/capture_control.py's
+ * job and its stated security boundary (see that file's module docstring);
+ * assembling one here instead would defeat the whole point of having a
+ * separate control server do exactly that.
+ *
+ * NOTE: unlike the local-spawn path below, this cannot pass `sessionId`
+ * through — scripts/capture_control.py's request shape has no field for it
+ * (see ALLOWED_FIELDS there), so op25/udp_audio_record.py run inside the
+ * capture container with no SDR_SESSION_ID in their environment and every
+ * call they record lands with a NULL session_id. This is a real gap between
+ * Task 2's contract and session-linked recordings; flagged in this task's
+ * report rather than silently worked around, since closing it means changing
+ * scripts/capture_control.py's request shape, which is Task 2's file.
+ */
+async function delegateStart(opts: ListenOptions): Promise<{ pid: number; config: ListenOptions }> {
+  const body = buildControlRequest(opts) // throws before any network call for a request this API cannot honor
+
+  let res: Response
+  try {
+    res = await fetch(`${CAPTURE_URL}/start`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(10_000),
+    })
+  } catch (err) {
+    // Same failure class as `docker compose ps` showing the capture container
+    // down or still (re)building — name the two commands an operator would
+    // actually run, the same way the old in-container refusal named
+    // ./scripts/lwin_listen_multi.sh.
+    throw new Error(
+      `Cannot reach the capture container's control API at ${CAPTURE_URL} `
+      + `(${err instanceof Error ? err.message : String(err)}). Check it with `
+      + './scripts/stack.sh status, or bring it up with ./scripts/stack.sh restart capture',
+      { cause: err },
+    )
+  }
+
+  const payload = await res.json().catch(() => null) as ControlStartResponse | null
+
+  if (!res.ok) {
+    // Surfaced verbatim, the same way server/api/listen/start.post.ts's catch
+    // already returns a thrown Error's message to the operator — 400
+    // (validation), 409 (already running) and 502 (launcher died) all carry a
+    // human-readable `error` field per the control server's contract.
+    throw new Error(payload?.error ?? `capture control API returned HTTP ${res.status}`)
+  }
+  if (typeof payload?.pid !== 'number') {
+    throw new Error('capture control API reported success but returned no pid')
+  }
+  return { pid: payload.pid, config: opts }
+}
+
+export async function startListening(
+  opts: ListenOptions,
+  sessionId?: number,
+): Promise<{ pid: number; config: ListenOptions }> {
+  // Capability, not location. See captureCapabilityGap() above for why this
+  // replaced the old inContainer() check. When this process genuinely can
+  // reach the HackRFs itself (a bare-metal/dev host, not either container),
+  // spawn exactly as before. Otherwise — the `web` container's normal case —
+  // this process cannot run op25 itself, but the `capture` container can, so
+  // delegate to it over the control API instead of refusing outright.
+  if (captureCapabilityGap() === null) {
+    const script = join(scriptsDir(), scriptFor(opts.mode))
+    const fd = openSync(listenLogPath(), 'w')
+    try {
+      const child = spawn('bash', [script, ...buildListenArgs(opts)], {
+        cwd: sdrRoot(),
+        detached: true,               // setsid: child.pid becomes the process-group leader
+        stdio: ['ignore', fd, fd],
+        // Inherited by bash and then by udp_audio_record.py, so the recorder can
+        // stamp session_id on each call without threading an argument through
+        // the shell script.
+        env: sessionId === undefined
+          ? process.env
+          : { ...process.env, SDR_SESSION_ID: String(sessionId) },
+      })
+      child.unref()
+
+      if (!child.pid) throw new Error(`failed to spawn ${scriptFor(opts.mode)}`)
+      return { pid: child.pid, config: opts }
+    } finally {
+      closeSync(fd)                 // the child holds its own dup; not closing leaks an fd per session
+    }
+  }
+
+  return delegateStart(opts)
 }
 
 /**

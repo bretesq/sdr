@@ -1,7 +1,71 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+
+/**
+ * node:child_process and node:fs's existsSync are mocked here, in addition to
+ * — not instead of — exercising captureCapabilityGap()/startListening()'s
+ * guard below. See transcriber.test.ts's identical comment for the full
+ * reasoning; the short version: this file's code path can signal or spawn a
+ * REAL process on this exact host (which has real HackRF hardware, a real
+ * hackrf_info on PATH, and a real op25 build — this is the box the live
+ * capture runs on). If captureCapabilityGap() ever regressed to report
+ * "capable" when it should not, an unmocked startListening() would spawn a
+ * genuine `bash scripts/lwin_listen_multi.sh ...` fighting the live host
+ * capture for the same two HackRFs. Mocking spawn/execFileSync closes that
+ * hole independently of guard health, and mocking existsSync means these
+ * tests control which branch runs instead of depending on what happens to be
+ * true of this machine's filesystem right now.
+ *
+ * global.fetch is stubbed for the same reason on the delegation side: without
+ * it, a guard regression that reaches delegateStart() would issue a real HTTP
+ * POST to http://capture:8082/start — reachable from this host outside any
+ * container — and could start a real capture in the capture container.
+ */
 import {
   buildListenArgs, countCalls, scriptFor, LAUNCHERS, inContainer, startListening,
+  captureCapabilityGap, isCaptureCapable,
 } from './processes'
+
+const mockSpawn = vi.fn()
+const mockExecFileSync = vi.fn()
+const mockExistsSync = vi.fn()
+const mockFetch = vi.fn()
+const mockOpenSync = vi.fn()
+const mockCloseSync = vi.fn()
+
+// Vitest hoists these calls above the imports above at runtime (regardless of
+// lexical position), so both modules are already mocks by the time
+// processes.ts's own top-level imports resolve. The `mock`-prefixed names are
+// required by that same hoisting transform — see transcriber.test.ts's
+// comment on the identical child_process mock for why.
+vi.mock('node:child_process', () => ({
+  spawn: (...args: unknown[]) => mockSpawn(...args),
+  execFileSync: (...args: unknown[]) => mockExecFileSync(...args),
+}))
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  // readFileSync/statSync/readSync (used by readTail()/processStartTime()/
+  // isProcessRunning(), none of which this file's tests touch) stay real.
+  // existsSync is mocked because captureCapabilityGap() calls it — these
+  // tests need to control which branch runs rather than depend on what
+  // happens to be true of this machine's filesystem right now. openSync/
+  // closeSync are mocked too: the "capable, spawns locally" test below
+  // exercises startListening()'s local-spawn branch, which opens
+  // web/listen.log for real — on THIS host that is a real file next to the
+  // live capture's own working tree, and a test has no business truncating
+  // it just to prove a spawn call happened.
+  return {
+    ...actual,
+    existsSync: (...args: unknown[]) => mockExistsSync(...args),
+    openSync: (...args: unknown[]) => mockOpenSync(...args),
+    closeSync: (...args: unknown[]) => mockCloseSync(...args),
+  }
+})
+
+vi.stubGlobal('fetch', mockFetch)
+
+afterEach(() => {
+  vi.clearAllMocks()
+})
 
 describe('buildListenArgs', () => {
   it('maps a preset to --preset', () => {
@@ -124,25 +188,11 @@ describe('countCalls', () => {
   })
 })
 
-describe('container mode', () => {
-  /**
-   * The web container can see host processes through `pid: host`, so reading
-   * and releasing the radio still work. Only STARTING a capture is impossible:
-   * op25 needs USB access to the HackRFs and a gnuradio stack the image does
-   * not carry. Spawning anyway would fail deep inside bash with an error the
-   * operator cannot act on.
-   */
-  it('refuses to start a capture and names the command to run instead', () => {
-    process.env.SDR_IN_CONTAINER = '1'
-    try {
-      expect(inContainer()).toBe(true)
-      expect(() => startListening({ preset: 'pd' })).toThrow(/container/i)
-      expect(() => startListening({ preset: 'pd' })).toThrow(/lwin_listen_multi\.sh/)
-    } finally {
-      delete process.env.SDR_IN_CONTAINER
-    }
-  })
-
+describe('inContainer', () => {
+  // startListening() no longer consults this (see 'capture capability guard'
+  // below) — transcriber.ts's own compose-managed guard still does, and its
+  // reasoning is unchanged, so this pure boolean-env behaviour still needs
+  // covering on its own.
   it('reports host mode when the variable is absent', () => {
     delete process.env.SDR_IN_CONTAINER
     expect(inContainer()).toBe(false)
@@ -156,5 +206,160 @@ describe('container mode', () => {
     } finally {
       delete process.env.SDR_IN_CONTAINER
     }
+  })
+})
+
+/**
+ * A fixed, non-empty PATH so hackrfInfoOnPath()'s scan has a deterministic
+ * set of directories to probe with the mocked existsSync — the real
+ * process.env.PATH on THIS host varies by shell and would otherwise make
+ * these tests depend on what happens to be installed here.
+ */
+const TEST_PATH = '/usr/bin:/bin'
+
+describe('captureCapabilityGap', () => {
+  const ORIGINAL_PATH = process.env.PATH
+
+  afterEach(() => {
+    if (ORIGINAL_PATH === undefined) delete process.env.PATH
+    else process.env.PATH = ORIGINAL_PATH
+  })
+
+  it('reports missing USB access first, without touching PATH or python3', () => {
+    process.env.PATH = TEST_PATH
+    mockExistsSync.mockReturnValue(false)
+    expect(captureCapabilityGap()).toMatch(/dev\/bus\/usb/)
+    // Short-circuited: USB already answered "not capable", so hackrf_info's
+    // PATH scan and the python3 import never need to run.
+    expect(mockExecFileSync).not.toHaveBeenCalled()
+  })
+
+  it('reports missing hackrf_info once USB is present', () => {
+    process.env.PATH = TEST_PATH
+    mockExistsSync.mockImplementation((p: unknown) => p === '/dev/bus/usb')
+    expect(captureCapabilityGap()).toMatch(/hackrf_info/)
+    expect(mockExecFileSync).not.toHaveBeenCalled()
+  })
+
+  it('reports a failed gnuradio import once USB and hackrf_info are present', () => {
+    process.env.PATH = TEST_PATH
+    mockExistsSync.mockReturnValue(true)
+    mockExecFileSync.mockImplementation(() => {
+      throw new Error('ENOENT: no such file or directory, posix_spawn \'python3\'')
+    })
+    expect(captureCapabilityGap()).toMatch(/gnuradio\.op25_repeater/)
+  })
+
+  it('reports capable (null) when USB, hackrf_info and the import all succeed', () => {
+    process.env.PATH = TEST_PATH
+    mockExistsSync.mockReturnValue(true)
+    mockExecFileSync.mockReturnValue(Buffer.from(''))
+    expect(captureCapabilityGap()).toBeNull()
+    expect(isCaptureCapable()).toBe(true)
+  })
+})
+
+describe('capture capability guard on startListening()', () => {
+  const ORIGINAL_PATH = process.env.PATH
+
+  afterEach(() => {
+    if (ORIGINAL_PATH === undefined) delete process.env.PATH
+    else process.env.PATH = ORIGINAL_PATH
+  })
+
+  /** Force captureCapabilityGap() to report "not capable" (no USB). */
+  function forceNotCapable(): void {
+    process.env.PATH = TEST_PATH
+    mockExistsSync.mockReturnValue(false)
+  }
+
+  it('delegates to the capture control API instead of spawning when this process is not capable', async () => {
+    forceNotCapable()
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ started: true, pid: 4242, args: ['--ess', '--include-encrypted', '--pd', '10800'] }),
+    })
+
+    const opts = { mode: 'multi' as const, preset: 'pd', ess: true, includeEncrypted: true, duration: 10800 }
+    const result = await startListening(opts)
+
+    expect(result).toEqual({ pid: 4242, config: opts })
+    expect(mockSpawn).not.toHaveBeenCalled()
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('http://capture:8082/start')
+    expect(init.method).toBe('POST')
+    // Only the fields the control server's build_args() actually accepts —
+    // never a pre-built command line, and never the extra web-side fields
+    // (preset here) this shape has no room for.
+    expect(JSON.parse(init.body as string)).toEqual({
+      mode: 'multi', ess: true, includeEncrypted: true, durationSec: 10800,
+    })
+  })
+
+  it('refuses a request the control API cannot express, before any network call', async () => {
+    forceNotCapable()
+    // No `mode` at all -> defaults to 'single' on the web side, which the
+    // control API has no way to run (ALLOWED_MODES is {'multi'} only).
+    await expect(startListening({ preset: 'pd', duration: 600 }))
+      .rejects.toThrow(/mode "single"/)
+    await expect(startListening({ preset: 'pd', duration: 600 }))
+      .rejects.toThrow(/cannot be delegated/i)
+    expect(mockFetch).not.toHaveBeenCalled()
+    expect(mockSpawn).not.toHaveBeenCalled()
+  })
+
+  it('refuses a request missing duration, since the remote PD preset only applies with one', async () => {
+    forceNotCapable()
+    await expect(startListening({ mode: 'multi', preset: 'pd' }))
+      .rejects.toThrow(/duration/i)
+    expect(mockFetch).not.toHaveBeenCalled()
+    expect(mockSpawn).not.toHaveBeenCalled()
+  })
+
+  it('surfaces an actionable message naming a real recovery command when the control API is unreachable', async () => {
+    forceNotCapable()
+    mockFetch.mockRejectedValue(new Error('fetch failed: ECONNREFUSED'))
+    await expect(startListening({ mode: 'multi', preset: 'pd', duration: 600 }))
+      .rejects.toThrow(/stack\.sh/)
+    expect(mockSpawn).not.toHaveBeenCalled()
+  })
+
+  it('surfaces the control API\'s own error verbatim on a non-2xx response', async () => {
+    forceNotCapable()
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({ error: 'a capture is already running; stop it first', pid: 111 }),
+    })
+    await expect(startListening({ mode: 'multi', preset: 'pd', duration: 600 }))
+      .rejects.toThrow('a capture is already running; stop it first')
+    expect(mockSpawn).not.toHaveBeenCalled()
+  })
+
+  /**
+   * The other half of the guard: if captureCapabilityGap()'s check were ever
+   * removed (or its condition inverted) so that startListening() always took
+   * ONE branch regardless of capability, this test and the delegation test
+   * above would start disagreeing with mockSpawn/mockFetch — whichever
+   * branch got hard-wired would fire in both tests, failing exactly one of
+   * the "not called" assertions across the two.
+   */
+  it('spawns locally instead of delegating when this process IS capable', async () => {
+    process.env.PATH = TEST_PATH
+    mockExistsSync.mockReturnValue(true)
+    mockExecFileSync.mockReturnValue(Buffer.from(''))
+    mockSpawn.mockReturnValue({ pid: 4321, unref: vi.fn() })
+
+    const result = await startListening({ preset: 'pd', duration: 600 })
+
+    expect(result).toEqual({ pid: 4321, config: { preset: 'pd', duration: 600 } })
+    expect(mockFetch).not.toHaveBeenCalled()
+    expect(mockSpawn).toHaveBeenCalledTimes(1)
+    const [cmd, args] = mockSpawn.mock.calls[0] as [string, string[]]
+    expect(cmd).toBe('bash')
+    expect(args[0]).toMatch(/lwin_listen\.sh$/)
+    expect(args).toContain('--preset')
   })
 })

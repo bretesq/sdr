@@ -180,8 +180,19 @@ export default defineEventHandler(async (event) => {
   // process group is invisible to /api/listen/stop forever and needs a
   // terminal to kill. A double-clicked Start button is enough to trigger it.
   //
-  // Everything from here to sessionStore.set() is synchronous, so on Node's
-  // single thread check -> spawn -> set is atomic and needs no lock.
+  // check -> spawn -> set is NO LONGER atomic on its own. startListening() is
+  // now async: when this process cannot reach the HackRFs itself, it awaits a
+  // network round trip to the capture container's control API
+  // (server/utils/processes.ts's captureCapabilityGap()/delegateStart()) —
+  // a real yield point a double-click can race through, unlike the old
+  // fully-synchronous spawn. The backstop for that race now lives one layer
+  // down instead: scripts/capture_control.py's POST /start refuses with 409
+  // the instant a capture is already tracked, and the HackRFs themselves
+  // cannot be opened twice — so the worst a raced double-click can do is have
+  // the second request's control-API call come back 409, surfaced here like
+  // any other thrown Error. The sessionStore.isRunning() check below still
+  // matters as the fast, no-network-round-trip common case; it is just no
+  // longer the ONLY thing preventing two spawns.
   if (sessionStore.isRunning()) {
     setResponseStatus(event, 409)
     return { success: false, error: 'A listening session is already running' }
@@ -190,9 +201,13 @@ export default defineEventHandler(async (event) => {
   // The session row is opened BEFORE the spawn so its id can be passed in the
   // environment; the recorder reads SDR_SESSION_ID and stamps it on each call.
   // Opening it afterwards would race the recorder's first flush.
+  //
+  // NOTE: session_id linkage only happens on the local-spawn path. When
+  // startListening() delegates to the capture container instead, sessionId
+  // has nowhere to go — see delegateStart()'s NOTE in processes.ts.
   const sessionId = sessionStore.open(body)
   try {
-    const { pid, config } = startListening(body, sessionId)
+    const { pid, config } = await startListening(body, sessionId)
     sessionStore.attach(sessionId, pid)
     const session = sessionStore.get()
     return {
