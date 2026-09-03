@@ -10,9 +10,29 @@ FROM ubuntu:26.04
 # gnuradio + gr-osmosdr: the SDR runtime op25 links against.
 # hackrf: hackrf_info, used to prove the devices are visible.
 # util-linux: lwin_listen_multi.sh wraps op25 in `script -q -f -c` for its log.
+#
+# soapysdr-module-hackrf is the one that is easy to miss, and its absence is
+# silent until the moment a capture actually starts. gr-osmosdr does not talk to
+# libhackrf directly: it goes through SoapySDR, which loads a per-radio driver
+# PLUGIN at runtime. --no-install-recommends pulls in libsoapysdr0.8 (the
+# library) but none of those plugins, so SoapySDR starts up fine and simply
+# matches no devices.
+#
+# The failure this caused looked nothing like a missing package: `hackrf_info`
+# listed both HackRFs by serial (it uses libhackrf directly and never consults
+# SoapySDR), `from gnuradio import op25_repeater` imported cleanly, and the
+# container passed every hardware check we had -- then op25 died at startup with
+# `RuntimeError: SoapySDR::Device::make() no match`. Verified against the host,
+# which carries soapysdr-module-hackrf while the image carried only
+# libsoapysdr0.8.
+#
+# soapysdr-tools supplies SoapySDRUtil, so `SoapySDRUtil --find` can prove
+# device enumeration works WITHOUT starting a capture -- the check that would
+# have caught this before the cutover.
 RUN apt-get update -qq \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-      gnuradio gr-osmosdr hackrf python3 util-linux procps \
+      gnuradio gr-osmosdr hackrf soapysdr-module-hackrf soapysdr-tools \
+      python3 util-linux procps \
  && rm -rf /var/lib/apt/lists/*
 
 # op25 itself is NOT baked in. The host's build is bind-mounted read-only at
