@@ -930,7 +930,26 @@ body {
    not another mark competing with mark--keyed and mark--locked at the head of
    the line. Dotted, because a printed form annotates in place. */
 .strip__code {
-  border-bottom: 1px dotted #c8a24a;
-  color: #e6cf95;
+  /* Red pencil on paper. The first cut used the pale gold from the dark
+     sidebar palette, which is very nearly invisible on cream stock -- the
+     strips are LIGHT (--stock-clear #e7dcbe, --ink #1b1a14), and colours do not
+     carry across the two halves of this surface. --grease-ink is the design's
+     own annotation ink and is what a marked-up printed form actually looks
+     like. */
+  border-bottom: 1px solid var(--grease-ink);
+  color: var(--grease-ink);
+  font-weight: 600;
   cursor: help;
 }
+
+/* The waveform occupies the slot the flat progress fill used to. Same height
+   budget as the transport line it sits in, so adding the shape cost the rail
+   no vertical space. */
+.transport__wave {
+  flex: 1;
+  height: 22px;
+  display: block;
+}
+/* Until the fetch and decode land, the element is present but empty — the
+   baseline still prints, so the transport never looks like nothing is playing. */
+.wave--pending { opacity: 0.7; }

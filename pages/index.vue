@@ -72,7 +72,20 @@
         <div v-if="feed.nowPlaying.value" class="transport">
           <span class="mark mark--live">playing</span>
           <span>{{ feed.nowPlaying.value.alpha ?? feed.nowPlaying.value.tgid }}</span>
-          <div class="transport__bar"><div class="transport__fill" :style="{ transform: `scaleX(${progress})` }" /></div>
+          <!--
+            The clip's own shape, in place of the flat fill that was here.
+
+            Keyed by file so switching clips remounts rather than animating one
+            envelope into another — the strip being reviewed changes wholesale,
+            and a canvas holding the previous clip's peaks for a frame would
+            show the wrong audio under the playhead.
+          -->
+          <BayWaveform
+            :key="feed.nowPlaying.value.file"
+            class="transport__wave"
+            :file="feed.nowPlaying.value.file"
+            :progress="progress"
+          />
           <span>{{ feed.nowPlaying.value.dur.toFixed(1) }}s</span>
         </div>
       </section>
