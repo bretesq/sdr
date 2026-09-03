@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # One view over both halves of the console.
 #
-# The supervised half runs under compose; op25, the recorders and the HackRFs
-# run on the host. Reporting only the containers is how a dead transcription
-# watcher goes unnoticed for hours, so `status` always prints both.
+# The supervised half runs under compose. op25 and the recorders now run
+# EITHER on the host or inside the `capture` container -- CORRECTED
+# (final-review.md M4): this used to say they run on the host unconditionally,
+# which was the whole setup before the capture container existed and is no
+# longer true in the default (containerized) configuration; see host_status()
+# below, which already resolves each matching pid to whichever place actually
+# owns it. Reporting only the containers is how a dead transcription watcher
+# goes unnoticed for hours, so `status` always prints both.
 set -euo pipefail
 # readlink -f resolves BASH_SOURCE through any symlinks before we derive the
 # repo root from it. Without this, symlinking stack.sh into a PATH directory
@@ -16,6 +21,32 @@ set -euo pipefail
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 R="$(cd "$(dirname "$SELF")/.." && pwd)"
 cd "$R"
+
+# Every host-visible pid running op25 (multi_rx.py), wherever it actually
+# lives -- host or the capture container; see host_status()'s own comment on
+# why the host's /proc sees both regardless of PID namespace. Factored out so
+# the restart guard below can ask the identical question host_status() answers
+# instead of a second, easy-to-drift-from detector.
+op25_pids() {
+  ps -eo pid,comm,args --no-headers | awk '$2=="python3" && /multi_rx/ {print $1}'
+}
+
+# Resolve a list of pids to how many are host processes vs. inside SOME
+# docker container -- shared by the op25 AND recorder counts below (M5:
+# recorders used to report one undifferentiated total, ambiguous in exactly
+# the both-running state op25's own split exists to call out). Prints
+# "host_n container_n"; callers `read -r host_n container_n <<<`.
+count_by_location() {
+  local host_n=0 container_n=0
+  for pid in "$@"; do
+    if grep -Eq 'docker[-/]' "/proc/$pid/cgroup" 2>/dev/null; then
+      container_n=$((container_n + 1))
+    else
+      host_n=$((host_n + 1))
+    fi
+  done
+  echo "$host_n $container_n"
+}
 
 host_status() {
   echo "HOST"
@@ -38,19 +69,11 @@ host_status() {
   # host or container by checking whether its cgroup names a docker container
   # (`/proc/<pid>/cgroup` contains a `docker-<id>.scope` or `/docker/<id>`
   # segment for a containerised process; a bare host process has neither).
-  op25_pids="$(ps -eo pid,comm,args --no-headers | awk '$2=="python3" && /multi_rx/ {print $1}')"
+  op25_pids="$(op25_pids)"
   if [ -z "$op25_pids" ]; then
     echo "  op25          stopped"
   else
-    host_n=0
-    container_n=0
-    for pid in $op25_pids; do
-      if grep -Eq 'docker[-/]' "/proc/$pid/cgroup" 2>/dev/null; then
-        container_n=$((container_n + 1))
-      else
-        host_n=$((host_n + 1))
-      fi
-    done
+    read -r host_n container_n <<< "$(count_by_location $op25_pids)"
     if [ "$container_n" -gt 0 ] && [ "$host_n" -gt 0 ]; then
       echo "  op25          running (${container_n} in the capture container, ${host_n} on the host -- unexpected, check both)"
     elif [ "$container_n" -gt 0 ]; then
@@ -60,7 +83,25 @@ host_status() {
     fi
   fi
 
-  printf '  recorders     %s\n' "$(ps -eo args --no-headers | grep -c '[u]dp_audio_record' || true)"
+  # Split the same way op25 is split, immediately above (M5): an
+  # undifferentiated total was ambiguous in precisely the both-running state
+  # that op25's own line already calls out -- "recorders 16" said nothing
+  # about whether that was 8+8 (both-running, matching op25's warning) or a
+  # single side somehow running twice its own set.
+  recorder_pids="$(ps -eo pid,args --no-headers | awk '/[u]dp_audio_record/ {print $1}')"
+  if [ -z "$recorder_pids" ]; then
+    echo "  recorders     0"
+  else
+    read -r host_n container_n <<< "$(count_by_location $recorder_pids)"
+    total=$((host_n + container_n))
+    if [ "$container_n" -gt 0 ] && [ "$host_n" -gt 0 ]; then
+      echo "  recorders     ${total} (${container_n} in the capture container, ${host_n} on the host)"
+    elif [ "$container_n" -gt 0 ]; then
+      echo "  recorders     ${total} (in the capture container)"
+    else
+      echo "  recorders     ${total} (on the host)"
+    fi
+  fi
 
   python3 - <<'PY'
 import sqlite3, time
@@ -104,9 +145,29 @@ case "${1:-status}" in
   # it onto the default bridge where `http://whisper:8081` no longer resolves
   # for stt-watch or web. Takes an optional service name (e.g. `whisper` or
   # `stt-watch`); with none, every compose service restarts.
+  #
+  # CORRECTED (final-review.md I2): "the safe, named thing" stopped being true
+  # for the BARE form the moment `capture` joined compose (this branch) —
+  # `docker compose restart` with no argument restarts EVERY service,
+  # `capture` included, and that stops a live radio with nothing configured to
+  # bring it back (`restart: unless-stopped` only reacts to the container
+  # exiting on its own, not to an operator-issued restart). A bare restart
+  # while a capture is live is refused below; naming a service explicitly
+  # (including `restart capture`) is left alone as deliberate operator intent
+  # — this guard is only for the "I meant the other services" bare case.
   restart)
     if [ -n "${2:-}" ]; then
       docker compose restart "$2"
+    elif [ -n "$(op25_pids)" ]; then
+      echo "refusing bare restart: op25 is currently running (host and/or the" >&2
+      echo "capture container — see 'status' for which). Bare 'docker compose" >&2
+      echo "restart' restarts EVERY service, including 'capture', which would" >&2
+      echo "stop the live radio with nothing to bring it back automatically." >&2
+      echo "Restart a specific non-radio service instead, e.g.:" >&2
+      echo "  ./scripts/stack.sh restart web" >&2
+      echo "Or, if you deliberately intend to take the radio down:" >&2
+      echo "  ./scripts/stack.sh restart capture" >&2
+      exit 1
     else
       docker compose restart
     fi
