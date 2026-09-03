@@ -156,11 +156,50 @@ def main() -> int:
     db = connect()
     linked = 0
     try:
-        # Clear only this log's time span, so re-importing one capture does not
-        # duplicate its rows and does not touch any other capture's.
-        lo, hi = min(g[0] for g in grants), max(g[0] for g in grants)
-        db.execute('DELETE FROM grants WHERE ts BETWEEN ? AND ?', (lo, hi))
-
+        # TWO PHASES, AND THE ORDER IS LOAD-BEARING: every link lookup runs
+        # BEFORE the write transaction is opened.
+        #
+        # This used to be one loop -- DELETE first, then SELECT-then-INSERT per
+        # grant -- and that shape held SQLite's single write lock for the whole
+        # run. Python's sqlite3 opens its implicit transaction on the first
+        # DML statement (isolation_level='' by default), so the DELETE opened
+        # it and nothing closed it until the commit ~156,000 SELECT+INSERT
+        # pairs later. Measured on a real 1,964,517-line log
+        # (results/op25_multi.log.20260902-182333): the link SELECTs alone are
+        # ~8.7s at 55.4us each, so the write lock was held for the better part
+        # of 15 seconds.
+        #
+        # sdr.db is WAL with busy_timeout=5000 (see sdr_db.SCHEMA): readers
+        # never block, but a SECOND writer that waits longer than 5s gets
+        # `database is locked`. Everything else that writes this database --
+        # udp_audio_record.py per recorded call, stt_watch.py per transcript,
+        # the web app -- therefore had a ~15s window in which its write could
+        # fail. udp_audio_record.py catches that and prints
+        # "WARNING: could not record ... in the database", so the .wav survives
+        # on disk while the `calls` row silently does not: a recorded call
+        # missing from the console's Recordings list.
+        #
+        # This was ALREADY true before the import moved off the shutdown
+        # critical path -- stt_watch and the web app write continuously and do
+        # not care what a capture is doing. Backgrounding the import (see
+        # lwin_listen_multi.sh's cleanup()) widened the blast radius to the
+        # NEXT session's recorders, which is what made it worth fixing rather
+        # than what created it.
+        #
+        # The fix is a reorder, deliberately NOT a rewrite: the link query
+        # below is byte-for-byte the one that was here before, still
+        # per-grant, still "nearest call within LINK_WINDOW_S, ordered by
+        # ABS(start - ts)". That tightness is deliberate (see LINK_WINDOW_S)
+        # and a set-based rewrite would have quietly changed which call a
+        # grant attaches to. Chunked commits were the other option and were
+        # rejected too: they would give up the atomicity that makes the
+        # span-DELETE below safe to re-run.
+        #
+        # PHASE 1 -- resolve links. Read-only, in autocommit, so no write lock
+        # is held. This is the slow phase and now it costs other writers
+        # nothing. It reads `calls`; phase 2 writes `grants` -- different
+        # tables, so doing the reads first cannot change the outcome.
+        rows = []
         for ts, tgid, src, freq, rf, st in grants:
             row = db.execute(
                 """SELECT id FROM calls
@@ -170,10 +209,30 @@ def main() -> int:
             call_id = row['id'] if row else None
             if call_id:
                 linked += 1
-            db.execute(
-                """INSERT INTO grants (ts, tgid, src_addr, freq, rfss, site, call_id)
-                   VALUES (?,?,?,?,?,?,?)""",
-                (ts, tgid, src, freq, rf, st, call_id))
+            rows.append((ts, tgid, src, freq, rf, st, call_id))
+
+        # PHASE 2 -- one short write transaction: clear this log's span, insert
+        # the resolved rows, commit. Still atomic, so a crash leaves the span
+        # either fully replaced or untouched, never half-imported.
+        #
+        # MEASURED, and worth being precise about because it is easy to credit
+        # the wrong change: on a temporary database with the same 156,794 rows,
+        # this phase takes 0.27s -- and the OLD per-row execute() loop took
+        # 0.30s for the identical inserts. Batching them is NOT what fixed
+        # anything. The entire win is the REORDER above: the write lock used to
+        # span the ~8.7s of link SELECTs as well, so it was held ~9.0s and is
+        # now held ~0.27s, roughly 33x shorter. executemany() is used here
+        # simply because phase 1 already produced the complete row list, so it
+        # is the natural way to write it -- not as the optimisation.
+        #
+        # Clear only this log's time span, so re-importing one capture does not
+        # duplicate its rows and does not touch any other capture's.
+        lo, hi = min(g[0] for g in grants), max(g[0] for g in grants)
+        db.execute('DELETE FROM grants WHERE ts BETWEEN ? AND ?', (lo, hi))
+        db.executemany(
+            """INSERT INTO grants (ts, tgid, src_addr, freq, rfss, site, call_id)
+               VALUES (?,?,?,?,?,?,?)""",
+            rows)
         db.commit()
     finally:
         db.close()

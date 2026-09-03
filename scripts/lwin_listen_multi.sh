@@ -55,6 +55,14 @@ WL=$R/lwin_active_whitelist.txt
 CCWL=$R/lwin_nofollow.txt
 CFG=$R/lwin_both.json
 LOG=$R/results/op25_multi.log
+# Where the backgrounded grant census import writes its summary and any
+# failure. A separate file rather than this script's stdout because the import
+# outlives the launcher now (see cleanup()): its output would otherwise land on
+# the container's stdout after this script had exited, with nothing to
+# attribute it to. Appended to, never rotated here -- one short entry per
+# session stop. results/*.log is the established place for this kind of
+# per-tool log in this repo.
+IMPORT_LOG=$R/results/grant_import.log
 LEGS=700,800
 SECS=0
 STT=0
@@ -194,21 +202,73 @@ cleanup() {
   wait 2>/dev/null
   if [ "$CENSUS" -eq 1 ]; then
     echo
-    # setsid puts the import in its OWN process group.
+    # BACKGROUNDED, AND THAT IS THE POINT. `setsid ... &`, not `setsid ...`.
     #
-    # The console's Stop path (server/utils/processes.ts stopListening) SIGINTs
-    # this script's whole group, then waits for the radio to be released, then
-    # SIGKILLs the group after 8 s. By the time we get here we have already
-    # pkill-ed multi_rx, so the radio reads as free — but bash is still inside
-    # this trap, so the wait loop never breaks and burns the full budget before
-    # SIGKILLing the group, which would take the import with it.
+    # WHY. This used to run synchronously, and the comment that stood here
+    # said so plainly: "It stops being insurance on a long unbounded session,
+    # which is the console's default." That came true. The console's Stop path
+    # SIGINTs this script's whole process group and waits for it to empty
+    # before escalating to SIGKILL -- but bash sits inside THIS trap until the
+    # import returns, so the import's runtime was charged directly against
+    # that budget. With the console on the `pd-all` preset (222 talkgroups, 10
+    # recorders) every Stop was blowing the budget and escalating, which
+    # SIGKILLs the group partway through this very trap and abandons the
+    # recorder cleanup above -- see scripts/capture_control.py's
+    # STOP_SIGINT_TIMEOUT_SEC for the measurements (~20-25 s of cleanup on a
+    # 3-hour session, of which the import is nearly all).
     #
-    # Measured, the import is ~0.12 s for a 26,738-line log (the link query
-    # uses idx_calls_tgid), so today it finishes ~67x inside the budget and
-    # this is insurance rather than a live bug. It stops being insurance on a
-    # long unbounded session, which is the console's default (RUN=99999).
-    setsid python3 "$R/scripts/import_grants.py" "$LOG" || \
-      echo "  (grant import failed; the log is still at $LOG)"
+    # Raising that budget was the stopgap; this is the actual fix. The import
+    # is ALREADY in its own process group thanks to setsid -- precisely so it
+    # can outlive a group SIGKILL -- so bash had no reason to be waiting on it
+    # in the first place. The `&` removes the dominant term from the shutdown
+    # critical path outright. The console's default duration is 86400 s, whose
+    # log no timeout was ever going to cover; this is why the answer could not
+    # keep being a bigger number.
+    #
+    # WHY BACKGROUNDING IS SAFE HERE, AND WHAT WOULD BREAK IT
+    # -------------------------------------------------------
+    # The import can still be running when the NEXT capture starts, so it has
+    # to survive that. It does, because the session log is ROTATED, NOT
+    # TRUNCATED: the startup path above is `mv "$LOG" "$ROTATED"` and only
+    # THEN `: > "$LOG"`, so the `mv` renames the inode this import is reading
+    # and the `: >` creates a brand-new one. An open descriptor follows the
+    # inode, not the path, so the import goes on reading a complete, stable
+    # file that nothing will ever write to again. (Commit e741d6f is what made
+    # that true; it was `: > "$LOG"` before, for the reasons the rotation
+    # comment above gives.)
+    #
+    # DO NOT restore `: > "$LOG"` in place of that rotation. Truncating the
+    # live inode would zero the file out from under an import already reading
+    # it, and the failure would be SILENT -- the import would report a
+    # plausible-looking small number rather than an error. There is a test
+    # asserting the `mv` still precedes the `: >` for exactly this reason.
+    #
+    # Residual, bounded, and detectable: python opens the file ~100 ms after
+    # being forked, so a new session's `mv` landing inside that window would
+    # have this import open the fresh empty log instead. It needs a capture to
+    # start within ~100 ms of a stop, which the console's own Stop-then-Start
+    # gating makes very hard to hit -- and if it ever is hit, a 0-grant entry
+    # for a multi-hour session is visibly wrong in the import log below rather
+    # than something that has to be inferred.
+    #
+    # WHERE THE OUTPUT GOES. Synchronously (instant, no blocking) write a
+    # dated header, then let the import append its own summary
+    # ("imported N grants, M linked to a recorded call") and, on failure, its
+    # traceback or error to the same file via 2>&1. The header is what makes a
+    # backgrounded run attributable to a session at all; without it the
+    # summary would arrive on the container's stdout after the launcher had
+    # already exited, interleaved with the next thing to speak and belonging
+    # to nothing. A failure must not read as success, so it lands in the same
+    # place a success does -- an entry with a header and no "imported" line is
+    # a failed import, and the reason is right underneath it.
+    #
+    # No pid is reported: `setsid` execs its program directly when the caller
+    # is not already a process-group leader and forks when it is, so `$!`
+    # cannot be relied on to be python's own pid. `pgrep -f import_grants.py`
+    # answers "is it still running" without this script having to guess.
+    printf '=== %s  %s\n' "$(date -Is)" "$LOG" >> "$IMPORT_LOG"
+    setsid python3 "$R/scripts/import_grants.py" "$LOG" >> "$IMPORT_LOG" 2>&1 &
+    echo "  grant import running in the background -> $IMPORT_LOG"
   fi
   n=$(ls -1 "$R"/recordings/TG*.wav 2>/dev/null | wc -l)
   echo "-> $n call(s) total in $R/recordings/"
