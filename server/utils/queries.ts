@@ -474,6 +474,69 @@ export function recordingsSummary(): RecordingsSummary {
   }
 }
 
+export interface TranscriptionHealth {
+  /** Calls that ended before the grace cutoff and still have no transcript. */
+  awaiting: number
+  /** Age in seconds of the oldest such call, or null when there are none. */
+  oldestAwaitingSec: number | null
+  /** Calls that ended anywhere in the window — the denominator. */
+  recentCalls: number
+}
+
+/**
+ * Whether transcription is actually keeping up, measured from its output.
+ *
+ * Deliberately NOT a probe of whisper. A wedged server answers GET / in 0.4ms
+ * while hanging every inference — that is how a 26-hour outage went unnoticed —
+ * and a probe cannot see a dead watcher or a vanished GPU at all. Those three
+ * failures are indistinguishable to the operator, and counting calls that ended
+ * without gaining a transcript catches all of them.
+ *
+ * `graceSec` exists because a call with no transcript is the NORMAL state for a
+ * few seconds after it ends: the recorder finalises the .wav, then the watcher
+ * picks it up. Only a call still untranscribed past that grace period is
+ * evidence of anything.
+ *
+ * `transcript IS NULL` (not falsy, not empty) is load-bearing: whisper hearing
+ * silence stores an empty string, which is a completed attempt, not a pending
+ * one — see recordingsSummary() above for the same distinction. A call whose
+ * audio is silence must not inflate the backlog count just because the string
+ * is empty.
+ *
+ * The WHERE clause bounds `ended_at` only from below (`> :since`), not above.
+ * That is intentional, not an oversight: on real data `ended_at` can never
+ * exceed the wall clock this function reads `now` from, so an upper bound
+ * would be dead weight on every call. (It does mean a caller who passes a
+ * `now` from BEFORE some fixture row's `ended_at` gets that row back anyway —
+ * harmless in production, but worth knowing if this is ever exercised against
+ * synthetic data with an arbitrary clock.)
+ */
+export function transcriptionHealth(
+  windowSec = 900,
+  graceSec = 300,
+  now: number = Date.now() / 1000,
+): TranscriptionHealth {
+  const db = getDb()
+  const row = db.prepare(
+    `SELECT COUNT(*) AS recentCalls,
+            SUM(CASE WHEN transcript IS NULL AND ended_at < :cutoff THEN 1 ELSE 0 END)
+              AS awaiting,
+            MIN(CASE WHEN transcript IS NULL AND ended_at < :cutoff THEN ended_at END)
+              AS oldestAwaiting
+       FROM calls
+      WHERE ended_at IS NOT NULL AND ended_at > :since`,
+  ).get({ since: now - windowSec, cutoff: now - graceSec }) as unknown as {
+    recentCalls: number
+    awaiting: number | null
+    oldestAwaiting: number | null
+  }
+  return {
+    recentCalls: Number(row.recentCalls),
+    awaiting: Number(row.awaiting ?? 0),
+    oldestAwaitingSec: row.oldestAwaiting === null ? null : now - Number(row.oldestAwaiting),
+  }
+}
+
 /**
  * SQLite's own cross-connection change counter.
  *

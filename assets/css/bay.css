@@ -42,6 +42,7 @@
   --grease-ink:   #8d2913;
   --pencil-green: #1d6042;   /* green pencil: heard, filed clean */
   --pencil-blue:  #24506f;   /* blue pencil: operator annotation */
+  --pencil-amber: #c8871f;   /* amber pencil: flagged for the operator's eye */
 
   /* --- type ---------------------------------------------------------------- */
   --f-label: 'Barlow Condensed', 'Arial Narrow', sans-serif;
@@ -276,6 +277,10 @@ body {
 .mark--keyed  { color: var(--pencil-green); }
 .mark--locked { color: var(--pencil-blue); }
 .mark--note   { color: var(--ink-3); }
+/* The rail head this sits on (--rail) is dark, unlike the light strip stock
+   the other marks were tuned against, so this gets its own brighter amber
+   rather than reusing --pencil-* at their strip-stock brightness. */
+.mark--stalled { color: var(--pencil-amber); }
 
 /* the red pencil stroke a controller draws through a strip they are working */
 .strip--live .strip__alpha::after {

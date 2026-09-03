@@ -127,9 +127,20 @@ export function stopTranscriber(): boolean {
 }
 
 /**
- * True if the whisper-server answers. Distinct from the watcher being up: a
- * watcher can be running while the server is down, transcribing on CPU at
- * roughly 15x the cost per clip.
+ * True if the whisper-server answers an HTTP request. That is ALL this proves.
+ *
+ * It is not a health check, and must not be read as one: this exact probe
+ * answered `200` in 0.4ms for 26 straight hours while every transcription
+ * hung forever, because a wedged whisper-server can still accept a TCP
+ * connection and serve `GET /` while its inference path is dead. It also
+ * cannot see a watcher that has died or a GPU that has vanished — both leave
+ * this call returning `true` right up until the process itself goes away.
+ *
+ * For whether transcription is actually keeping up, see transcriptionHealth()
+ * in queries.ts, which measures the one thing this cannot: whether transcripts
+ * are appearing for calls that have ended. `GET /api/transcribe/status`
+ * reports this function's result as `reachable` — deliberately not `healthy`
+ * or `gpuServer` — precisely so nothing calling it implies more than it knows.
  *
  * A direct HTTP probe rather than `stt_server.sh status`, because this is on a
  * polled path (RecordingsList polls transcriber state) and that script shells

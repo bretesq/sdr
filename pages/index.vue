@@ -35,6 +35,7 @@
         <header class="rail__head">
           <span>Live</span>
           <span v-if="feed.armed.value && feed.streamOk.value" class="mark mark--live">on air</span>
+          <span v-if="sttStalled" class="mark mark--stalled" aria-live="polite">{{ sttStalled }}</span>
           <span class="spacer" />
           <span v-if="feed.skipped.value" class="count">{{ feed.skipped.value }} aged out</span>
           <span v-if="feed.failed.value" class="count">{{ feed.failed.value }} failed</span>
@@ -131,6 +132,44 @@ const liveEmpty = computed(() => !feed.nowPlaying.value && feed.entries.value.le
 
 const receiverShort = computed(() => (feed.radioBusy.value ? 'on air' : 'idle'))
 
+interface ApiResponse<T> { success: boolean, data?: T, error?: string }
+
+/** Mirrors the `data` shape of GET /api/transcribe/status. */
+interface TranscribeStatus {
+  running: boolean
+  reachable: boolean
+  state: 'idle' | 'healthy' | 'degraded'
+  awaiting: number
+  oldestAwaitingSec: number | null
+}
+
+const sttStatus = ref<TranscribeStatus | null>(null)
+
+/**
+ * Lit only for `state === 'degraded'` — the 26-hour-wedge signature this
+ * indicator exists to surface. `healthy` and `idle` render nothing on
+ * purpose: an indicator that is always on is furniture the operator learns
+ * to ignore, and `idle` (quiet air, nobody keyed a mic) reads identically to
+ * a stalled pipeline unless it stays silent. See transcriptionHealth() in
+ * server/utils/queries.ts for what actually distinguishes the three states.
+ */
+const sttStalled = computed(() => {
+  const s = sttStatus.value
+  if (!s || s.state !== 'degraded') return null
+  const oldest = s.oldestAwaitingSec === null ? '?' : `${Math.round(s.oldestAwaitingSec / 60)}m`
+  return `transcription stalled · ${s.awaiting} waiting, oldest ${oldest}`
+})
+
+async function refreshSttStatus(): Promise<void> {
+  try {
+    const res = await $fetch<ApiResponse<TranscribeStatus>>('/api/transcribe/status')
+    if (res.success && res.data) sttStatus.value = res.data
+  } catch {
+    // Leave the last known reading rather than clearing a real indicator
+    // because of one dropped poll.
+  }
+}
+
 const liveHint = computed(() => {
   if (!feed.armed.value) return 'Tick talkgroups, then arm the bay.'
   if (!feed.radioBusy.value) return 'No capture is running, so nothing new will land.'
@@ -159,6 +198,10 @@ function toggleTg(tgid: number): void {
   else feed.selected.value.splice(i, 1)
 }
 
+// 10s, matching RecordingsList's transcriber poll — this is the same fact,
+// read on a different page, and there is no reason for it to move faster.
+let sttTimer: ReturnType<typeof setInterval> | null = null
+
 onMounted(() => {
   void feed.load()
   void archive.load()
@@ -166,8 +209,13 @@ onMounted(() => {
   ticker = setInterval(() => {
     elapsed.value = feed.nowPlaying.value ? elapsed.value + 0.25 : 0
   }, 250)
+  void refreshSttStatus()
+  sttTimer = setInterval(() => { void refreshSttStatus() }, 10_000)
 })
-onUnmounted(() => { if (ticker) clearInterval(ticker) })
+onUnmounted(() => {
+  if (ticker) clearInterval(ticker)
+  if (sttTimer) clearInterval(sttTimer)
+})
 </script>
 
 <style>

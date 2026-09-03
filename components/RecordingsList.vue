@@ -465,11 +465,16 @@ const untranscribed = ref(0)
 
 async function refreshStt(): Promise<void> {
   try {
-    const res = await $fetch<ApiResponse<{ running: boolean, gpuServer: boolean }>>(
+    // The route's field is `reachable`, not `gpuServer`: it only means the
+    // server answered an HTTP request (see transcriber.ts's isSttServerRunning
+    // doc comment), so it is named for what it actually is. `sttGpu` here
+    // keeps its name — this component's own "answering vs CPU fallback"
+    // reading of that fact is unchanged, only the wire field it comes from.
+    const res = await $fetch<ApiResponse<{ running: boolean, reachable: boolean }>>(
       '/api/transcribe/status')
     if (res.success && res.data) {
       sttRunning.value = res.data.running
-      sttGpu.value = res.data.gpuServer
+      sttGpu.value = res.data.reachable
     }
   } catch {
     // Leave the last known state rather than claiming it stopped.

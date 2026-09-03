@@ -1,12 +1,14 @@
-import { describe, it, expect, beforeAll } from 'vitest'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { existsSync, readdirSync, readFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { createRequire } from 'node:module'
 import { sdrRoot, whitelistPath } from './paths'
 import {
   listRecordings, getRecording, listTalkgroups, listCategories, codeStats,
-  followedTalkgroups,
+  followedTalkgroups, transcriptionHealth,
 } from './queries'
-import { dbPath } from './db'
+import { dbPath, closeDb } from './db'
 
 /**
  * These run against the REAL sdr.db, not a fixture.
@@ -464,5 +466,125 @@ describe('followed talkgroups', () => {
       expect(r).toHaveProperty('desc')
       expect(r).toHaveProperty('cat')
     }
+  })
+})
+
+describe('transcriptionHealth', () => {
+  /**
+   * Every describe block above this one runs against the REAL sdr.db, on
+   * purpose (see the file header). That approach does not work here: a live
+   * capture and its transcriber are running against this same corpus right
+   * now, so "a call that ended 10s ago" or "a call stuck past its grace
+   * cutoff" cannot be measured against live rows without racing real time and
+   * flaking by construction — and this task's own constraints forbid pointing
+   * a test at the live sdr.db regardless.
+   *
+   * transcriptionHealth() has no seam for a different database — it goes
+   * through the same getDb() singleton as every other query in this file — so
+   * the seam used here is the one getDb() already reads: SDR_ROOT. A tiny,
+   * throwaway sdr.db is built in an OS temp directory, SDR_ROOT is pointed at
+   * it only for the lifetime of this describe block, and closeDb() drops the
+   * cached connection so the next getDb() call reopens against the new path.
+   * Every test above and below this block is unaffected once it is restored.
+   *
+   * The fixture file is built with a WRITABLE connection and getDb() (which
+   * opens read-only) is only ever pointed at it once that file already exists
+   * on disk. Opening a read-only connection to a path that does not exist is
+   * exactly the silent-file-creation trap this task's constraints call out —
+   * so schema and rows are written and the writer closed *before* SDR_ROOT
+   * is touched.
+   */
+  const nodeRequire = createRequire(import.meta.url)
+  const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite')
+
+  const fixtureDir = mkdtempSync(join(tmpdir(), 'transcription-health-'))
+  const originalSdrRoot = process.env.SDR_ROOT
+
+  // One fixed corpus, several `now` values, rather than one shared window.
+  // transcriptionHealth()'s WHERE clause bounds `ended_at` only from BELOW
+  // (`> :since`) — correct in production, where a call can never end after
+  // the clock `now` is read from, so there is no reason to also bound it
+  // above. But it means "the window" here is [now - windowSec, +inf), not a
+  // closed interval: a `now` chosen too early would let a stale row inside
+  // its cutoff sneak back into view instead of aging out of it. So each test
+  // picks a `now` late enough, relative to this fixed corpus, that only the
+  // rows it means to exercise land on the counted side of `since`.
+  const BASE = 1_800_000_000
+  const FAR_PAST = BASE + 1_000 // outside every window below; never counted
+  const OLD_AWAITING = BASE + 3_000 // no transcript — the real backlog row
+  const SILENT = BASE + 3_001 // transcript '' (whisper heard silence)
+  const TRANSCRIBED = BASE + 3_002 // transcript present
+  const GRACE = BASE + 5_000 // no transcript, but newest — inside its grace period
+
+  beforeAll(() => {
+    const dbFile = join(fixtureDir, 'sdr.db')
+    const setup = new DatabaseSync(dbFile)
+    // Only the columns transcriptionHealth() reads, plus transcript_norm:
+    // getDb()'s migration guard checks for that column on every database it
+    // opens (see db.ts), real corpus or not.
+    setup.exec(`
+      CREATE TABLE calls (
+        id INTEGER PRIMARY KEY,
+        ended_at INTEGER,
+        transcript TEXT,
+        transcript_norm TEXT
+      )
+    `)
+    const insert = setup.prepare(
+      'INSERT INTO calls (ended_at, transcript) VALUES (:ended_at, :transcript)',
+    )
+    insert.run({ ended_at: FAR_PAST, transcript: null })
+    insert.run({ ended_at: OLD_AWAITING, transcript: null })
+    insert.run({ ended_at: SILENT, transcript: '' })
+    insert.run({ ended_at: TRANSCRIBED, transcript: 'ten four' })
+    insert.run({ ended_at: GRACE, transcript: null })
+    setup.close()
+
+    process.env.SDR_ROOT = fixtureDir
+    closeDb()
+  })
+
+  afterAll(() => {
+    closeDb()
+    // Assigning the string "undefined" back onto an unset var would point
+    // every later test in this file at /undefined/sdr.db.
+    if (originalSdrRoot === undefined) delete process.env.SDR_ROOT
+    else process.env.SDR_ROOT = originalSdrRoot
+    rmSync(fixtureDir, { recursive: true, force: true })
+  })
+
+  it('reports idle when no calls ended in the window', () => {
+    // `now` is later than every fixture row by more than windowSec, so
+    // `since` clears all five of them and the window is genuinely empty.
+    const h = transcriptionHealth(600, 300, GRACE + 5_000)
+    expect(h.recentCalls).toBe(0)
+    expect(h.awaiting).toBe(0)
+  })
+
+  it('does not count a call still inside its grace period', () => {
+    // GRACE ended 10s before `now`: inside the 600s window, nowhere near the
+    // 300s grace cutoff. A call with no transcript yet is the NORMAL state
+    // this soon after it ends, not evidence of a backlog.
+    const h = transcriptionHealth(600, 300, GRACE + 10)
+    expect(h.awaiting).toBe(0)
+  })
+
+  it('counts a call that ended before the grace cutoff and has no transcript', () => {
+    // `now` is 400s after OLD_AWAITING ended — past the 300s cutoff — while
+    // FAR_PAST stays outside the 600s window entirely and GRACE has not
+    // happened yet relative to this `now`.
+    const h = transcriptionHealth(600, 300, OLD_AWAITING + 400)
+    expect(h.awaiting).toBeGreaterThan(0)
+    expect(h.oldestAwaitingSec).toBeGreaterThan(300)
+  })
+
+  it('does not count a silent or already-transcribed call as awaiting', () => {
+    // SILENT and TRANSCRIBED are exactly as stale as OLD_AWAITING and land in
+    // the same window and past the same cutoff, but transcript IS NOT NULL
+    // for either — an empty string is a completed attempt (whisper heard
+    // nothing), not a pending one, matching recordingsSummary()'s comment
+    // above. Without that IS NULL guard this would read 3, not 1.
+    const h = transcriptionHealth(600, 300, OLD_AWAITING + 400)
+    expect(h.awaiting).toBe(1)
   })
 })
