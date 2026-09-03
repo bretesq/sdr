@@ -13,11 +13,11 @@
       search the operator has to go find.
     -->
     <div class="stack__head">
-      <!-- ACTIVE: what the bay is doing right now -->
+      <!-- LISTEN: what this browser is playing right now -->
       <div class="stack__block">
-        <span class="stack__label">Active</span>
+        <span class="stack__label">Listen</span>
         <div class="readout" :class="{ 'readout--dim': !armed }">
-          {{ armed ? selected.length : '—' }}<span class="readout__unit"> tg armed</span>
+          {{ armed ? selected.length : '—' }}<span class="readout__unit"> tg playing</span>
         </div>
         <button
           class="arm"
@@ -27,10 +27,36 @@
           @click="$emit('toggle')"
         >
           <span class="arm__lamp" />
-          {{ armed ? 'Stop' : 'Arm bay' }}
+          {{ armed ? 'Stop listening' : 'Listen live' }}
         </button>
+        <!--
+          This button read "Arm bay" until an operator asked what that meant.
+          The word came from the flight-strip metaphor the rest of this surface
+          is built on, and a metaphor that has to be explained has failed at the
+          only job it had. The visual world stays; the control now says what it
+          does.
+
+          The second hint is the one that matters. THIS button plays audio in
+          THIS BROWSER. Start, in the Capture block below, tells the radio to
+          record. They render as two peer buttons but they are sequential —
+          capture writes the calls, listening plays them back — and pressing
+          Listen with no capture running opens a stream that can never deliver
+          anything. That is the same arm-into-silence trap ec92e07 closed for
+          out-of-whitelist standby rows, one level up.
+
+          Left enabled rather than disabled on purpose: `radioBusy` can go true
+          a second later (the operator may start a capture next, or one may be
+          running that this console did not start), and a control that
+          disappears while you are reaching for it is worse than one that tells
+          you what it will do. `radioBusy` counts ANY capture, including an
+          outside-session one, which is correct here — playback depends on calls
+          landing in the corpus, not on who owns the session.
+        -->
         <p v-if="!armed && selected.length === 0" class="idle__sub" style="text-align: left; margin-top: 8px">
-          Tick a talkgroup below to arm.
+          Tick a talkgroup below, then press Listen live to hear it here.
+        </p>
+        <p v-else-if="!radioBusy" class="idle__sub capture__warn" style="text-align: left; margin-top: 8px">
+          Nothing is being recorded, so nothing will arrive. Start a capture below first.
         </p>
       </div>
 

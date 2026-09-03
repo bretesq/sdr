@@ -9,9 +9,9 @@
         @click="toggleArm"
       >
         <span class="arm__lamp" />
-        {{ feed.armed.value ? 'Stop' : 'Arm' }}
+        {{ feed.armed.value ? 'Stop' : 'Listen' }}
       </button>
-      <span class="bay__barstate">{{ feed.selected.value.length }} armed · {{ receiverShort }}</span>
+      <span class="bay__barstate">{{ feed.selected.value.length }} selected · {{ receiverShort }}</span>
       <button class="bay__sheetbtn" type="button" @click="sheet = !sheet">
         {{ sheet ? 'Close' : 'Talkgroups' }}
       </button>
@@ -196,8 +196,8 @@ async function refreshSttStatus(): Promise<void> {
 }
 
 const liveHint = computed(() => {
-  if (!feed.armed.value) return 'Tick talkgroups, then arm the bay.'
-  if (feed.radioBusy.value) return 'Armed and listening. Strips appear as calls end.'
+  if (!feed.armed.value) return 'Tick talkgroups, then press Listen live.'
+  if (feed.radioBusy.value) return 'Listening. Strips appear as calls end.'
   if (feed.tracked.value) return 'A session is open but nothing is receiving. Nothing new will land until it does.'
   return 'No capture is running, so nothing new will land.'
 })
