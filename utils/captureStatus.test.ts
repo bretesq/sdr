@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { receiverStatus, STALL_GRACE_MS, captureExpiry } from './captureStatus'
+import {
+  receiverStatus, STALL_GRACE_MS, captureExpiry, canStartCapture, canStopCapture,
+} from './captureStatus'
 
 /** Session opened at t=0; `nowMs` is expressed as an offset from that. */
 function statusAt(offsetMs: number, overrides: Partial<{ radioBusy: boolean, tracked: boolean }> = {}) {
@@ -123,5 +125,45 @@ describe('captureExpiry', () => {
       sessionDurationSec: 10_800,
       nowMs: 0,
     })).toEqual({ expiresAtMs: null, remainingMs: null })
+  })
+})
+
+describe('canStopCapture / canStartCapture', () => {
+  // One row per real state, including the fifth one `ReceiverStatus` itself
+  // collapses into 'idle' (tracked, no radio yet, still inside grace) — the
+  // whole reason these are derived from the raw signals and not looked up
+  // by ReceiverStatus. See canStartCapture/canStopCapture's own docstring.
+  it('onAirConsole (tracked, radioBusy): Stop only', () => {
+    expect(canStopCapture({ tracked: true })).toBe(true)
+    expect(canStartCapture({ tracked: true, radioBusy: true })).toBe(false)
+  })
+
+  it('onAirOutside (radioBusy, not tracked): neither — not ours to stop, and Start would only contend for the radio', () => {
+    expect(canStopCapture({ tracked: false })).toBe(false)
+    expect(canStartCapture({ tracked: false, radioBusy: true })).toBe(false)
+  })
+
+  it('stalled (tracked, no radio, past grace): Stop is the way out, Start still refuses', () => {
+    expect(canStopCapture({ tracked: true })).toBe(true)
+    expect(canStartCapture({ tracked: true, radioBusy: false })).toBe(false)
+  })
+
+  it('idle (untracked, no radio): Start only', () => {
+    expect(canStopCapture({ tracked: false })).toBe(false)
+    expect(canStartCapture({ tracked: false, radioBusy: false })).toBe(true)
+  })
+
+  it('the fifth state — tracked, no radio yet, still inside STALL_GRACE_MS — reads exactly like stalled for affordances: Stop reachable, Start refused', () => {
+    // receiverStatus() itself reads this combination as 'idle' (see the
+    // "does not trip on a healthy start" case above) precisely so the
+    // Receiver line doesn't cry wolf during a routine startup — but a
+    // lookup keyed on that display state would wrongly re-offer Start here
+    // and withhold Stop for up to STALL_GRACE_MS. These two must not make
+    // that mistake: they never look at session age at all.
+    expect(receiverStatus({
+      radioBusy: false, tracked: true, sessionStartedAt: 0, nowMs: 1000,
+    })).toBe('idle') // sanity: this really is the display-idle case
+    expect(canStopCapture({ tracked: true })).toBe(true)
+    expect(canStartCapture({ tracked: true, radioBusy: false })).toBe(false)
   })
 })

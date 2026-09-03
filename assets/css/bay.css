@@ -383,6 +383,76 @@ body {
 }
 
 /* ===========================================================================
+   Capture control — starts and stops the RADIO, in the same stack-block
+   vocabulary as the Active/Receiver blocks above it. No new container: a
+   `.field` for the one number input, `.arm` for Start/Stop (identical to the
+   Active block's own toggle — the same physical-switch metaphor applies to
+   both, they just gate different things), native checkboxes tinted with
+   `accent-color` rather than a bespoke tick, which buys the in-palette look
+   without inventing a second checkbox idiom next to .standby__tick's.
+   =========================================================================== */
+
+.capture__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 6px;
+  font-family: var(--f-body);
+  font-size: 13px;
+  color: #c3c9b0;
+}
+
+.capture__row-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.capture__duration {
+  width: 9ch;
+  text-align: right;
+}
+
+.capture__hint-inline {
+  font-family: var(--f-data);
+  font-size: 11px;
+  color: #8d947b;
+  white-space: nowrap;
+}
+
+.capture__toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-family: var(--f-body);
+  font-size: 13px;
+  color: #c3c9b0;
+  cursor: pointer;
+}
+
+.capture__toggle input[type="checkbox"] {
+  /* Tints the native control instead of hiding it behind a custom square —
+     `accent-color` is exactly the "same red pencil" as everything else on
+     the board, for two lines instead of a whole custom-checkbox build. */
+  accent-color: var(--grease);
+  width: 14px;
+  height: 14px;
+}
+
+/* Same amber as .mark--stalled, and for the identical reason: this text
+   sits on the dark board (--stock-clear's ink tones were tuned against
+   light strip stock, not this ground), so it gets its own brighter tone
+   rather than reusing a pencil color calibrated for paper. Chained onto
+   .idle__sub (not just `.capture__warn`) so its higher specificity wins
+   without an `!important` — `.idle__sub` alone is defined later in this
+   file and would otherwise win on source order. */
+.idle__sub.capture__warn {
+  color: var(--pencil-amber);
+}
+
+/* ===========================================================================
    Standby list — talkgroup selection, in strip vocabulary
    =========================================================================== */
 

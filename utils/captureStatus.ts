@@ -168,3 +168,64 @@ export function captureExpiry(args: CaptureExpiryArgs): CaptureExpiry {
   const expiresAtMs = sessionStartedAt * 1000 + sessionDurationSec * 1000
   return { expiresAtMs, remainingMs: expiresAtMs - nowMs }
 }
+
+/**
+ * WHY THESE ARE NOT DERIVED FROM `ReceiverStatus`
+ * ------------------------------------------------
+ * The obvious way to answer "can the bay's capture control offer Start /
+ * Stop right now" is a lookup table keyed on `ReceiverStatus` — and it is
+ * wrong, in a way that only shows up in the first ~45 seconds after a real
+ * Start. `ReceiverStatus` collapses `tracked && !radioBusy` into a single
+ * `'idle'` bucket whether the session is untracked-and-truly-idle or
+ * tracked-and-still-warming-up (op25 measured up in +3s on a healthy start,
+ * see STALL_GRACE_MS's own docstring) — that collapse is exactly the point
+ * of `'idle'` as a DISPLAY state, so the Receiver line doesn't flicker
+ * "stalled" during a routine startup. But it means a lookup table on
+ * `ReceiverStatus` would read a session mid-startup as plain `'idle'`,
+ * which offers Start again (a double-Start race: the second call either
+ * races the still-opening session row or bounces off the control API's own
+ * 409) and offers no Stop at all for up to 45 seconds — the operator's
+ * only way out of a startup gone wrong would be to wait.
+ *
+ * These two read the two RAW signals `receiverStatus()` itself starts from
+ * (`tracked`, `radioBusy`) instead, which is the only way to keep the
+ * fifth, unnamed state — "our session row is open but op25 hasn't granted
+ * yet" — distinct from genuine idle. `sessionStartedAt`/grace timing simply
+ * do not matter for either of these: whether a tracked session is 2 seconds
+ * or 2 hours old, Stop must always be able to reach it, and Start must
+ * always refuse while it is open.
+ */
+
+export interface CaptureAffordanceArgs {
+  /** See ReceiverStatusArgs.tracked — an open session row, ours. */
+  tracked: boolean
+  /** See ReceiverStatusArgs.radioBusy — op25 holding a HackRF, ours or not. */
+  radioBusy: boolean
+}
+
+/**
+ * Stop is reachable whenever OUR session row is open — on air, still
+ * starting, or stalled with op25 gone. It is deliberately NOT offered for
+ * `onAirOutside` (radioBusy with no tracked row of ours): per the brief,
+ * stopping a capture this console did not start is not this console's to
+ * do, and `stopDelegatedCapture()`/`stopListening()` have no session of
+ * ours to target there anyway — see server/api/listen/stop.post.ts's own
+ * untracked-radioBusy branch, which takes a different, pid-less recovery
+ * path rather than a normal session stop.
+ */
+export function canStopCapture(args: Pick<CaptureAffordanceArgs, 'tracked'>): boolean {
+  return args.tracked
+}
+
+/**
+ * Start is offered only when there is neither a session row of ours open
+ * NOR a foreign op25 already holding a HackRF. The latter matters even
+ * though nothing here is "our" session: attempting Start while some other
+ * capture holds the radio would only contend for it — `POST
+ * /api/listen/start` has no way to know that in advance and would spawn (or
+ * delegate) anyway, so refusing it here is the one honest thing the control
+ * can do before that round trip.
+ */
+export function canStartCapture(args: CaptureAffordanceArgs): boolean {
+  return !args.tracked && !args.radioBusy
+}

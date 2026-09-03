@@ -29,6 +29,7 @@
       :session-duration-sec="feed.sessionDurationSec.value"
       @toggle="toggleArm"
       @toggle-tg="toggleTg"
+      @refresh-capture="refreshCapture"
     />
 
     <main class="bay__rails" :class="{ 'bay__rails--quiet': liveEmpty }">
@@ -220,6 +221,17 @@ function toggleTg(tgid: number): void {
   const i = feed.selected.value.indexOf(tgid)
   if (i === -1) feed.selected.value.push(tgid)
   else feed.selected.value.splice(i, 1)
+}
+
+/**
+ * BayCommStack's capture Start/Stop settled (either way) and asked for a
+ * fresh read rather than waiting for useScannerFeed's own 20s poll
+ * (FOLLOWED_POLL_MS) — otherwise the operator's own click could sit for up
+ * to 20s before the Receiver line or the Capture control's Start/Stop
+ * availability caught up with what they just did.
+ */
+function refreshCapture(): void {
+  void feed.load()
 }
 
 // 10s, matching RecordingsList's transcriber poll — this is the same fact,

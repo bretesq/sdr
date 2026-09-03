@@ -32,6 +32,75 @@
       </p>
     </div>
 
+    <!--
+      CAPTURE: starts and stops the RADIO. Separate from the Active block
+      above on purpose — Arm/Stop up there only gates which clips this
+      browser tab plays; it has never touched op25. This is the control the
+      redesign dropped entirely (no page rendered ListenControl.vue after
+      the bay replaced it), so an operator had no way to start or stop a
+      capture from the console at all. See utils/listenControl.ts's module
+      docstring for exactly why the surface below is this small: it is every
+      field server/utils/processes.ts's buildControlRequest() will actually
+      delegate to the capture container, and nothing it refuses.
+    -->
+    <div class="stack__block">
+      <span class="stack__label">Capture</span>
+
+      <p class="idle__sub" style="text-align: left; margin-bottom: 8px">
+        Police / Sheriff Dispatch (preset pd), two radios — the only profile
+        this console can hand to the capture container.
+      </p>
+
+      <label class="capture__row">
+        <span>Duration</span>
+        <span class="capture__row-field">
+          <input
+            v-model.number="duration"
+            class="field capture__duration"
+            type="number"
+            :min="MIN_CAPTURE_DURATION_SEC"
+            :max="MAX_CAPTURE_DURATION_SEC"
+            :disabled="!canStart || busy"
+            aria-label="Capture duration in seconds"
+          >
+          <span class="capture__hint-inline">{{ durationHuman }}</span>
+        </span>
+      </label>
+      <p v-if="!durationValid" class="idle__sub capture__warn" style="text-align: left">
+        Must be a whole number of seconds from {{ MIN_CAPTURE_DURATION_SEC }} to
+        {{ MAX_CAPTURE_DURATION_SEC }} (24h) — capture_control.py's own bound. Required:
+        the delegated request has no "run until stopped".
+      </p>
+
+      <label class="capture__toggle">
+        <input v-model="ess" type="checkbox" :disabled="!canStart || busy">
+        Capture encryption headers (ESS, ~10&times; log volume)
+      </label>
+
+      <label class="capture__toggle">
+        <input v-model="includeEncrypted" type="checkbox" :disabled="!canStart || busy">
+        Include fully-encrypted talkgroups (records silence)
+      </label>
+
+      <button
+        class="arm"
+        :class="{ 'arm--on': canStop }"
+        :disabled="busy || (!canStart && !canStop) || (canStart && !durationValid)"
+        style="margin-top: 10px"
+        @click="canStop ? stopCapture() : startCapture()"
+      >
+        <span class="arm__lamp" />
+        {{ captureButtonLabel }}
+      </button>
+
+      <p class="idle__sub" style="text-align: left; margin-top: 6px">
+        {{ captureHint }}
+      </p>
+      <p v-if="captureError" class="idle__sub capture__warn" style="text-align: left; margin-top: 6px">
+        {{ captureError }}
+      </p>
+    </div>
+
     <!-- STANDBY: the talkgroups this session can actually produce -->
     <div class="stack__block" style="padding-bottom: 8px">
       <span class="stack__label">Standby — {{ followed.length }} followed, {{ activeCount }} active</span>
@@ -69,8 +138,12 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { receiverStatus, captureExpiry } from '~/utils/captureStatus'
+import { receiverStatus, captureExpiry, canStartCapture, canStopCapture } from '~/utils/captureStatus'
 import type { ReceiverStatus } from '~/utils/captureStatus'
+import {
+  buildCaptureStartBody, isValidCaptureDuration, apiError,
+  DEFAULT_CAPTURE_DURATION_SEC, MIN_CAPTURE_DURATION_SEC, MAX_CAPTURE_DURATION_SEC,
+} from '~/utils/listenControl'
 
 /**
  * The comm stack: active above, standby below, exactly as a radio stack reads.
@@ -98,7 +171,23 @@ const props = defineProps<{
   sessionDurationSec: number | null
 }>()
 
-defineEmits<{ toggle: [], toggleTg: [tgid: number] }>()
+const emit = defineEmits<{
+  toggle: []
+  toggleTg: [tgid: number]
+  /**
+   * Fired after a Start or Stop attempt settles, success or failure. This
+   * component only owns the request/response and its own busy/error state —
+   * `radioBusy`/`tracked`/`sessionStartedAt`/`sessionDurationSec` are props,
+   * read from the SAME `/api/listen/followed` poll `useScannerFeed`
+   * (composables/useScannerFeed.ts) already runs every
+   * `FOLLOWED_POLL_MS` (20s) for the stall indicator. Without this emit the
+   * operator would see their own Start/Stop take effect only on that next
+   * poll — up to 20s of the button appearing to have done nothing. The
+   * parent owns that composable, so refreshing it is the parent's call to
+   * make; this only asks for it.
+   */
+  refreshCapture: []
+}>()
 
 const query = ref('')
 
@@ -223,4 +312,112 @@ const receiverNote = computed(() => {
   }
   return base
 })
+
+/* ===========================================================================
+ * CAPTURE CONTROL — starts and stops the radio, not the audio feed
+ *
+ * `canStart`/`canStop` are NOT read off `status` above: `receiverStatus()`
+ * intentionally collapses "just started, op25 not up yet" into the same
+ * `'idle'` display state as genuine idle (see STALL_GRACE_MS), which is
+ * right for the Receiver line but wrong for these two — see
+ * canStartCapture()/canStopCapture()'s own docstring in
+ * utils/captureStatus.ts for why they read `tracked`/`radioBusy` directly.
+ * ========================================================================= */
+
+interface ApiResponse<T> { success: boolean, data?: T, error?: string }
+
+const canStart = computed(() => canStartCapture({ tracked: props.tracked, radioBusy: props.radioBusy }))
+const canStop = computed(() => canStopCapture({ tracked: props.tracked }))
+
+/**
+ * Seconds, not the ISO-ish shape a `<input type=date>` would use — this is
+ * exactly the `durationSec` field capture_control.py validates, sent
+ * unconverted. `number | null` because `v-model.number` on a number input
+ * yields `null` (not `0` or `NaN`) once the operator clears the field;
+ * `isValidCaptureDuration` treats that as "not ready", not "invalid".
+ */
+const duration = ref<number | null>(DEFAULT_CAPTURE_DURATION_SEC)
+const ess = ref(false)
+const includeEncrypted = ref(false)
+const busy = ref(false)
+const captureError = ref('')
+
+const durationValid = computed(() => isValidCaptureDuration(duration.value))
+
+/**
+ * "86400s · 24h" beside the field. A bare second count is the same trap
+ * ListenControl.vue's own `duration` docstring documents two real sessions
+ * falling into with 10800 (3h) typed in as "whatever number came to mind" —
+ * showing the human-scale equivalent live is what makes the number in the
+ * box a considered choice rather than an unchecked one.
+ */
+const durationHuman = computed(() => {
+  const s = duration.value
+  if (s === null || !Number.isFinite(s)) return ''
+  const h = s / 3600
+  return `${Math.round(h * 100) / 100}h`
+})
+
+const captureButtonLabel = computed(() => {
+  if (busy.value) return canStop.value ? 'Stopping…' : 'Starting…'
+  return canStop.value ? 'Stop capture' : 'Start capture'
+})
+
+// Distinct from receiverNote above (which explains the RECEIVER, i.e. what
+// is physically happening) — this explains what THIS BUTTON will do, which
+// is not always the same sentence: 'onAirOutside' already has a full
+// explanation on the Receiver block above, so this one stays short and
+// points back at it rather than repeating it. Record, not a switch, for the
+// same exhaustiveness reason as RECEIVER_LINE/RECEIVER_NOTE above.
+const CAPTURE_HINT: Record<ReceiverStatus, string> = {
+  onAirConsole: 'Stop ends the capture this console started, immediately.',
+  onAirOutside: 'Already on air from elsewhere — see the receiver note above. This console can’t start or stop it.',
+  stalled: 'Stop releases the recorders even though op25 is gone. Start stays refused until then.',
+  idle: 'Runs for the duration above, or until Stop is pressed.',
+}
+
+const captureHint = computed(() => CAPTURE_HINT[status.value])
+
+async function startCapture(): Promise<void> {
+  // Belt-and-braces: the button is already disabled for every one of these,
+  // but a stray extra call (e.g. a fast double-click landing between one
+  // Vue render and the next) must not re-enter a request already in flight.
+  if (!canStart.value || !durationValid.value || busy.value || duration.value === null) return
+  busy.value = true
+  captureError.value = ''
+  try {
+    const res = await $fetch<ApiResponse<unknown>>('/api/listen/start', {
+      method: 'POST',
+      body: buildCaptureStartBody({
+        duration: duration.value,
+        ess: ess.value,
+        includeEncrypted: includeEncrypted.value,
+      }),
+    })
+    if (!res.success) captureError.value = res.error ?? 'Failed to start'
+  } catch (e) {
+    // Surfaced verbatim — see utils/listenControl.ts's apiError() for why a
+    // bare FetchError.message would hide the control API's own 400/409/502
+    // text (e.g. "A listening session is already running").
+    captureError.value = apiError(e, 'Failed to start')
+  } finally {
+    busy.value = false
+    emit('refreshCapture')
+  }
+}
+
+async function stopCapture(): Promise<void> {
+  if (!canStop.value || busy.value) return
+  busy.value = true
+  captureError.value = ''
+  try {
+    const res = await $fetch<ApiResponse<unknown>>('/api/listen/stop', { method: 'POST' })
+    if (!res.success) captureError.value = res.error ?? 'Failed to stop'
+  } catch (e) {
+    captureError.value = apiError(e, 'Failed to stop')
+  } finally {
+    busy.value = false
+    emit('refreshCapture')
+  }
+}
 </script>
