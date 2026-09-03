@@ -12,12 +12,14 @@ import { closeDb, getWritableDb } from './db'
  * regression here can reach a REAL process or a REAL HTTP call to the
  * capture container. Specifically, this file's whole point is verifying that
  * sessionStore.get() calls the RIGHT ONE of isOurListenSession() (a local
- * /proc read) vs isDelegatedSessionAlive() (an HTTP round trip to
+ * /proc read) vs delegatedSessionLiveness() (an HTTP round trip to
  * http://capture:8082/status) depending on a session's `backend` — if that
  * dispatch is ever wrong, the failure mode is exactly task-3-review.md's
  * Critical C1: a delegated session's pid gets resolved against the wrong PID
  * namespace. Mocking both means this file can assert "which one got called"
  * directly, deterministically, with neither one ever touching anything real.
+ * It also covers fix-round-2's finding (isSessionAlive()'s tolerance for
+ * consecutive 'unknown' answers before giving up) below.
  *
  * Vitest hoists this vi.mock() call above the imports above at runtime
  * (regardless of its lexical position here — see transcriber.test.ts's
@@ -29,12 +31,12 @@ import { closeDb, getWritableDb } from './db'
  */
 const mockIsOurListenSession = vi.fn()
 const mockProcessStartTime = vi.fn()
-const mockIsDelegatedSessionAlive = vi.fn()
+const mockDelegatedSessionLiveness = vi.fn()
 
 vi.mock('./processes', () => ({
   isOurListenSession: (...args: unknown[]) => mockIsOurListenSession(...args),
   processStartTime: (...args: unknown[]) => mockProcessStartTime(...args),
-  isDelegatedSessionAlive: (...args: unknown[]) => mockIsDelegatedSessionAlive(...args),
+  delegatedSessionLiveness: (...args: unknown[]) => mockDelegatedSessionLiveness(...args),
 }))
 
 const nodeRequire = createRequire(import.meta.url)
@@ -119,7 +121,7 @@ describe('sessionStore backend dispatch (task-3-review.md Critical C1)', () => {
     expect(row.backend).toBe('delegated')
   })
 
-  it('get() on a LOCAL session checks isOurListenSession(), never isDelegatedSessionAlive()', async () => {
+  it('get() on a LOCAL session checks isOurListenSession(), never delegatedSessionLiveness()', async () => {
     const id = sessionStore.open({ preset: 'pd' })
     mockProcessStartTime.mockReturnValue(null) // real processStartTime() returns number|null, never undefined
     sessionStore.attach(id, 1234, 'local')
@@ -130,10 +132,10 @@ describe('sessionStore backend dispatch (task-3-review.md Critical C1)', () => {
     expect(session).not.toBeNull()
     expect(session?.pid).toBe(1234)
     expect(mockIsOurListenSession).toHaveBeenCalledWith(1234, null)
-    expect(mockIsDelegatedSessionAlive).not.toHaveBeenCalled()
+    expect(mockDelegatedSessionLiveness).not.toHaveBeenCalled()
   })
 
-  it('get() on a DELEGATED session checks isDelegatedSessionAlive(), never isOurListenSession() — the core C1 regression test', async () => {
+  it('get() on a DELEGATED session checks delegatedSessionLiveness(), never isOurListenSession() — the core C1 regression test', async () => {
     // If this dispatch is ever reverted to always calling
     // isOurListenSession() regardless of backend, THIS is the test that
     // fails: mockIsOurListenSession's default return (undefined, falsy)
@@ -142,20 +144,20 @@ describe('sessionStore backend dispatch (task-3-review.md Critical C1)', () => {
     // task-3-review.md's C1 trace, reproduced deterministically.
     const id = sessionStore.open({ mode: 'multi', preset: 'pd', duration: 600 })
     sessionStore.attach(id, 8675309, 'delegated')
-    mockIsDelegatedSessionAlive.mockResolvedValue(true)
+    mockDelegatedSessionLiveness.mockResolvedValue('alive')
 
     const session = await sessionStore.get()
 
     expect(session).not.toBeNull()
     expect(session?.pid).toBe(8675309)
-    expect(mockIsDelegatedSessionAlive).toHaveBeenCalledWith(8675309)
+    expect(mockDelegatedSessionLiveness).toHaveBeenCalledWith(8675309)
     expect(mockIsOurListenSession).not.toHaveBeenCalled()
   })
 
-  it('a delegated session self-closes once the control API reports it no longer running', async () => {
+  it('a delegated session self-closes once the control API AFFIRMATIVELY reports it no longer running', async () => {
     const id = sessionStore.open({ mode: 'multi', preset: 'pd', duration: 600 })
     sessionStore.attach(id, 42, 'delegated')
-    mockIsDelegatedSessionAlive.mockResolvedValue(false)
+    mockDelegatedSessionLiveness.mockResolvedValue('stopped')
 
     const session = await sessionStore.get()
 
@@ -175,14 +177,92 @@ describe('sessionStore backend dispatch (task-3-review.md Critical C1)', () => {
     expect(session).not.toBeNull()
     expect(session?.pid).toBe(0)
     expect(mockIsOurListenSession).not.toHaveBeenCalled()
-    expect(mockIsDelegatedSessionAlive).not.toHaveBeenCalled()
+    expect(mockDelegatedSessionLiveness).not.toHaveBeenCalled()
   })
 
   it('isRunning() reflects a delegated session\'s liveness via the control API', async () => {
     const id = sessionStore.open({ mode: 'multi', preset: 'pd', duration: 600 })
     sessionStore.attach(id, 42, 'delegated')
 
-    mockIsDelegatedSessionAlive.mockResolvedValue(true)
+    mockDelegatedSessionLiveness.mockResolvedValue('alive')
     expect(await sessionStore.isRunning()).toBe(true)
+  })
+})
+
+describe('delegated session liveness: "unknown" tolerance (task-3-review.md fix-round-2)', () => {
+  // The finding this guards: fix round 1 collapsed 'unknown' (network error,
+  // timeout, unparseable response) into the same outcome as 'stopped', so a
+  // single transient control-API blip permanently untracked a healthy,
+  // still-running session — close() is one-way. These tests exercise
+  // isSessionAlive()'s retry tolerance (MAX_CONSECUTIVE_UNKNOWN = 3 in
+  // session.ts) directly through repeated sessionStore.get() calls, the way
+  // ListenControl.vue's 5s poll actually would.
+
+  it('a single "unknown" answer does NOT close the session — it stays tracked, unchanged', async () => {
+    const id = sessionStore.open({ mode: 'multi', preset: 'pd', duration: 600 })
+    sessionStore.attach(id, 42, 'delegated')
+    mockDelegatedSessionLiveness.mockResolvedValue('unknown')
+
+    const session = await sessionStore.get()
+
+    expect(session).not.toBeNull()
+    expect(session?.pid).toBe(42)
+    const row = getWritableDb().prepare('SELECT ended_at FROM sessions WHERE id = ?').get(id) as {
+      ended_at: number | null
+    }
+    expect(row.ended_at).toBeNull()
+  })
+
+  it('closes only after MAX_CONSECUTIVE_UNKNOWN consecutive "unknown" answers, not before', async () => {
+    const id = sessionStore.open({ mode: 'multi', preset: 'pd', duration: 600 })
+    sessionStore.attach(id, 42, 'delegated')
+    mockDelegatedSessionLiveness.mockResolvedValue('unknown')
+
+    // session.ts's MAX_CONSECUTIVE_UNKNOWN is 3 — the first two must both
+    // still report the session as tracked.
+    expect(await sessionStore.get()).not.toBeNull()
+    expect(await sessionStore.get()).not.toBeNull()
+    // The third consecutive 'unknown' exhausts the budget.
+    expect(await sessionStore.get()).toBeNull()
+
+    const row = getWritableDb().prepare('SELECT ended_at FROM sessions WHERE id = ?').get(id) as {
+      ended_at: number | null
+    }
+    expect(row.ended_at).not.toBeNull()
+  })
+
+  it('a confirmed "alive" answer resets the consecutive-unknown count', async () => {
+    const id = sessionStore.open({ mode: 'multi', preset: 'pd', duration: 600 })
+    sessionStore.attach(id, 42, 'delegated')
+
+    mockDelegatedSessionLiveness.mockResolvedValue('unknown')
+    expect(await sessionStore.get()).not.toBeNull() // 1st unknown
+    expect(await sessionStore.get()).not.toBeNull() // 2nd unknown
+
+    mockDelegatedSessionLiveness.mockResolvedValue('alive')
+    expect(await sessionStore.get()).not.toBeNull() // confirmed alive — resets the count
+
+    mockDelegatedSessionLiveness.mockResolvedValue('unknown')
+    // Two more unknowns after the reset must NOT close the session — if the
+    // count were not reset, this would be the 4th overall and would already
+    // have closed on the previous test's logic. It takes a full THIRD
+    // consecutive unknown since the reset to close it.
+    expect(await sessionStore.get()).not.toBeNull()
+    expect(await sessionStore.get()).not.toBeNull()
+    const row = getWritableDb().prepare('SELECT ended_at FROM sessions WHERE id = ?').get(id) as {
+      ended_at: number | null
+    }
+    expect(row.ended_at).toBeNull()
+  })
+
+  it('a "stopped" answer closes immediately, without waiting for the unknown-tolerance budget', async () => {
+    const id = sessionStore.open({ mode: 'multi', preset: 'pd', duration: 600 })
+    sessionStore.attach(id, 42, 'delegated')
+
+    mockDelegatedSessionLiveness.mockResolvedValue('unknown')
+    expect(await sessionStore.get()).not.toBeNull() // 1st unknown — within tolerance
+
+    mockDelegatedSessionLiveness.mockResolvedValue('stopped')
+    expect(await sessionStore.get()).toBeNull() // definitive — closes NOW, not after 3
   })
 })

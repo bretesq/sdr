@@ -486,40 +486,55 @@ async function delegateStart(
 }
 
 /**
- * Is the delegated session identified by `pid` (the capture container's own
- * PID-namespace number — see delegateStart()'s comment on why it is
- * display-only) still the one the control API reports running?
+ * What GET /status can tell us about a delegated session, WITHOUT collapsing
+ * "the control API answered definitively" into "the control API didn't
+ * answer at all" — task-3-review.md's "unreachable != stopped" finding
+ * (fix round 2). The previous version of this function (isDelegatedSessionAlive(),
+ * a boolean) returned `false` for THREE different situations: a genuine
+ * `running: false`, a network error/timeout, and a non-2xx response. Its own
+ * comment claimed a false "stopped" from the latter two "merely re-attaches
+ * on the next successful poll" — that was WRONG: session.ts's get() reacted
+ * to `false` by calling close(), which is one-way (see close()'s own
+ * docstring, "idempotent" meaning "safe to call again," not "reversible").
+ * A single dropped TCP connection or Docker-bridge hiccup — reachable on ANY
+ * one of the ~17,000 polls a 24h capture makes, or on the very next Stop
+ * click — permanently untracked a healthy, still-running session, reproducing
+ * a probabilistic version of the exact "on air · outside session" symptom
+ * this whole project exists to fix.
  *
- * The delegated equivalent of isOurListenSession(), for the identical reason
- * that function exists: a pid alone is not an identity check you can trust
- * blindly, and here specifically, resolving `pid` against THIS process's
- * /proc (the host's, via `pid: host`) would check an unrelated process in a
- * different namespace entirely — never the real one. Only the control API's
- * own GET /status, which holds the real pgid in its own process's memory,
- * can answer this correctly.
+ * 'alive'   — the control API affirmatively confirms THIS pid is running.
+ * 'stopped' — the control API affirmatively confirms it is NOT: either
+ *             `running: false`, or `running: true` for a DIFFERENT pid (some
+ *             OTHER capture is live — e.g. started from a shell against the
+ *             same control API after this one ended — which is just as
+ *             definitive an answer that OUR session is not it).
+ * 'unknown' — no information either way: unreachable, timed out, a non-2xx
+ *             response (capture_control.py's do_GET always answers /status
+ *             with 200 when healthy — see that file's own docstring on
+ *             snapshot() never crashing — so a non-2xx here means something
+ *             is wrong with REACHING it, not an authoritative answer about
+ *             what's running), or a 200 body this function can't parse.
  *
- * `payload.pid === pid` matters, not just `payload.running`: `running: true`
- * for a DIFFERENT pid means some OTHER capture is live (started after ours
- * ended, e.g. from a shell against the same control API), not ours — and
- * treating that as "our session is still alive" would keep a closed
- * session's row open indefinitely.
+ * This function's only job is to preserve that three-way distinction, not to
+ * decide what to DO with 'unknown' — that policy (how many consecutive
+ * 'unknown's to tolerate before giving up) lives in session.ts's
+ * isSessionAlive(), the only caller, which is where the actual close()
+ * decision gets made.
  */
-export async function isDelegatedSessionAlive(pid: number): Promise<boolean> {
+export type DelegatedLiveness = 'alive' | 'stopped' | 'unknown'
+
+export async function delegatedSessionLiveness(pid: number): Promise<DelegatedLiveness> {
+  let res: Response
   try {
-    const res = await fetch(`${CAPTURE_URL}/status`, { signal: AbortSignal.timeout(5000) })
-    if (!res.ok) return false
-    const { json: payload } = await readControlResponse<ControlStatusResponse>(res)
-    return payload?.running === true && payload.pid === pid
+    res = await fetch(`${CAPTURE_URL}/status`, { signal: AbortSignal.timeout(5000) })
   } catch {
-    // An unreachable control API is not proof the capture stopped, but it's
-    // not proof it's still running either — and "stopped" is the safe
-    // direction to be wrong in here: a stale "still running" would wedge
-    // sessionStore with a session an operator can never clear from the UI,
-    // while a false "stopped" merely re-attaches on the next successful poll,
-    // or is exactly what a real Stop wants anyway (the control API's own
-    // POST /stop is idempotent against "nothing running").
-    return false
+    return 'unknown' // network error, DNS blip, or the timeout above firing
   }
+  if (!res.ok) return 'unknown'
+  const { json: payload } = await readControlResponse<ControlStatusResponse>(res)
+  if (payload?.running === true) return payload.pid === pid ? 'alive' : 'stopped'
+  if (payload?.running === false) return 'stopped'
+  return 'unknown' // a 200 whose body this function doesn't recognize is not a real answer either
 }
 
 /**

@@ -22,7 +22,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
  */
 import {
   buildListenArgs, countCalls, scriptFor, LAUNCHERS, inContainer, startListening,
-  captureCapabilityGap, isCaptureCapable, isDelegatedSessionAlive, stopDelegatedCapture,
+  captureCapabilityGap, isCaptureCapable, delegatedSessionLiveness, stopDelegatedCapture,
 } from './processes'
 
 const mockSpawn = vi.fn()
@@ -388,33 +388,49 @@ describe('capture capability guard on startListening()', () => {
   })
 })
 
-describe('isDelegatedSessionAlive', () => {
-  it('reports alive only when the control API agrees BOTH that something is running AND that it is this pid', async () => {
-    // The pid match matters as much as `running`: `running: true` for a
-    // DIFFERENT pid means some OTHER capture is live (e.g. started from a
-    // shell after ours ended), not the session this call is asking about.
+describe('delegatedSessionLiveness', () => {
+  // Three states, not two — task-3-review.md's fix-round-2 finding
+  // ("unreachable != stopped"). 'unknown' must never collapse into
+  // 'stopped': that collapse is exactly what let a single transient
+  // control-API blip permanently untrack a healthy session (see
+  // session.ts's isSessionAlive() for how a caller is supposed to use
+  // 'unknown' — tolerate a bounded number of them, not treat one as final).
+
+  it('reports "alive" only when the control API confirms BOTH something running AND that it is this pid', async () => {
     mockFetch.mockResolvedValue(fakeControlResponse(200, true, { running: true, pid: 42 }))
-    expect(await isDelegatedSessionAlive(42)).toBe(true)
-    expect(await isDelegatedSessionAlive(99)).toBe(false)
+    expect(await delegatedSessionLiveness(42)).toBe('alive')
   })
 
-  it('reports not alive when the control API reports nothing running', async () => {
+  it('reports "stopped" — a DEFINITIVE answer — when running:true names a DIFFERENT pid', async () => {
+    // Some OTHER capture is live (e.g. started from a shell after ours
+    // ended) — the control API answered definitively, it's just that the
+    // definitive answer is "not this session." Must NOT be 'unknown': the
+    // control API is reachable and gave a real answer.
+    mockFetch.mockResolvedValue(fakeControlResponse(200, true, { running: true, pid: 42 }))
+    expect(await delegatedSessionLiveness(99)).toBe('stopped')
+  })
+
+  it('reports "stopped" when the control API affirmatively reports nothing running', async () => {
     mockFetch.mockResolvedValue(fakeControlResponse(200, true, { running: false, pid: null }))
-    expect(await isDelegatedSessionAlive(42)).toBe(false)
+    expect(await delegatedSessionLiveness(42)).toBe('stopped')
   })
 
-  it('reports not alive (fails closed toward "stopped") when the control API is unreachable', async () => {
-    // Not proof the capture stopped, but "stopped" is the safe direction to
-    // be wrong in: a stale "still running" would wedge sessionStore with a
-    // session an operator can never clear from the UI (see processes.ts's
-    // comment on this function for the full reasoning).
+  it('reports "unknown" — NOT "stopped" — when the control API is unreachable', async () => {
     mockFetch.mockRejectedValue(new Error('ECONNREFUSED'))
-    expect(await isDelegatedSessionAlive(42)).toBe(false)
+    expect(await delegatedSessionLiveness(42)).toBe('unknown')
   })
 
-  it('reports not alive on a non-2xx response', async () => {
+  it('reports "unknown" — NOT "stopped" — on a non-2xx response', async () => {
+    // capture_control.py's GET /status always answers 200 when healthy; a
+    // non-2xx means something is wrong reaching it, not an authoritative
+    // "not running."
     mockFetch.mockResolvedValue(fakeControlResponse(500, false, { error: 'boom' }))
-    expect(await isDelegatedSessionAlive(42)).toBe(false)
+    expect(await delegatedSessionLiveness(42)).toBe('unknown')
+  })
+
+  it('reports "unknown" on a 200 whose body this function cannot recognize', async () => {
+    mockFetch.mockResolvedValue(fakeControlResponse(200, true, { unexpected: 'shape' }))
+    expect(await delegatedSessionLiveness(42)).toBe('unknown')
   })
 })
 

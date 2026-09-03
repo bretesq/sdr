@@ -1,5 +1,5 @@
 import { getWritableDb } from './db'
-import { isDelegatedSessionAlive, isOurListenSession, processStartTime } from './processes'
+import { delegatedSessionLiveness, isOurListenSession, processStartTime } from './processes'
 import type { ListenOptions, SessionBackend } from './processes'
 
 /**
@@ -35,7 +35,26 @@ import type { ListenOptions, SessionBackend } from './processes'
  * task-3-review.md's Critical C1 for the full trace. isSessionAlive() below
  * dispatches on `backend` specifically so this cannot happen: a delegated
  * session's liveness is asked of the control API's own GET /status
- * (isDelegatedSessionAlive()), never resolved locally.
+ * (delegatedSessionLiveness()), never resolved locally.
+ *
+ * UNREACHABLE IS NOT THE SAME ANSWER AS STOPPED
+ * ----------------------------------------------
+ * delegatedSessionLiveness() returns three states, not two: 'alive',
+ * 'stopped', and 'unknown' (network error, timeout, or an unparseable
+ * response — see that function's own docstring for the full reasoning, and
+ * task-3-review.md's fix-round-2 finding for why this distinction exists at
+ * all). Fix round 1 collapsed 'unknown' into the same `false` as 'stopped',
+ * and get() reacted by calling close() — which is one-way (see close()'s own
+ * docstring: "idempotent" means safe to call again, not reversible) — so a
+ * SINGLE transient control-API blip permanently untracked a healthy,
+ * still-running session for the rest of its life. isSessionAlive() below
+ * tolerates a bounded number of CONSECUTIVE 'unknown' answers
+ * (MAX_CONSECUTIVE_UNKNOWN) before finally giving up and treating the
+ * session as stopped — long enough to absorb one blip, short enough that a
+ * genuinely, permanently dead control API doesn't wedge a session as
+ * "running" forever with nothing left to ever close it. A single
+ * 'alive'/'stopped' answer resets the count: only CONSECUTIVE failures count
+ * against the budget.
  */
 
 export interface Session {
@@ -85,14 +104,68 @@ function toSession(row: SessionRow): Session {
 }
 
 /**
+ * How many consecutive 'unknown' liveness answers a delegated session has
+ * accumulated, keyed by session id — the retry budget behind
+ * MAX_CONSECUTIVE_UNKNOWN below. In-memory only, deliberately not persisted:
+ * a server restart already resets `current` to null, and starting the count
+ * fresh at 0 on the next check is the same conservative "tolerate a blip,
+ * within the same bound" default a genuinely fresh process should apply
+ * anyway. Keyed by id rather than kept only on the `Session` object itself
+ * so it survives get()'s own `current = null` / reload churn — the count is
+ * about the SESSION's run of bad luck, not about any one in-memory object.
+ */
+const consecutiveUnknown = new Map<number, number>()
+
+/**
+ * How many consecutive 'unknown' answers (see this file's module comment,
+ * "UNREACHABLE IS NOT THE SAME ANSWER AS STOPPED") a delegated session's
+ * liveness check tolerates before this file gives up and treats it as
+ * stopped anyway. `components/ListenControl.vue` polls `GET
+ * /api/listen/status` every 5s for a session's whole life, so this bounds
+ * the worst case to roughly `MAX_CONSECUTIVE_UNKNOWN * 5s` of SUSTAINED
+ * unreachability — long enough to absorb one dropped connection or Docker
+ * bridge hiccup, short enough that a genuinely, permanently dead control API
+ * does not wedge a session as "running" forever.
+ */
+const MAX_CONSECUTIVE_UNKNOWN = 3
+
+/**
  * Is `session` still actually running? Dispatches on `backend` — see this
  * file's module comment ("TWO BACKENDS, TWO IDENTITY CHECKS") for why a
  * single check cannot serve both: a delegated session's `pid` is not
  * resolvable against this process's own /proc at all.
+ *
+ * For a delegated session, this is also where 'unknown' gets turned into a
+ * decision (see "UNREACHABLE IS NOT THE SAME ANSWER AS STOPPED" above):
+ * delegatedSessionLiveness() itself stays a pure, policy-free reporter of
+ * what the control API said, and every bit of "how many blips is too many"
+ * judgment lives HERE, the one place session lifecycle decisions are
+ * actually made.
  */
 async function isSessionAlive(session: Session): Promise<boolean> {
-  if (session.backend === 'delegated') return isDelegatedSessionAlive(session.pid)
-  return isOurListenSession(session.pid, session.procStart)
+  if (session.backend !== 'delegated') {
+    return isOurListenSession(session.pid, session.procStart)
+  }
+
+  const liveness = await delegatedSessionLiveness(session.pid)
+  if (liveness === 'alive') {
+    consecutiveUnknown.delete(session.id)
+    return true
+  }
+  if (liveness === 'stopped') {
+    consecutiveUnknown.delete(session.id)
+    return false
+  }
+
+  // 'unknown': tolerate it, up to the bound, rather than treating a single
+  // control-API hiccup as indistinguishable from a real stop.
+  const failures = (consecutiveUnknown.get(session.id) ?? 0) + 1
+  if (failures >= MAX_CONSECUTIVE_UNKNOWN) {
+    consecutiveUnknown.delete(session.id)
+    return false
+  }
+  consecutiveUnknown.set(session.id, failures)
+  return true
 }
 
 export const sessionStore = {
@@ -148,10 +221,24 @@ export const sessionStore = {
    * not ours, so a stale row cannot keep claiming a session is running.
    *
    * ASYNC, unlike before: a delegated session's liveness check
-   * (isSessionAlive() -> isDelegatedSessionAlive()) is a real HTTP round trip
+   * (isSessionAlive() -> delegatedSessionLiveness()) is a real HTTP round trip
    * to the capture container's control API, not a local /proc read. Every
    * caller of get()/isRunning() had to become async alongside this — see
    * server/api/listen/{start,stop}.post.ts and {status,followed}.get.ts.
+   *
+   * WHAT AN 'unknown' ANSWER LOOKS LIKE TO THE OPERATOR, decided deliberately
+   * (per task-3-review.md's fix-round-2 ask): NOTHING changes. `current` (or
+   * the freshly-loaded `candidate`) is returned exactly as it would be for a
+   * confirmed-alive session — same pid, same config, same startTime — because
+   * isSessionAlive() only returns `false` for 'unknown' once
+   * MAX_CONSECUTIVE_UNKNOWN has been exhausted, and until then it returns
+   * `true`. So GET /api/listen/status keeps reporting `running: true` with
+   * the session's real data through a tolerated blip, not a degraded or
+   * "uncertain" variant of it — a transient network hiccup one layer down
+   * should not rewrite what the operator sees. This does mean a genuinely
+   * dead capture during that tolerance window would ALSO still read as
+   * "running" for up to MAX_CONSECUTIVE_UNKNOWN polls — the accepted cost of
+   * not making a single blip indistinguishable from a real stop.
    */
   async get(): Promise<Session | null> {
     if (current && current.pid > 0 && !(await isSessionAlive(current))) {
@@ -192,6 +279,14 @@ export const sessionStore = {
       .prepare('UPDATE sessions SET ended_at = ? WHERE id = ? AND ended_at IS NULL')
       .run(Date.now() / 1000, id)
     if (current?.id === id) current = null
+    // A session can be closed while it still owes a nonzero consecutiveUnknown
+    // count (e.g. clear()/an explicit Stop hits it mid-tolerance-window rather
+    // than exhausting MAX_CONSECUTIVE_UNKNOWN on its own). The id is dead
+    // either way, so drop the entry rather than leave it keyed to a session
+    // nothing will ever look up again — harmless if left (bounded by sessions
+    // started per process lifetime, and get() never age-checks the map), but
+    // free to remove and answers "was that count ever cleaned up" cleanly.
+    consecutiveUnknown.delete(id)
   },
 
   clear(): void {
