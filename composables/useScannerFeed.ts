@@ -21,6 +21,12 @@ interface FollowedResponse {
     tracked: boolean
     /** Epoch seconds the tracked session opened, or null when untracked. */
     sessionStartedAt: number | null
+    /**
+     * Seconds the tracked session was started with, or null when untracked
+     * or the session has no recorded duration (an unbounded run). See
+     * server/api/listen/followed.get.ts's own docstring.
+     */
+    sessionDurationSec: number | null
     whitelistMtime: number | null
   }
 }
@@ -153,6 +159,8 @@ export function useScannerFeed() {
   const tracked = ref(false)
   /** Epoch seconds the tracked session opened, or null when untracked. */
   const sessionStartedAt = ref<number | null>(null)
+  /** Seconds the tracked session was started with, or null. See FollowedResponse above. */
+  const sessionDurationSec = ref<number | null>(null)
   const error = ref('')
 
   const queue: ScannerQueue = createQueue()
@@ -227,6 +235,7 @@ export function useScannerFeed() {
       radioBusy.value = res.data.radioBusy
       tracked.value = res.data.tracked
       sessionStartedAt.value = res.data.sessionStartedAt
+      sessionDurationSec.value = res.data.sessionDurationSec
       error.value = ''
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Could not load talkgroups'
@@ -517,7 +526,7 @@ export function useScannerFeed() {
 
   return {
     followed, heldKeyIds, selected, armed, stalenessSec, settingPersists,
-    entries, skipped, failed, nowPlaying, streamOk, radioBusy, tracked, sessionStartedAt, error,
+    entries, skipped, failed, nowPlaying, streamOk, radioBusy, tracked, sessionStartedAt, sessionDurationSec, error,
     load, arm, disarm, review,
   }
 }

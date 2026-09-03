@@ -24,6 +24,20 @@ import { whitelistPath } from '~/server/utils/paths'
  * receiverStatus(), which is what actually turns this age into a verdict.
  * Epoch seconds, matching Session.startTime in server/utils/session.ts;
  * null whenever nothing is tracked.
+ *
+ * `sessionDurationSec` rides alongside it for the companion problem:
+ * `sessionStartedAt` says when a tracked session began, but says nothing
+ * about when it will end. A session started with a `--pd <seconds>` bound
+ * (server/utils/processes.ts's buildListenArgs()) stops on its own once that
+ * many seconds elapse — a clean, requested stop that looked identical to a
+ * crash from this console's own displayed state (`on air · console
+ * session`, unchanged right up to the silent end) until this field existed.
+ * See utils/captureStatus.ts's captureExpiry(), which turns this alongside
+ * `sessionStartedAt` into an actual expiry time. Read straight off the
+ * tracked session's own stored config (`session.config.duration`, the exact
+ * value the operator's Start request carried); null whenever nothing is
+ * tracked OR the tracked session has no recorded duration (an unbounded run
+ * with no `--pd`), never a guessed default.
  */
 export default defineEventHandler(async () => {
   let whitelistMtime: number | null
@@ -47,6 +61,7 @@ export default defineEventHandler(async () => {
       radioBusy: isRadioBusy(),
       tracked: session !== null,
       sessionStartedAt: session?.startTime ?? null,
+      sessionDurationSec: session?.config.duration ?? null,
       whitelistMtime,
     },
   }

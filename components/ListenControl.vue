@@ -167,9 +167,15 @@
 
       <div>
         <label for="dur" class="block mb-1 text-sm">Duration (seconds)</label>
+        <!--
+          "blank = until stopped" is only true when this host reaches the
+          HackRFs directly. When it doesn't (see the `duration` ref's own
+          comment below), a blank field makes Start fail outright rather than
+          run unbounded, so the placeholder no longer claims that unqualified.
+        -->
         <InputNumber
           v-model="duration" input-id="dur" :disabled="running"
-          :min="1" placeholder="blank = until stopped" class="w-full"
+          :min="1" placeholder="blank = until stopped, if the radio is reachable directly" class="w-full"
         />
       </div>
 
@@ -264,7 +270,26 @@ const includePartial = ref(false)
 const includeEncrypted = ref(false)
 const stt = ref(false)
 const ess = ref(false)
-const duration = ref<number | null>(null)
+/**
+ * Defaults to 24h (scripts/capture_control.py's MAX_DURATION_SEC — the
+ * longest a capture can run at all, delegated or local), not to blank.
+ *
+ * Blank used to be the default, and on THIS deployment ('web' has no HackRF
+ * access — see server/utils/processes.ts's captureCapabilityGap() — so every
+ * console start delegates to the capture container) blank is not "until
+ * stopped" at all: buildControlRequest() in processes.ts refuses a delegated
+ * request with no duration outright, because the container's control API
+ * only knows how to run a bounded PD capture. So a blank field forced the
+ * operator to invent a number before Start would even work — which is
+ * exactly how two real sessions both got typed in as 10800 (3h): not a
+ * considered choice, just whatever number came to mind at the moment, with
+ * no indication that it meant the capture would silently end at that mark
+ * with nothing to renew it. Pre-filling the longest sane value turns that
+ * guess into a deliberate one, while an operator who wants something shorter
+ * can still type over it — this only changes what an operator gets by doing
+ * nothing.
+ */
+const duration = ref<number | null>(24 * 60 * 60)
 
 const running = ref(false)
 const pid = ref<number | null>(null)

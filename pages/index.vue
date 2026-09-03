@@ -26,6 +26,7 @@
       :radio-busy="feed.radioBusy.value"
       :tracked="feed.tracked.value"
       :session-started-at="feed.sessionStartedAt.value"
+      :session-duration-sec="feed.sessionDurationSec.value"
       @toggle="toggleArm"
       @toggle-tg="toggleTg"
     />

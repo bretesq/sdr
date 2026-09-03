@@ -107,3 +107,64 @@ export function receiverStatus(args: ReceiverStatusArgs): ReceiverStatus {
   const ageMs = sessionStartedAt === null ? Number.POSITIVE_INFINITY : nowMs - sessionStartedAt * 1000
   return ageMs > STALL_GRACE_MS ? 'stalled' : 'idle'
 }
+
+/**
+ * THE SILENT-EXPIRY PROBLEM
+ * --------------------------
+ * `receiverStatus()` above answers "is the radio actually receiving right
+ * now" — it says nothing about a running capture's future. A session started
+ * with `--pd <seconds>` (see server/utils/processes.ts's buildListenArgs())
+ * stops on its own the moment that many seconds elapse, and the ONLY
+ * observable difference between that clean stop and an op25 crash is the
+ * process's own exit code, which nothing in this UI reads. Two runs
+ * (launch_184155, launch_230425) each ran for exactly the three hours their
+ * own `--pd 10800` asked for and were treated as unexplained outages for two
+ * days, because `on air · console session` reads identically one second
+ * before expiry and one hour into a healthy run. This — not another dead-op25
+ * detector like `receiverStatus()`'s "stalled" state — is the actual gap: an
+ * operator watching the bay has no way to tell a bounded session is
+ * *going* to end, only that it already has.
+ *
+ * `captureExpiry()` is the pure, testable half of the fix: given when a
+ * tracked session opened and how long it was asked to run, when does it end.
+ * It does not decide whether that is "soon" or format a clock string — see
+ * components/bay/CommStack.vue, which owns both, so this file stays free of
+ * the locale/timezone formatting that would make expiry math hard to test
+ * deterministically.
+ */
+export interface CaptureExpiryArgs {
+  /** Epoch seconds the tracked session opened, or null when untracked. */
+  sessionStartedAt: number | null
+  /**
+   * Seconds the session was started with (Session.config.duration from
+   * server/utils/session.ts, surfaced by GET /api/listen/followed as
+   * `sessionDurationSec`), or null when the session has no recorded
+   * duration — an unbounded run (no `--pd`), or one whose config predates
+   * this field. Null means "no expiry to report", not "expires at epoch 0".
+   */
+  sessionDurationSec: number | null
+  /** Epoch milliseconds to treat as "now". See ReceiverStatusArgs.nowMs. */
+  nowMs: number
+}
+
+export interface CaptureExpiry {
+  /**
+   * Epoch ms the session's requested duration elapses, or null when there is
+   * no basis to compute one (untracked, or no duration recorded).
+   */
+  expiresAtMs: number | null
+  /**
+   * `expiresAtMs - nowMs`. Negative once the session has run past its
+   * requested duration. Mirrors `expiresAtMs`: null exactly when it is null.
+   */
+  remainingMs: number | null
+}
+
+export function captureExpiry(args: CaptureExpiryArgs): CaptureExpiry {
+  const { sessionStartedAt, sessionDurationSec, nowMs } = args
+  if (sessionStartedAt === null || sessionDurationSec === null) {
+    return { expiresAtMs: null, remainingMs: null }
+  }
+  const expiresAtMs = sessionStartedAt * 1000 + sessionDurationSec * 1000
+  return { expiresAtMs, remainingMs: expiresAtMs - nowMs }
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { receiverStatus, STALL_GRACE_MS } from './captureStatus'
+import { receiverStatus, STALL_GRACE_MS, captureExpiry } from './captureStatus'
 
 /** Session opened at t=0; `nowMs` is expressed as an offset from that. */
 function statusAt(offsetMs: number, overrides: Partial<{ radioBusy: boolean, tracked: boolean }> = {}) {
@@ -74,5 +74,54 @@ describe('receiverStatus', () => {
       sessionStartedAt: null,
       nowMs: 0,
     })).toBe('stalled')
+  })
+})
+
+describe('captureExpiry', () => {
+  it('computes the epoch-ms expiry and remaining time for a session mid-run', () => {
+    // Opened at t=0 with a 3h (10800s) duration — the exact shape of
+    // launch_184155/launch_230425, the two runs mistaken for crashes.
+    expect(captureExpiry({
+      sessionStartedAt: 0,
+      sessionDurationSec: 10_800,
+      nowMs: 60 * 60_000, // 1h in — 2h left
+    })).toEqual({ expiresAtMs: 10_800_000, remainingMs: 2 * 60 * 60_000 })
+  })
+
+  it('boundary: exactly at expiry, remainingMs is zero, not null or negative-and-missed', () => {
+    expect(captureExpiry({
+      sessionStartedAt: 0,
+      sessionDurationSec: 10_800,
+      nowMs: 10_800_000,
+    })).toEqual({ expiresAtMs: 10_800_000, remainingMs: 0 })
+  })
+
+  it('boundary: a capture past its end reports a negative remainingMs rather than clamping to zero', () => {
+    // A silent, no-crash stop looks exactly like this from the bay's side —
+    // the case this function exists to make visible before it happens, and
+    // to still describe honestly if read a moment after.
+    expect(captureExpiry({
+      sessionStartedAt: 0,
+      sessionDurationSec: 10_800,
+      nowMs: 10_800_000 + 5_000,
+    })).toEqual({ expiresAtMs: 10_800_000, remainingMs: -5_000 })
+  })
+
+  it('boundary: no duration recorded reports no expiry at all, not an expiry at session start', () => {
+    // An unbounded run (no --pd) or a session whose config predates this
+    // field. Must read exactly like "nothing to say" — not epoch-0.
+    expect(captureExpiry({
+      sessionStartedAt: 0,
+      sessionDurationSec: null,
+      nowMs: 60 * 60_000,
+    })).toEqual({ expiresAtMs: null, remainingMs: null })
+  })
+
+  it('boundary: untracked (no sessionStartedAt) reports no expiry regardless of a stray duration', () => {
+    expect(captureExpiry({
+      sessionStartedAt: null,
+      sessionDurationSec: 10_800,
+      nowMs: 0,
+    })).toEqual({ expiresAtMs: null, remainingMs: null })
   })
 })

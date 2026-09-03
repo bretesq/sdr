@@ -69,7 +69,7 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { receiverStatus } from '~/utils/captureStatus'
+import { receiverStatus, captureExpiry } from '~/utils/captureStatus'
 import type { ReceiverStatus } from '~/utils/captureStatus'
 
 /**
@@ -89,6 +89,13 @@ const props = defineProps<{
   tracked: boolean
   /** Epoch seconds the tracked session opened, or null when untracked. */
   sessionStartedAt: number | null
+  /**
+   * Seconds the tracked session was started with, or null when untracked or
+   * the session has no recorded duration (an unbounded run, no `--pd`). See
+   * server/api/listen/followed.get.ts's own docstring for where this comes
+   * from — it is the operator's own Start request, never a guess made here.
+   */
+  sessionDurationSec: number | null
 }>()
 
 defineEmits<{ toggle: [], toggleTg: [tgid: number] }>()
@@ -132,6 +139,58 @@ const status = computed(() => receiverStatus({
   nowMs: Date.now(),
 }))
 
+/**
+ * THE SILENT-EXPIRY PROBLEM — see utils/captureStatus.ts's captureExpiry()
+ * for the full incident writeup. Short version: `on air · console session`
+ * used to read identically one second before a bounded session's `--pd`
+ * duration ran out and one hour into a healthy run, because nothing here
+ * knew the session HAD a deadline. `expiry` is the pure timing math
+ * (captureExpiry(), unit-tested for its own boundaries); the wall-clock
+ * string below is assembled here rather than in that file so the tested
+ * logic stays free of `toLocaleTimeString`'s locale/timezone dependence —
+ * exactly the same split this component already keeps between
+ * receiverStatus() (state) and RECEIVER_LINE/RECEIVER_NOTE (strings).
+ *
+ * Same "no ticking clock" note as `status` above applies to `expiresAtMs`
+ * itself — it is a fixed point in time, so a stale computed (this only
+ * re-evaluates when a prop changes, i.e. on the next /api/listen/followed
+ * poll) still reads correctly. It would NOT be safe to derive a live
+ * countdown ("ends in 12m") from `remainingMs` the same way: that number
+ * only updates on the next poll too, so a countdown would freeze at
+ * whatever value it had when this last recomputed and go stale the moment
+ * time keeps moving without a fresh poll — decaying into exactly the kind
+ * of quietly-wrong readout this feature exists to remove. An absolute clock
+ * time stays true regardless of when it was last rendered, which is why
+ * that is the only form used below.
+ */
+const expiry = computed(() => captureExpiry({
+  sessionStartedAt: props.sessionStartedAt,
+  sessionDurationSec: props.sessionDurationSec,
+  nowMs: Date.now(),
+}))
+
+/**
+ * "It ends at 14:32", appended to the on-air note — or null when there is
+ * nothing to say (no duration recorded, i.e. an unbounded session), which
+ * leaves RECEIVER_NOTE.onAirConsole completely unchanged, the no-regression
+ * case utils/captureStatus.test.ts covers.
+ *
+ * `remainingMs <= 0` (the session has already run past its requested
+ * duration but the next poll hasn't yet caught the resulting stop) gets its
+ * own honest phrasing rather than a clock time that would read as "ends in
+ * the past" — the boundary utils/captureStatus.test.ts's captureExpiry
+ * suite covers numerically.
+ */
+const expiryNote = computed(() => {
+  const { expiresAtMs, remainingMs } = expiry.value
+  if (expiresAtMs === null || remainingMs === null) return null
+  if (remainingMs <= 0) {
+    return 'It has run past its requested duration and can stop at any moment.'
+  }
+  const clock = new Date(expiresAtMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  return `It ends at ${clock} unless stopped first — nothing renews it automatically.`
+})
+
 // Record, not a switch: TS's exhaustiveness check on a Record's key type
 // catches a future ReceiverStatus member left unhandled at compile time,
 // which a switch with no default cannot (and vue/return-in-computed-property
@@ -152,5 +211,16 @@ const RECEIVER_NOTE: Record<ReceiverStatus, string> = {
 }
 
 const receiverLine = computed(() => RECEIVER_LINE[status.value])
-const receiverNote = computed(() => RECEIVER_NOTE[status.value])
+
+// Expiry is appended only to the on-air-console note, per the brief: this
+// adds expiry information to the existing on-air case, not a fifth state —
+// 'onAirOutside' has no session row to read a duration from, 'stalled' and
+// 'idle' are not describing a running capture at all.
+const receiverNote = computed(() => {
+  const base = RECEIVER_NOTE[status.value]
+  if (status.value === 'onAirConsole' && expiryNote.value) {
+    return `${base} ${expiryNote.value}`
+  }
+  return base
+})
 </script>
