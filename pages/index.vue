@@ -27,6 +27,7 @@
       :tracked="feed.tracked.value"
       :session-started-at="feed.sessionStartedAt.value"
       :session-duration-sec="feed.sessionDurationSec.value"
+      :receiver-layout="feed.receiverLayout.value"
       @toggle="toggleArm"
       @toggle-tg="toggleTg"
       @refresh-capture="refreshCapture"

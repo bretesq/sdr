@@ -30,6 +30,35 @@
       <p class="idle__sub" style="text-align: left; margin-top: 6px">
         {{ receiverNote }}
       </p>
+      <!--
+        LAYOUT: how many radios and voice streams are actually in play.
+
+        The old console had this and the redesign dropped it: ListenControl.vue
+        carried a config summary plus `700 MHz voice receivers` / `800 MHz
+        voice receivers` controls, and the bay replaced all of it with
+        `{n} armed · {idle|on air|stalled}` — which says nothing about the
+        receiver pool a missed call would have been missed by. It sits in the
+        Receiver block rather than in Capture because it describes the
+        machinery, not a control: the counts are not settable from this
+        console (see `layoutNote`), so putting them beside the Capture fields
+        would invite exactly the wrong reading.
+
+        Reference information, so it is `idle__sub` at reading size rather
+        than a `readout` — the receiver STATE above is what an operator scans
+        for; this is what they check once and stop noticing. Three separate
+        `<p>`s rather than one, because the leg split is suppressed for a
+        single-leg capture (where it only repeats the totals) and every line
+        disappears together when there is no layout to report.
+      -->
+      <p v-if="layoutLine" class="idle__sub" style="text-align: left; margin-top: 8px">
+        Layout: {{ layoutLine }}
+      </p>
+      <p v-if="layoutLegLine" class="idle__sub" style="text-align: left">
+        {{ layoutLegLine }}
+      </p>
+      <p v-if="layoutNote" class="idle__sub" style="text-align: left">
+        {{ layoutNote }}
+      </p>
     </div>
 
     <!--
@@ -210,6 +239,7 @@
 import { ref, computed } from 'vue'
 import { receiverStatus, captureExpiry, canStartCapture, canStopCapture } from '~/utils/captureStatus'
 import type { ReceiverStatus } from '~/utils/captureStatus'
+import type { ReceiverLayout } from '~/utils/receiverLayout'
 import {
   buildCaptureStartBody, isValidCaptureDuration, apiError,
   DEFAULT_CAPTURE_DURATION_SEC, MIN_CAPTURE_DURATION_SEC, MAX_CAPTURE_DURATION_SEC,
@@ -241,6 +271,17 @@ const props = defineProps<{
    * from — it is the operator's own Start request, never a guess made here.
    */
   sessionDurationSec: number | null
+  /**
+   * How many radios and voice receivers the capture is built from, derived
+   * server-side from the op25 config on disk — or null when that file is
+   * missing or unreadable (a fresh checkout where no capture has ever run),
+   * in which case the bay shows no layout at all rather than a zeroed one.
+   * See utils/receiverLayout.ts for the derivation and
+   * server/api/listen/followed.get.ts for why it rides on the same poll as
+   * `tracked`/`radioBusy` — the layout can only be captioned honestly
+   * alongside them.
+   */
+  receiverLayout: ReceiverLayout | null
 }>()
 
 const emit = defineEmits<{
@@ -383,6 +424,127 @@ const receiverNote = computed(() => {
     return `${base} ${expiryNote.value}`
   }
   return base
+})
+
+/* ---------------------------------------------------------------------------
+ * RECEIVER LAYOUT — how many radios and voice streams are in play
+ *
+ * The counts themselves are derived server-side (utils/receiverLayout.ts,
+ * unit-tested); everything below is only phrasing, kept here for the same
+ * reason RECEIVER_LINE/RECEIVER_NOTE and `expiryNote` are: the tested file
+ * stays free of pluralisation and locale-shaped string work, and the strings
+ * stay next to the markup that renders them.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * "2 radios", "1 radio", "no voice receivers" — never "0 voice receivers".
+ * A zero-receiver layout is a real config (make_multirx_cfg.py will happily
+ * build devices with no channels bound), and a bare `0` beside two other
+ * counts reads as a rendering bug rather than as a statement.
+ */
+function countOf(n: number, noun: string): string {
+  if (n === 0) return `no ${noun}s`
+  return `${n} ${noun}${n === 1 ? '' : 's'}`
+}
+
+/**
+ * "700 MHz" per leg — or the tuned centre to three decimals when two legs
+ * land in the same 100 MHz band, where the band label would print the same
+ * string twice ("700 MHz: 3 voice · 700 MHz: 7 voice") and distinguish
+ * nothing. Two 700 MHz legs are not the shape this system runs today, but the
+ * fallback costs one line and the failure it prevents is a display that looks
+ * authoritative while being unreadable. `centreHz` is carried by
+ * ReceiverLeg for exactly this.
+ */
+function legLabels(layout: ReceiverLayout): string[] {
+  const bands = layout.legs.map(l => l.bandMhz)
+  const distinct = new Set(bands).size === bands.length
+  return layout.legs.map(l => distinct
+    ? `${l.bandMhz} MHz`
+    : `${Math.round(l.centreHz / 1e3) / 1000} MHz`)
+}
+
+/**
+ * The totals: radios, the voice-receiver pool, and the control receiver(s).
+ *
+ * Voice and control are stated separately rather than as one channel count
+ * because only the voice receivers can take a call — the `CC` receiver
+ * decodes the trunking control stream and records nothing (see
+ * utils/receiverLayout.ts's CONTROL_NAME). An operator reasoning about a
+ * missed call needs the pool size, and 11 would be the wrong number.
+ *
+ * The control clause is dropped entirely when there is none: the generator
+ * emits `CC` only for a leg that has a control channel, so "no control
+ * channels" is a legal config, and saying so in a totals line nobody reads
+ * for that would be noise.
+ */
+const layoutLine = computed(() => {
+  const l = props.receiverLayout
+  if (!l) return null
+  const bits = [countOf(l.radios, 'radio'), countOf(l.voiceTotal, 'voice receiver')]
+  if (l.controlTotal > 0) bits.push(countOf(l.controlTotal, 'control channel'))
+  return bits.join(' · ')
+})
+
+/**
+ * The per-leg split — "700 MHz: 3 voice + 1 control · 800 MHz: 7 voice" —
+ * which is the half of the old console's display that the totals cannot
+ * replace: the two legs have different receiver counts (3 and 7 today), so a
+ * call missed on the 700 MHz leg is missed against a pool of three, not ten.
+ *
+ * Suppressed for a single-leg capture, where each figure would simply repeat
+ * the totals line above it.
+ */
+const layoutLegLine = computed(() => {
+  const l = props.receiverLayout
+  if (!l || l.legs.length < 2) return null
+  const labels = legLabels(l)
+  return l.legs.map((leg, i) => {
+    const rx = [`${leg.voice} voice`]
+    if (leg.control > 0) rx.push(`${leg.control} control`)
+    return `${labels[i]}: ${rx.join(' + ')}`
+  }).join(' · ')
+})
+
+/**
+ * WHERE THE LAYOUT COMES FROM, AND WHETHER IT IS THE RUNNING ONE
+ * ---------------------------------------------------------------
+ * lwin_both.json is rewritten by every capture start, so while a capture of
+ * OURS is up the layout is that capture's by construction. When nothing is
+ * running it describes the LAST one — still worth showing (it is what a Start
+ * will build again), but presenting it then as if it were live would be
+ * precisely the quietly-wrong readout the expiry work above exists to
+ * remove. So the caption is keyed on the same `ReceiverStatus` the Receiver
+ * line is, and each state says which of those it is.
+ *
+ * 'onAirOutside' gets the most guarded wording of the four: a capture this
+ * console did not start MAY have been launched some other way (a hand-rolled
+ * multi_rx invocation, or lwin_listen_multi.sh with a different `-o`), in
+ * which case the file on disk is not describing what is on the air at all.
+ * That is unlikely rather than impossible, and the honest thing is to name
+ * the doubt rather than let the operator assume it away.
+ */
+const LAYOUT_SOURCE: Record<ReceiverStatus, string> = {
+  onAirConsole: 'What this capture was launched with, read from the op25 config on disk.',
+  onAirOutside: 'The last layout written to disk. This capture was started elsewhere, so it may be running a different one.',
+  stalled: 'What this open session was launched with. op25 is gone, so nothing is receiving on any of it.',
+  idle: 'What the last capture was launched with. Nothing is receiving now.',
+}
+
+/**
+ * Appended to every one of the four, because the operator's next thought on
+ * reading a receiver count is reliably "can I change it". They cannot, here:
+ * the delegated request does carry `nVoice700`/`nVoice800`
+ * (server/utils/processes.ts's buildControlRequest()), but the Capture block
+ * below deliberately does not expose them — an operator-rare setting whose
+ * safe values were measured, not chosen. Appended in one place rather than
+ * written into all four strings so it cannot be lost from one of them.
+ */
+const NOT_ADJUSTABLE = 'The counts are not adjustable from the console.'
+
+const layoutNote = computed(() => {
+  if (!props.receiverLayout) return null
+  return `${LAYOUT_SOURCE[status.value]} ${NOT_ADJUSTABLE}`
 })
 
 /* ===========================================================================

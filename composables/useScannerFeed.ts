@@ -3,6 +3,7 @@ import {
   createQueue, admit, prune, takeNext,
   type FeedCall, type QueueEntry, type ScannerQueue,
 } from '~/utils/scannerQueue'
+import type { ReceiverLayout } from '~/utils/receiverLayout'
 
 interface FollowedTalkgroup {
   tgid: number
@@ -27,6 +28,12 @@ interface FollowedResponse {
      * server/api/listen/followed.get.ts's own docstring.
      */
     sessionDurationSec: number | null
+    /**
+     * How many radios and voice receivers the capture is built from, or null
+     * when the op25 config on disk is missing or unreadable. See
+     * utils/receiverLayout.ts and server/api/listen/followed.get.ts.
+     */
+    receiverLayout: ReceiverLayout | null
     whitelistMtime: number | null
   }
 }
@@ -161,6 +168,16 @@ export function useScannerFeed() {
   const sessionStartedAt = ref<number | null>(null)
   /** Seconds the tracked session was started with, or null. See FollowedResponse above. */
   const sessionDurationSec = ref<number | null>(null)
+  /**
+   * The receiver layout the capture was launched with, or null when no
+   * capture has ever run on this checkout. See FollowedResponse above.
+   *
+   * Held here rather than fetched by the component for the same reason
+   * `radioBusy`/`tracked` are: it arrives on this composable's existing
+   * 20-second /api/listen/followed poll, from the same read as the liveness
+   * signals it has to be captioned with.
+   */
+  const receiverLayout = ref<ReceiverLayout | null>(null)
   const error = ref('')
 
   const queue: ScannerQueue = createQueue()
@@ -236,6 +253,7 @@ export function useScannerFeed() {
       tracked.value = res.data.tracked
       sessionStartedAt.value = res.data.sessionStartedAt
       sessionDurationSec.value = res.data.sessionDurationSec
+      receiverLayout.value = res.data.receiverLayout
       error.value = ''
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Could not load talkgroups'
@@ -526,7 +544,8 @@ export function useScannerFeed() {
 
   return {
     followed, heldKeyIds, selected, armed, stalenessSec, settingPersists,
-    entries, skipped, failed, nowPlaying, streamOk, radioBusy, tracked, sessionStartedAt, sessionDurationSec, error,
+    entries, skipped, failed, nowPlaying, streamOk, radioBusy, tracked, sessionStartedAt, sessionDurationSec,
+    receiverLayout, error,
     load, arm, disarm, review,
   }
 }

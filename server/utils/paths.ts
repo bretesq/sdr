@@ -38,6 +38,25 @@ export function whitelistPath(): string {
 }
 
 /**
+ * The op25 multi_rx config the capture was launched with.
+ *
+ * Written by scripts/make_multirx_cfg.py on every capture start (`$CFG`, its
+ * `-o` target in scripts/lwin_listen_multi.sh), so for a running capture it
+ * is current by construction; when nothing is running it describes the LAST
+ * capture. Read only — nothing in the Nitro server writes it, unlike the four
+ * paths above. The whole repo is bind-mounted into the `web` container at
+ * this same path (the `*repo` volume in docker-compose.yml), so this needs no
+ * separate in-container location and no new plumbing to read.
+ *
+ * See utils/receiverLayout.ts for what may be derived from it and, more
+ * importantly, what must never leave the server: every channel entry carries
+ * absolute `whitelist`/`blacklist`/`crypt_keys` paths.
+ */
+export function multiRxConfigPath(): string {
+  return join(sdrRoot(), 'lwin_both.json')
+}
+
+/**
  * Resolve a user-supplied recording filename to an absolute path,
  * or null if it is not a legal recording name or escapes the directory.
  */
