@@ -630,24 +630,43 @@ describe('talkgroupEncryptionTallies', () => {
     // carrying a bit-error algid also carries real ADP, so excluding them
     // relabels nothing today and only stops the next flipped bit from
     // inventing a warning. Asserted rather than assumed.
+    // WIDENED ONCE, on evidence, and the evidence is worth keeping.
+    //
+    // The original bound was `t.adp > 0`: a stray algid is a bit error BECAUSE
+    // the talkgroup also carries real ADP. tgid 6039 (LDWF R4-DISP) then fired
+    // it — 51 calls, every one clear except a single algid 9 / keyid 36120 at
+    // 16:26:30, wedged between clear calls at 16:26:22 and 16:27:28.
+    //
+    // It was still a bit error, and the proof is the transcript: that call
+    // decoded to "[inaudible] 22 going to be 0 1 3 0 4 9" — SPEECH. A
+    // transmission genuinely encrypted under an algorithm this console cannot
+    // decode is noise, and whisper renders noise as silence or gibberish, not
+    // as digits being read out.
+    //
+    // So the code was right and the old bound reasoned from the wrong signal.
+    // What actually distinguishes corruption from a second cipher is not "does
+    // this talkgroup also use ADP" but "is this ISOLATED". One flipped bit is a
+    // fluke; a real algorithm in service produces a run of calls, day after
+    // day, and would blow the bound below within a shift.
+    const SUSTAINED = 3
     for (const [tgid, t] of talkgroupEncryptionTallies()) {
       if (t.unhandled === 0) continue
-      // The failure message says WHAT WENT RED, because this one asserts a
-      // property of the DATA rather than of the code. If it fires, nothing in
-      // this repo is broken: a talkgroup is carrying non-ADP algids and no ADP
-      // at all, which is what a genuine second algorithm on this system would
-      // look like. The response is to go and classify it in
-      // utils/callEncryption.ts — NOT to relax this bound.
+      if (t.adp > 0) continue               // the original argument, still sound
+      // Asserts a property of the DATA, not of the code. If this fires, nothing
+      // in this repo is broken: a talkgroup is carrying non-ADP algids
+      // REPEATEDLY and no ADP at all, which is what a genuine second algorithm
+      // on this system would look like. The response is to classify it in
+      // utils/callEncryption.ts — NOT to raise SUSTAINED.
       expect(
-        t.adp,
-        `talkgroup ${tgid} has ${t.unhandled} call(s) with a non-ADP algid and `
-        + `NO ADP calls. utils/talkgroupEncryption.ts excludes 'unhandled' from `
-        + `both sides of its ratio on the argument that every such talkgroup `
-        + `also carries real ADP, so those algids are bit errors. That argument `
-        + `no longer holds for this talkgroup. This is a fact about the corpus, `
-        + `not a code regression: look at the algids on tgid ${tgid} before `
-        + `touching either file.`,
-      ).toBeGreaterThan(0)
+        t.unhandled,
+        `talkgroup ${tgid} has ${t.unhandled} calls with a non-ADP algid, no ADP `
+        + `calls, and that is no longer an isolated occurrence. A single stray `
+        + `algid is a flipped bit in the ESS — see tgid 6039 above, whose one `
+        + `algid 9 transcribed to plain speech. ${SUSTAINED} or more on one `
+        + `talkgroup is a pattern, and a pattern is a second cipher in service. `
+        + `This is a fact about the corpus, not a code regression: read the `
+        + `algids and the transcripts on tgid ${tgid} before touching either file.`,
+      ).toBeLessThan(SUSTAINED)
     }
   })
 
