@@ -131,6 +131,17 @@ services:
     environment:
       SDR_IN_CONTAINER: "1"
       SDR_ROOT: /home/besquivel/rtl
+      # transcriber.ts's isSttServerRunning() defaults STT_URL to
+      # http://127.0.0.1:8081, which inside THIS container is web's own
+      # loopback, not whisper's — the "127.0.0.1:8081:8081" port mapping
+      # above is published for the host's benefit, not for a sibling
+      # container's. Without this, `reachable` in
+      # GET /api/transcribe/status can never be true, which breaks the one
+      # combination the whole endpoint exists to show:
+      # `reachable && state === 'degraded'`, the 26-hour-wedge signature.
+      # On the compose network whisper is addressable by service name, same
+      # as stt-watch already does above.
+      STT_URL: http://whisper:8081
     ports:
       - "3002:3002"
     # `corepack enable` (as the brief originally had it) tries to symlink pnpm
