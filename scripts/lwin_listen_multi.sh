@@ -166,7 +166,26 @@ REC_PIDS=()
 cleanup() {
   echo; echo "stopping..."
   [ -n "${OP25_PID:-}" ] && kill "$OP25_PID" 2>/dev/null
-  pkill -f "python3 multi_rx\.py" 2>/dev/null
+  # Scoped to THIS launcher's own PID namespace (final-review.md C1). This
+  # file predates the capture container: it was written when there was only
+  # ever one PID namespace on the machine, so an unscoped `pkill -f` could
+  # only ever match this launcher's own op25 -- there was nothing else on the
+  # box for it to reach. That stopped being true the moment a second op25
+  # could run inside the `capture` container: the host is unconfined, so it
+  # can SIGNAL into any container (verified live: a harmless SIGCONT from the
+  # host to a container process at uid 1000 was delivered, not refused), and
+  # host pgrep/pkill -f already sees a container's processes by host pid
+  # regardless of PID namespace. So a bare `pkill -f "python3 multi_rx\.py"`
+  # run from a HOST launcher's cleanup -- which fires on every ordinary exit
+  # (Ctrl-C, SIGTERM, or the duration simply expiring; see the trap below and
+  # the direct call after `wait`) -- can kill a perfectly healthy delegated
+  # capture running in the container, not just this launcher's own op25.
+  # `--ns $$ --nslist pid` (procps-ng 4.0.4, verified present both on this
+  # host and inside the capture image) restricts the match to processes in
+  # the SAME pid namespace as this script, which a container's op25 never is
+  # -- so this can only ever reach what it always meant to reach: this
+  # launcher's own op25. Do NOT simplify this back to a bare `-f` match.
+  pkill --ns $$ --nslist pid -f "python3 multi_rx\.py" 2>/dev/null
   for p in "${REC_PIDS[@]+"${REC_PIDS[@]}"}"; do kill -INT "$p" 2>/dev/null; done
   [ -n "${STT_PID:-}" ] && kill -INT "$STT_PID" 2>/dev/null
   wait 2>/dev/null
