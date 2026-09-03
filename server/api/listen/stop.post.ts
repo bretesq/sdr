@@ -40,10 +40,20 @@ export default defineEventHandler(async (event) => {
       // limitation, not an oversight — a session that falls all the way to
       // "untracked" is the pre-existing stranded-radio recovery path, and
       // stays on it.
-      await stopListening(0)          // no pid to signal; releases the radio
-      return {
-        success: true,
-        data: { message: 'No tracked session; released the radio op25 was holding.' },
+      // no pid to signal; releases the radio — or throws honestly if it
+      // couldn't (see stopListening()'s isRadioBusy() check: the container
+      // signalling a host-started process can fail with EPERM while pkill's
+      // own exit code still reads as success, so this must not be assumed to
+      // have worked just because it did not throw before this fix).
+      try {
+        await stopListening(0)
+        return {
+          success: true,
+          data: { message: 'No tracked session; released the radio op25 was holding.' },
+        }
+      } catch (err) {
+        setResponseStatus(event, 500)
+        return { success: false, error: err instanceof Error ? err.message : 'Failed to release the radio' }
       }
     }
     setResponseStatus(event, 409)

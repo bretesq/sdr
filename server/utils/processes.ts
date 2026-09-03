@@ -1,4 +1,4 @@
-import { spawn, execFileSync } from 'node:child_process'
+import { spawn, execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync, statSync, openSync, readSync, closeSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { scriptsDir, sdrRoot, listenLogPath } from './paths'
@@ -741,11 +741,60 @@ export async function stopListening(pid: number, procStart: number | null = null
   // Last resort: the script's own cleanup trap does this too, but if the script
   // never ran its trap (SIGKILLed, or killed from outside) nothing else will.
   // SIGTERM first so udp_audio_record.py can flush the call in progress.
+  const pkillErrors: string[] = []
   for (const pattern of [...RADIO_PATTERNS, RECORDER_PATTERN]) {
-    try {
-      execFileSync('pkill', ['-f', pattern], { timeout: 2000 })
-    } catch {
-      // pkill exits non-zero when it matched nothing, which is the goal state.
-    }
+    const stderr = pkillPattern(pattern)
+    if (stderr) pkillErrors.push(stderr)
   }
+
+  // Verify against the RADIO, not against pkill's own exit code. procps pkill
+  // exits 0 as soon as a pattern MATCHES, regardless of whether the kill()
+  // syscall on any matched pid actually succeeded — so a signal refused with
+  // EPERM for every single pid still looks like success to the old
+  // `catch { /* matched nothing */ }` above pkillPattern() replaced. That is
+  // exactly what happens when this runs inside the `web` container against a
+  // capture started on the host: `pid: host` gives it read access to the
+  // host's /proc (pgrep, and therefore isRadioBusy(), works fine), but the
+  // container's AppArmor confinement (the `docker-default` profile) refuses
+  // to let it SIGNAL a process it did not spawn itself — every kill() comes
+  // back EPERM, pkill logs "killing pid NNNN failed: Permission denied" to
+  // stderr, and its exit code is still 0. Reporting success here, as before,
+  // means the console lies about having released a radio that is still on
+  // the air — precisely the "on air · outside session" state this whole
+  // feature exists to distinguish honestly. isRadioBusy() is the one signal
+  // that cannot be spoofed by a refused kill(): it reads the host's /proc
+  // directly, so it still reflects reality even when signalling does not.
+  if (isRadioBusy()) {
+    const detail = pkillErrors.length > 0 ? ` (${pkillErrors.join('; ')})` : ''
+    // Built from the same patterns isRadioBusy()/the loop above just tried,
+    // not hand-copied, so this can never drift from what actually needs
+    // releasing (single-mode rx.py, multi-mode multi_rx.py, or the
+    // recorders — whichever combination is actually stranded).
+    const recovery = [...RADIO_PATTERNS, RECORDER_PATTERN]
+      .map(pattern => `pkill -INT -f "${pattern}"`)
+      .join('; ')
+    throw new Error(
+      `Could not release the radio${detail}. This container can see the `
+      + "host's processes but its AppArmor confinement blocks it from "
+      + `signalling one it did not start itself. Release it on the host `
+      + `instead: ${recovery}`,
+    )
+  }
+}
+
+/**
+ * Send SIGTERM to every process matching `pattern` via pkill, and return
+ * whatever it printed to stderr — or null if it printed nothing.
+ *
+ * Deliberately spawnSync(), not execFileSync(): execFileSync() only exposes
+ * stderr when the child exits non-zero, and pkill exits 0 as soon as its
+ * pattern matches at least one process, even if delivering the signal to
+ * every matched pid failed. spawnSync() returns stdout/stderr unconditionally,
+ * which is the only way to see a per-pid "killing pid NNNN failed:
+ * Permission denied" line on an exit code that otherwise reads as success.
+ */
+function pkillPattern(pattern: string): string | null {
+  const result = spawnSync('pkill', ['-f', pattern], { timeout: 2000, encoding: 'utf-8' })
+  const stderr = (result.stderr ?? '').trim()
+  return stderr.length > 0 ? stderr : null
 }

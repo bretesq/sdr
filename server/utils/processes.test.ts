@@ -23,10 +23,12 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   buildListenArgs, countCalls, scriptFor, LAUNCHERS, inContainer, startListening,
   captureCapabilityGap, isCaptureCapable, delegatedSessionLiveness, stopDelegatedCapture,
+  isRadioBusy, stopListening,
 } from './processes'
 
 const mockSpawn = vi.fn()
 const mockExecFileSync = vi.fn()
+const mockSpawnSync = vi.fn()
 const mockExistsSync = vi.fn()
 const mockFetch = vi.fn()
 const mockOpenSync = vi.fn()
@@ -40,6 +42,12 @@ const mockCloseSync = vi.fn()
 vi.mock('node:child_process', () => ({
   spawn: (...args: unknown[]) => mockSpawn(...args),
   execFileSync: (...args: unknown[]) => mockExecFileSync(...args),
+  // spawnSync backs pkillPattern()'s last-resort release attempt (see its own
+  // comment in processes.ts for why it is spawnSync and not execFileSync).
+  // Mocked for the exact same reason as execFileSync above: unmocked, a
+  // stopListening() test would run a REAL pkill against whatever this host's
+  // pgrep patterns happen to match right now.
+  spawnSync: (...args: unknown[]) => mockSpawnSync(...args),
 }))
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>()
@@ -453,5 +461,90 @@ describe('stopDelegatedCapture', () => {
   it('surfaces the control API\'s own error verbatim on a non-2xx response', async () => {
     mockFetch.mockResolvedValue(fakeControlResponse(500, false, { error: 'internal error while stopping' }))
     await expect(stopDelegatedCapture()).rejects.toThrow('internal error while stopping')
+  })
+})
+
+/** A pgrep failure shaped like its real "nothing matched" exit (status 1, no stdout). */
+function pgrepNoMatch(): never {
+  throw Object.assign(new Error('Command failed'), { status: 1, stdout: '' })
+}
+
+describe('isRadioBusy', () => {
+  it('is true when pgrep matches a receiver pattern', () => {
+    mockExecFileSync.mockReturnValue('332179\n')
+    expect(isRadioBusy()).toBe(true)
+  })
+
+  it('is false when pgrep matches nothing (its normal "no match" exit)', () => {
+    mockExecFileSync.mockImplementation(pgrepNoMatch)
+    expect(isRadioBusy()).toBe(false)
+  })
+})
+
+describe('stopListening — untracked release (pid 0)', () => {
+  it('returns immediately without touching pkill when the radio is already free', async () => {
+    mockExecFileSync.mockImplementation(pgrepNoMatch)
+    await expect(stopListening(0)).resolves.toBeUndefined()
+    expect(mockSpawnSync).not.toHaveBeenCalled()
+  })
+
+  it('resolves once pkill actually releases the radio', async () => {
+    // Busy on the entry guard's check, free from the very next isRadioBusy()
+    // call on — the wait loop's first iteration then breaks immediately, so
+    // this never needs a real or faked sleep.
+    let calls = 0
+    mockExecFileSync.mockImplementation(() => {
+      calls += 1
+      if (calls === 1) return '331916\n'
+      return pgrepNoMatch()
+    })
+    mockSpawnSync.mockReturnValue({ status: 1, stderr: '' })
+    await expect(stopListening(0)).resolves.toBeUndefined()
+  })
+
+  /**
+   * The regression this fix closes. Before it, stopListening()'s last-resort
+   * pkill loop only checked whether execFileSync('pkill', ...) THREW — and
+   * real procps pkill exits 0 (no throw) as soon as its pattern matches any
+   * process, regardless of whether the kill() syscall on that process
+   * actually succeeded. A signal refused with EPERM for every matched pid —
+   * exactly what happens when the `web` container (pid: host, but confined by
+   * the docker-default AppArmor profile) tries to signal a capture the host
+   * started outside any container — therefore read as "matched nothing,
+   * which is the goal state" and stopListening() resolved successfully while
+   * the radio stayed on the air. Reverting the isRadioBusy()-after-pkill
+   * check this test exercises reproduces exactly that silent false success.
+   */
+  it('throws, naming the EPERM cause and a real host recovery command, when pkill matches but cannot actually signal the process', async () => {
+    vi.useFakeTimers()
+    try {
+      // isRadioBusy() stays true for the entire attempt: this container can
+      // always SEE the host process (pid: host gives it /proc), it can just
+      // never successfully signal it.
+      mockExecFileSync.mockReturnValue('331916\n')
+      // A real pkill in this scenario exits 0 (pattern matched) while
+      // reporting the true, per-pid outcome only on stderr.
+      mockSpawnSync.mockReturnValue({
+        status: 0,
+        stderr: 'pkill: killing pid 331916 failed: Permission denied\n',
+      })
+
+      // .catch() attached in the same tick stopListening() is invoked, so the
+      // rejection — which lands later, once the faked wait loop above drains
+      // — is never briefly "unhandled" from Node's perspective.
+      const caughtPromise = stopListening(0).catch((e: unknown) => e as Error)
+      // Drains the 8s wait-for-release loop (40 x 200ms) under fake timers,
+      // rather than a real 8-second wait.
+      await vi.advanceTimersByTimeAsync(8000)
+      const caught = await caughtPromise
+
+      expect(caught).toBeDefined()
+      expect(caught?.message).toMatch(/Permission denied/)
+      // Honest AND actionable: names the real command to run on the host,
+      // not just "something went wrong".
+      expect(caught?.message).toMatch(/pkill -INT -f/)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
