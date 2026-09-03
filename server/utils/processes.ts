@@ -662,14 +662,35 @@ export async function delegatedSessionLiveness(pid: number): Promise<DelegatedLi
  * identical SIGINT-then-SIGKILL ladder itself
  * (scripts/capture_control.py's CaptureState.stop()) — targeted beats lucky.
  *
- * 15s timeout: the control server's own ladder is bounded at 8s (SIGINT) + 2s
- * (SIGKILL fallback) = 10s worst case; this leaves margin above that rather
- * than racing it.
+ * 75s timeout, and it is a NESTING INVARIANT, not a round number. The control
+ * server's ladder is bounded at STOP_SIGINT_TIMEOUT_SEC (60s, SIGINT) +
+ * STOP_SIGKILL_TIMEOUT_SEC (5s, SIGKILL reap) = 65s worst case, so this must
+ * clear 65s; 75s leaves 10s of margin rather than racing it.
+ *
+ * This was 15s, correct against the old 8s + 2s = 10s ladder. That ladder was
+ * calibrated for the `pd` preset (47 talkgroups, 8 recorders) and the console
+ * now runs `pd-all` (222 talkgroups, 10 recorders), whose cleanup measures
+ * ~20-25s on a 3-hour session — so it was escalating to SIGKILL on every Stop
+ * and bypassing lwin_listen_multi.sh's recorder-finalising cleanup trap.
+ * Raising the server ladder without raising THIS would trade that bug for a
+ * worse-looking one: the client would abort at 15s and the console would
+ * report a failed Stop for a stop that is in fact proceeding correctly, whose
+ * likely operator response (Stop again, or restart the container) is what
+ * would actually break the cleanup. See STOP_SIGINT_TIMEOUT_SEC in
+ * scripts/capture_control.py for the measurements behind 65s.
+ *
+ * NOTE for anyone reading a longer-than-15s Stop here as a hang: a healthy
+ * stop still returns as soon as the process group is empty — the control
+ * server POLLS rather than sleeping — so 65s is the worst case, not the
+ * expected wait. The response's `waitedSec` reports what it actually took.
+ *
+ * scripts/tests/test_capture_control.py parses the AbortSignal.timeout below
+ * and asserts it clears the ladder, so the two cannot drift apart silently.
  */
 export async function stopDelegatedCapture(): Promise<void> {
   let res: Response
   try {
-    res = await fetch(`${CAPTURE_URL}/stop`, { method: 'POST', signal: AbortSignal.timeout(15_000) })
+    res = await fetch(`${CAPTURE_URL}/stop`, { method: 'POST', signal: AbortSignal.timeout(75_000) })
   } catch (err) {
     throw new Error(
       `Cannot reach the capture container's control API at ${CAPTURE_URL} to stop it `
@@ -682,9 +703,13 @@ export async function stopDelegatedCapture(): Promise<void> {
     const { json: payload, rawText } = await readControlResponse<{ error?: string }>(res)
     throw new Error(controlErrorMessage(res.status, payload, rawText))
   }
-  // {stopped: bool, pid?, forced?, message?} — POST /stop is idempotent
-  // (200 either way; "nothing was running" is success, not an error), so
-  // nothing further needs branching on here.
+  // {stopped: bool, pid?, forced?, waitedSec?, message?} — POST /stop is
+  // idempotent (200 either way; "nothing was running" is success, not an
+  // error), so nothing further needs branching on here. `waitedSec` is how
+  // long the control server's ladder actually waited for the process group to
+  // empty, and `forced` whether it had to escalate to SIGKILL; both are
+  // logged on the control server's own stdout, which is where to read them
+  // (`docker compose logs capture`) when re-tuning the ladder.
 }
 
 /**

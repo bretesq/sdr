@@ -188,12 +188,30 @@ services:
     # which is why capture_control.py additionally installs a SIGTERM
     # handler (install_shutdown_handlers(), see its module docstring).
     init: true
-    # STATE.stop()'s own ladder is bounded at 8s (SIGINT) + 2s (SIGKILL
-    # fallback) = 10s worst case. Compose's default stop_grace_period is
-    # also 10s — right at the edge, and a race Docker could win by SIGKILLing
-    # the whole container before our own graceful ladder finishes running.
-    # 15s gives that ladder headroom to complete on its own terms.
-    stop_grace_period: 15s
+    # NESTING INVARIANT: this must stay ABOVE capture_control.py's own stop
+    # ladder, which is STOP_SIGINT_TIMEOUT_SEC (60s, SIGINT) +
+    # STOP_SIGKILL_TIMEOUT_SEC (5s, SIGKILL reap) = 65s worst case. `docker
+    # compose stop/restart capture` SIGTERMs, waits this long, then SIGKILLs
+    # the whole cgroup — which tears down op25's process group mid-trap and
+    # skips lwin_listen_multi.sh's cleanup entirely, the exact failure the
+    # SIGINT-first ladder and this service's `init: true` above both exist to
+    # prevent. So this number must exceed 65s, with margin: 90s leaves 25s.
+    #
+    # WHY 15s WAS NOT ENOUGH ANY MORE (measured 2026-09-03): the ladder was
+    # 8s + 2s = 10s, and 15s nested correctly around that. But the console
+    # moved from the `pd` preset (47 talkgroups, 8 recorders) to `pd-all`
+    # (222 talkgroups, 10 recorders), and every `pd-all` stop was escalating
+    # to SIGKILL because cleanup — dominated by the launcher's SYNCHRONOUS
+    # grant import — measures ~20-25s on a 3-hour session. Raising the ladder
+    # to 65s without raising this would simply have moved the bug: Docker
+    # would SIGKILL the cgroup at 15s, mid-ladder, which is strictly worse
+    # than the escalation it replaced. See STOP_SIGINT_TIMEOUT_SEC in
+    # scripts/capture_control.py for the full measurement and for why the
+    # right long-term fix is faster cleanup, not a bigger number here.
+    #
+    # scripts/tests/test_capture_control.py parses THIS LINE and asserts it
+    # clears the ladder, so the two cannot drift apart silently.
+    stop_grace_period: 90s
     user: "1000:1000"
     # plugdev by NUMERIC gid. The HackRF device nodes are root:plugdev 0660.
     # CORRECTED (final-review.md M1): this container's /etc/group DOES carry

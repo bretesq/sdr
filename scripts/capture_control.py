@@ -442,6 +442,119 @@ def check_op25_available() -> None:
         ) from exc
 
 
+# --- stop-ladder timing ------------------------------------------------------
+#
+# stop() SIGINTs the capture's process group, polls for the group to empty for
+# STOP_SIGINT_TIMEOUT_SEC, and only then escalates to SIGKILL with a further
+# STOP_SIGKILL_TIMEOUT_SEC to reap. These are named constants rather than
+# literals at the call site because THREE other files have to agree with them
+# (see NESTING INVARIANT below) and because the tests assert them directly --
+# the invariant is checked in code, not in a comment.
+#
+# WHY THE OLD 8s WAS WRONG (measured, 2026-09-03)
+# -----------------------------------------------
+# 8.0s was calibrated when captures ran the `pd` preset: 47 talkgroups, 8
+# recorders. Stops on that preset completed gracefully (`forced=False` in this
+# server's own log). The console now runs `pd-all`: 222 talkgroups, 10
+# recorders, and an op25 log growing 58,067 lines in 5.5 minutes. Every
+# observed `pd-all` stop logged `forced=True` -- i.e. it blew through the 8s
+# window and got SIGKILLed.
+#
+# That is precisely the outcome stop()'s own "SIGINT, never SIGKILL first"
+# comment exists to prevent: lwin_listen_multi.sh's `trap cleanup INT TERM` is
+# what SIGINTs the udp_audio_record recorders so each finalises the .wav it is
+# mid-write on. A SIGKILL of the group -- whether first-resort or an
+# escalation -- bypasses the rest of that trap, so the call in flight is left
+# unfinalised. Not catastrophic (completed calls are already on disk, and the
+# grant import is `setsid`-detached so it survives a group SIGKILL), but the
+# clean-shutdown path this project deliberately built was being bypassed on
+# EVERY Stop rather than only in the wedged case it was meant for.
+#
+# WHERE THE TIME ACTUALLY GOES -- the dominant term is the grant import
+# -------------------------------------------------------------------
+# lwin_listen_multi.sh's cleanup() runs, in order: kill op25, pkill multi_rx,
+# SIGINT each recorder, `wait` for all of them, and THEN -- synchronously,
+# still inside the trap, still holding up the group's exit --
+# `setsid python3 scripts/import_grants.py "$LOG"`. `setsid` puts the import in
+# its own process GROUP (so a group SIGKILL cannot take it), but it is not
+# backgrounded with `&`, so bash blocks in that trap until the import returns.
+# CENSUS defaults to 1 in the launcher and capture_control.py never passes
+# --no-census, so the console's captures ALWAYS pay this cost.
+#
+# Measured on this host against a real rotated pd-preset log,
+# results/op25_multi.log.20260902-182333 -- 176 MB, 1,964,517 lines, 156,794
+# grants (roughly a 3-hour pd-all session at the observed 10,558 lines/min):
+#
+#   * parse phase (whole-file read + 4 regex passes over it), timed with
+#     `import_grants.py --dry-run`:                                  4.6 s
+#   * link phase: import_grants.py issues one indexed SELECT over `calls`
+#     PER GRANT before its INSERT. Timed read-only against sdr.db
+#     (`file:sdr.db?mode=ro`) over 20,000 representative queries: 55.4 us
+#     each, so 156,794 grants project to                            ~8.7 s
+#   * the matching 156,794 INSERTs plus the commit, and the recorders'/op25's
+#     own exit and .wav finalisation, on top of that.
+#
+# So a ~3-hour pd-all cleanup needs roughly 20-25 s. Against that, 8s was
+# never going to be enough, and the 10s total ladder was under half of it.
+#
+# THE CHOSEN VALUES, AND THE LIMIT OF WHAT ANY TIMEOUT CAN DO
+# -----------------------------------------------------------
+# 60s + 5s = 65s. 60s is ~2.5-3x the measured ~20-25s cleanup of a 3-hour
+# pd-all session, which is the length of session actually being run. The
+# SIGKILL reap is raised 2s -> 5s because 2s is thin for reaping a group of
+# op25 plus ten recorders under load, and this leg is only ever paid on a path
+# that has already gone wrong.
+#
+# BE HONEST ABOUT WHERE THIS STOPS COVERING: the cost above scales with LOG
+# LENGTH, and the console's default duration is effectively unbounded
+# (lwin_listen_multi.sh's RUN=99999, ~27.7 hours). At the observed
+# 10,558 lines/min that projects to ~17.5M lines -- parse alone ~40s, and
+# ~1.4M grants of SELECT+INSERT on top. NO operator-acceptable cap covers
+# that: an operator is standing at the Stop button. 60s covers sessions up to
+# roughly 6-8 hours of pd-all; past that this ladder will escalate again, and
+# raising the number further is the wrong answer.
+#
+# THE RIGHT LONG-TERM FIX IS TO MAKE CLEANUP FASTER, NOT THE TIMEOUT BIGGER.
+# Two candidates, in order of payoff, neither done here (both are changes to
+# lwin_listen_multi.sh / import_grants.py, outside this fix):
+#   1. Background the grant import: `setsid python3 ... &` in cleanup(). It is
+#      already in its own process group precisely so it can outlive the group,
+#      so bash has no reason to `wait` on it -- that single `&` removes the
+#      dominant term from the critical path entirely.
+#   2. Batch the import: replace the per-grant SELECT+INSERT with one
+#      executemany() and a single set-based link UPDATE, which would take the
+#      ~17s link+insert phase to something closer to the 4.6s parse.
+#
+# NESTING INVARIANT -- three other places must stay ABOVE this ladder
+# -------------------------------------------------------------------
+# The 65s ladder is only real if nothing else kills it partway through:
+#
+#   1. docker-compose.yml `capture.stop_grace_period` (now 90s). `docker
+#      compose stop/restart capture` SIGTERMs, waits this long, then SIGKILLs
+#      the whole cgroup -- which would tear down op25's process group mid-trap
+#      and skip the cleanup entirely. Must exceed 65s; 90s leaves 25s.
+#   2. server/utils/processes.ts stopDelegatedCapture()'s
+#      `AbortSignal.timeout` on POST /stop (now 75s). If the client gives up
+#      first, the console reports a failed Stop for a stop that is in fact
+#      running correctly, and the operator's likely next move (Stop again, or
+#      a container restart) is what actually breaks the cleanup. Must exceed
+#      65s; 75s leaves 10s.
+#   3. _handle_shutdown_signal()'s reentrancy guard, which exists so two
+#      shutdown signals cannot STACK two ladders (2 x 65s = 130s would blow
+#      past even a 90s grace period). See that function's docstring.
+#
+# scripts/tests/test_capture_control.py asserts 1 and 2 by reading those two
+# files, so changing a timing value here without changing them fails the
+# suite rather than silently un-nesting the ladder.
+STOP_SIGINT_TIMEOUT_SEC = 60.0
+STOP_SIGKILL_TIMEOUT_SEC = 5.0
+
+# The worst case an operator can wait on Stop, and the number the two external
+# timeouts above have to clear. Derived, never written out by hand, so it
+# cannot drift from its two terms.
+STOP_LADDER_BUDGET_SEC = STOP_SIGINT_TIMEOUT_SEC + STOP_SIGKILL_TIMEOUT_SEC
+
+
 # --- capture lifecycle -------------------------------------------------------
 
 class CaptureState:
@@ -705,15 +818,39 @@ class CaptureState:
         except ProcessLookupError:
             pass  # already gone between the check above and here -- fine, not an error
 
-        exited = _wait_for_group_exit(pgid, timeout_sec=8.0)
+        # INSTRUMENTATION. Nobody could previously tell whether a `pd-all`
+        # cleanup needed 9 seconds or 40 -- the log said only `forced=True`,
+        # which reports that the cap was blown without reporting by how much,
+        # so the only way to pick a new cap was to guess. `t0`/`waited` closes
+        # that: every stop, graceful or escalated, now logs how long the group
+        # actually took to empty. monotonic() (not time()) because this is a
+        # duration and must not jump if the container's clock is stepped.
+        #
+        # The elapsed value is also returned to the caller as `waitedSec`, so
+        # the number is visible in the console's own Stop response and in
+        # `docker compose logs capture`, not just in one of them. The next
+        # person to tune STOP_SIGINT_TIMEOUT_SEC should be reading measured
+        # numbers off a real Stop, not re-deriving them from log sizes the way
+        # this fix had to.
+        t0 = time.monotonic()
+        exited = _wait_for_group_exit(pgid, timeout_sec=STOP_SIGINT_TIMEOUT_SEC)
         if not exited:
-            log(f"pgid={pgid} still alive 8s after SIGINT; sending SIGKILL")
+            # Log the cap alongside the elapsed time: when this line appears,
+            # the actionable question is "how close to the cap were the stops
+            # that DID succeed", and that comparison needs both numbers.
+            log(
+                f"pgid={pgid} still alive {time.monotonic() - t0:.1f}s after SIGINT "
+                f"(cap {STOP_SIGINT_TIMEOUT_SEC:.0f}s); sending SIGKILL. Cleanup is "
+                f"dominated by lwin_listen_multi.sh's synchronous grant import -- see "
+                f"STOP_SIGINT_TIMEOUT_SEC's comment before raising this again"
+            )
             forced = True
             try:
                 os.killpg(pgid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            _wait_for_group_exit(pgid, timeout_sec=2.0)
+            _wait_for_group_exit(pgid, timeout_sec=STOP_SIGKILL_TIMEOUT_SEC)
+        waited = time.monotonic() - t0
 
         with self.lock:
             self.process = None
@@ -722,8 +859,12 @@ class CaptureState:
             self.started_at = None
             self.stopping = False
 
-        log(f"stopped pid={pgid} forced={forced}")
-        return {"stopped": True, "pid": pgid, "forced": forced}
+        log(f"stopped pid={pgid} forced={forced} waited={waited:.1f}s")
+        # `waitedSec` is camelCase to match the JSON this server already
+        # speaks to the web app (durationSec, includeEncrypted, sessionId).
+        # Rounded to 0.1s: the poll interval in _wait_for_group_exit is 0.2s,
+        # so more precision than that would be invented.
+        return {"stopped": True, "pid": pgid, "forced": forced, "waitedSec": round(waited, 1)}
 
 
 class AlreadyRunning(Exception):
@@ -871,11 +1012,13 @@ def log(message: str) -> None:
 # _handle_shutdown_signal()'s docstring for why this guard is needed HERE
 # specifically, unlike POST /stop's own accepted "two concurrent calls both
 # run the ladder, harmless" case: a second signal arriving mid-ladder would
-# stack a second ~10s wait on top of the first rather than merely repeating
-# it, and that combined wait can exceed this service's 15s
-# stop_grace_period -- letting Docker's own SIGKILL cut the graceful
-# shutdown short, which is the exact outcome the SIGTERM handler exists to
-# prevent.
+# stack a second STOP_LADDER_BUDGET_SEC wait on top of the first rather than
+# merely repeating it, and that combined wait (2 x 65s = 130s) far exceeds
+# this service's stop_grace_period -- letting Docker's own SIGKILL cut the
+# graceful shutdown short, which is the exact outcome the SIGTERM handler
+# exists to prevent. The guard matters MORE now than when the ladder was 10s,
+# not less: the raise from 10s to 65s made the stacked case exceed the grace
+# period by a wider margin than the single case ever did.
 _SHUTTING_DOWN = threading.Event()
 
 
@@ -927,13 +1070,13 @@ def _handle_shutdown_signal(signum: int, frame) -> None:  # noqa: ANN001 (stdlib
     repeating it -- POST /stop's two-concurrent-calls case re-signals an
     already-signalled group and both callers wait roughly the SAME window,
     which is genuinely harmless. Two shutdown signals nested like this can
-    approach ~20s combined, past the 15s stop_grace_period
-    docker-compose.yml sets for this service -- so Docker's own SIGKILL
-    would fire first and cut the graceful ladder short partway through the
-    second, nested wait, which is precisely the failure this handler exists
-    to prevent (see Critical #1 in task-2-review.md). So: the first signal
-    runs the ladder; every signal after it, until this process actually
-    exits, is a no-op.
+    approach 2 x STOP_LADDER_BUDGET_SEC (2 x 65s = 130s) combined, well past
+    the 90s stop_grace_period docker-compose.yml sets for this service -- so
+    Docker's own SIGKILL would fire first and cut the graceful ladder short
+    partway through the second, nested wait, which is precisely the failure
+    this handler exists to prevent (see Critical #1 in task-2-review.md). So:
+    the first signal runs the ladder; every signal after it, until this
+    process actually exits, is a no-op.
     """
     if _SHUTTING_DOWN.is_set():
         return

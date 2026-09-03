@@ -28,6 +28,11 @@ import unittest
 # is only one of the ways this runs).
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 
+# The repo root, for the same reason: StopLadderTimingTest's nesting checks
+# read docker-compose.yml and server/utils/processes.ts, neither of which is
+# under scripts/, so SCRIPTS_DIR.parent is the anchor they need.
+REPO_ROOT = SCRIPTS_DIR.parent
+
 
 class BuildArgsTest(unittest.TestCase):
     def test_rejects_unknown_mode(self):
@@ -626,8 +631,250 @@ class CaptureStateTest(unittest.TestCase):
             result = state.stop()
 
         killpg.assert_any_call(777, signal.SIGINT)
-        self.assertEqual(result, {"stopped": True, "pid": 777, "forced": False})
+        # `waitedSec` is asserted separately (StopLadderTimingTest) rather than
+        # pinned to a value here: this test mocks _wait_for_group_exit
+        # wholesale, so no simulated time passes and the measured wait is
+        # whatever the real clock did in microseconds. What THIS test is about
+        # is that the STORED pgid got signalled, so the wait is checked only
+        # for shape.
+        self.assertEqual(
+            {k: v for k, v in result.items() if k != "waitedSec"},
+            {"stopped": True, "pid": 777, "forced": False},
+        )
+        self.assertIsInstance(result["waitedSec"], float)
         self.assertIsNone(state.pgid)
+
+
+class _FakeClock:
+    """A monotonic clock that only advances when something sleeps.
+
+    Substituted for time.monotonic/time.sleep so the stop ladder's REAL
+    timeouts can be exercised at their real values without the suite paying
+    65 seconds of wall clock for it. _wait_for_group_exit()'s loop is
+    `while monotonic() < deadline: ...; sleep(0.2)`, so advancing `now` by
+    exactly the sleep duration reproduces real timing semantics precisely --
+    including the deadline arithmetic -- at zero cost.
+
+    This matters for revert-detection: a test that mocked
+    _wait_for_group_exit() wholesale (as the older stop tests do, deliberately,
+    for their own purposes) would pass with ANY timeout value and so could
+    never catch a regression to the old 8.0s. Driving the real loop over a fake
+    clock is what makes the timing behaviour genuinely under test.
+    """
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+        self.start = start
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class StopLadderTimingTest(unittest.TestCase):
+    """The SIGINT-then-SIGKILL stop ladder's timing, and the invariant that
+    two other files' timeouts stay nested outside it.
+
+    WHY THIS CLASS EXISTS. The ladder waited 8s after SIGINT before escalating
+    to SIGKILL -- calibrated for the `pd` preset (47 talkgroups, 8 recorders).
+    The console moved to `pd-all` (222 talkgroups, 10 recorders) and every stop
+    began logging `forced=True`, i.e. escalating. That escalation SIGKILLs
+    lwin_listen_multi.sh's process group partway through its `trap cleanup INT
+    TERM`, which is the one thing that SIGINTs the udp_audio_record recorders so
+    they finalise the .wav each is mid-write on -- exactly what stop()'s
+    "SIGINT, never SIGKILL first" comment exists to prevent. See
+    STOP_SIGINT_TIMEOUT_SEC in scripts/capture_control.py for the measurements
+    behind the current values.
+    """
+
+    def _stopping_state(self, pgid: int = 4242) -> CaptureState:
+        state = CaptureState()
+        state.process = _FakeProc(pid=pgid, returncode=None)
+        state.pgid = pgid
+        state.request = {"mode": "multi"}
+        state.started_at = 0.0
+        return state
+
+    def _run_stop(self, state: CaptureState, exits_after_sec: float | None):
+        """Drive state.stop() over a fake clock, with the process group
+        modelled as emptying `exits_after_sec` simulated seconds in (or never,
+        for None).
+
+        _pgid_alive is patched rather than os.killpg's ESRCH behaviour because
+        _pgid_alive is the single primitive both the pre-stop reap and
+        _wait_for_group_exit consult -- so patching it here leaves os.killpg
+        used ONLY for the real signals stop() sends, which is what lets the
+        assertions below say exactly which signals were delivered.
+        """
+        clock = _FakeClock()
+
+        def alive(_pgid: int) -> bool:
+            if exits_after_sec is None:
+                return True
+            return clock.now - clock.start < exits_after_sec
+
+        with mock.patch.object(cc, "_pgid_alive", side_effect=alive), \
+             mock.patch.object(cc.time, "monotonic", clock.monotonic), \
+             mock.patch.object(cc.time, "sleep", clock.sleep), \
+             mock.patch.object(cc.os, "killpg") as killpg:
+            result = state.stop()
+        return result, killpg, clock
+
+    def test_a_group_that_exits_inside_the_window_is_never_escalated(self):
+        # 30 simulated seconds: comfortably longer than the OLD 8s cap and
+        # comfortably inside the new 60s one. This is the case the fix is FOR
+        # -- a `pd-all` cleanup measured at ~20-25s on a 3-hour session -- so
+        # a revert of STOP_SIGINT_TIMEOUT_SEC to 8.0 makes this test fail,
+        # which is the point of choosing 30 rather than something tiny.
+        state = self._stopping_state(pgid=4242)
+        result, killpg, _clock = self._run_stop(state, exits_after_sec=30.0)
+
+        killpg.assert_called_once_with(4242, signal.SIGINT)
+        self.assertNotIn(
+            mock.call(4242, signal.SIGKILL), killpg.call_args_list,
+            "a group that exited on its own inside the window must never be "
+            "SIGKILLed -- that bypasses lwin_listen_multi.sh's cleanup trap",
+        )
+        self.assertIs(result["forced"], False)
+        # Polled, not slept: the wait returns when the group is empty, so the
+        # reported wait is ~30s, NOT the 60s cap. This is what makes a
+        # generous cap acceptable to an operator standing at the Stop button.
+        self.assertAlmostEqual(result["waitedSec"], 30.0, delta=0.5)
+        self.assertIsNone(state.pgid)
+
+    def test_a_group_that_outlives_the_window_is_escalated_to_sigkill(self):
+        # The cap still has to exist: a cleanup that is genuinely wedged (or a
+        # session so long the import cannot finish -- see
+        # STOP_SIGINT_TIMEOUT_SEC's honesty note about ~27-hour sessions) must
+        # not hold the operator forever. Raising the cap must not have turned
+        # the ladder into an unbounded wait.
+        state = self._stopping_state(pgid=555)
+        result, killpg, _clock = self._run_stop(state, exits_after_sec=None)
+
+        self.assertEqual(
+            killpg.call_args_list,
+            [mock.call(555, signal.SIGINT), mock.call(555, signal.SIGKILL)],
+            "SIGINT must come first and SIGKILL only as the escalation",
+        )
+        self.assertIs(result["forced"], True)
+        # The full ladder, both legs: the SIGINT window plus the SIGKILL reap.
+        self.assertAlmostEqual(
+            result["waitedSec"], cc.STOP_LADDER_BUDGET_SEC, delta=0.5,
+        )
+        # State is cleared even in the forced case -- otherwise /status would
+        # keep reporting a stale pid and /start would refuse the next capture.
+        self.assertIsNone(state.pgid)
+
+    def test_the_ladder_budget_is_the_sum_of_its_two_legs(self):
+        # Derived, never hand-written, so it cannot drift from its terms --
+        # and the two cross-file checks below are stated against it.
+        self.assertEqual(
+            cc.STOP_LADDER_BUDGET_SEC,
+            cc.STOP_SIGINT_TIMEOUT_SEC + cc.STOP_SIGKILL_TIMEOUT_SEC,
+        )
+
+    def test_the_sigint_window_covers_a_measured_pd_all_cleanup(self):
+        # THE REVERT DETECTOR for the timing values themselves. The behaviour
+        # tests above prove the ladder escalates correctly around whatever the
+        # constants say; this one pins what they must SAY, with the evidence.
+        #
+        # MEASURED 2026-09-03 against results/op25_multi.log.20260902-182333
+        # (176 MB, 1,964,517 lines, 156,794 grants -- about a 3-hour pd-all
+        # session at the observed 10,558 lines/min). lwin_listen_multi.sh's
+        # cleanup() runs `setsid python3 scripts/import_grants.py "$LOG"`
+        # SYNCHRONOUSLY (setsid, but no `&`), so bash blocks in the trap until
+        # it returns, and CENSUS defaults to 1:
+        #
+        #   parse phase (import_grants.py --dry-run):                  4.6 s
+        #   link phase (one indexed SELECT per grant; 55.4 us measured
+        #     read-only over sdr.db x 156,794 grants):                ~8.7 s
+        #   plus 156,794 INSERTs + commit, and the recorders'/op25's own
+        #     exit and .wav finalisation.
+        #
+        # ~20-25 s total. The old 8.0s could not cover it, which is why every
+        # pd-all stop escalated. 60s is ~2.5-3x measured, so a stop is not
+        # escalated merely for being a large preset.
+        self.assertGreaterEqual(
+            cc.STOP_SIGINT_TIMEOUT_SEC, 45.0,
+            "a measured pd-all cleanup is ~20-25s; anything near the old 8.0s "
+            "escalates to SIGKILL on every ordinary Stop and bypasses "
+            "lwin_listen_multi.sh's recorder-finalising cleanup trap",
+        )
+        # And it must stay bounded: an operator is waiting on Stop.
+        self.assertLessEqual(
+            cc.STOP_SIGINT_TIMEOUT_SEC, 120.0,
+            "the wait is polled but capped on purpose -- a wedged cleanup must "
+            "not hold the Stop button indefinitely",
+        )
+        # The reap leg is short by design but not vanishing: 2s was thin for
+        # reaping op25 plus ten recorders, and this leg is only ever paid on a
+        # path that has already gone wrong.
+        self.assertGreaterEqual(cc.STOP_SIGKILL_TIMEOUT_SEC, 5.0)
+
+    def test_compose_stop_grace_period_nests_outside_the_ladder(self):
+        # NESTING INVARIANT 1, checked in code rather than in a comment.
+        # `docker compose stop/restart capture` SIGTERMs, waits
+        # stop_grace_period, then SIGKILLs the whole cgroup -- which tears
+        # down op25's process group mid-trap and skips cleanup entirely. If
+        # the ladder is raised without raising this, the bug is not fixed but
+        # MOVED, and to a worse place: Docker's SIGKILL lands mid-ladder.
+        compose = (REPO_ROOT / "docker-compose.yml").read_text()
+        matches = re.findall(r"^\s*stop_grace_period:\s*(\d+)s\s*$", compose, re.M)
+        # Asserted so this test cannot silently start reading some OTHER
+        # service's grace period if one is added later.
+        self.assertEqual(
+            len(matches), 1,
+            "expected exactly one stop_grace_period in docker-compose.yml "
+            "(capture's); if another service gained one, scope this check to "
+            "the capture service instead of relaxing it",
+        )
+        grace = float(matches[0])
+        self.assertGreater(
+            grace, cc.STOP_LADDER_BUDGET_SEC,
+            f"capture's stop_grace_period ({grace:.0f}s) must exceed the stop "
+            f"ladder ({cc.STOP_LADDER_BUDGET_SEC:.0f}s), or Docker SIGKILLs "
+            f"the cgroup partway through the graceful shutdown",
+        )
+        # Margin, not just strict inequality: SIGTERM delivery, tini's
+        # forwarding, and the handler reaching STATE.stop() all happen inside
+        # the grace period before the ladder's own clock even starts.
+        self.assertGreaterEqual(grace, cc.STOP_LADDER_BUDGET_SEC + 10.0)
+
+    def test_the_client_stop_timeout_nests_outside_the_ladder(self):
+        # NESTING INVARIANT 2. server/utils/processes.ts's
+        # stopDelegatedCapture() POSTs /stop behind an AbortSignal.timeout. If
+        # the CLIENT gives up before the ladder finishes, the console reports a
+        # failed Stop for a stop that is proceeding correctly -- and the
+        # operator's likely response (Stop again, or restart the container) is
+        # what actually breaks the cleanup. This coupling is easy to miss
+        # because it lives in a different language in a different directory,
+        # which is precisely why it is asserted here.
+        ts = (REPO_ROOT / "server" / "utils" / "processes.ts").read_text()
+        # Scoped to the /stop fetch specifically. processes.ts has three
+        # AbortSignal.timeout calls -- /start (10s), GET /status (5s), and
+        # this one -- and only THIS one is coupled to the stop ladder. The
+        # other two bound requests that do not wait on a cleanup at all, so
+        # matching them would make this assertion meaningless. Anchoring on
+        # the "/stop`" path literal on the same line is what keeps the check
+        # pointed at the right timeout.
+        matches = re.findall(r"/stop`[^\n]*AbortSignal\.timeout\(([\d_]+)\)", ts)
+        self.assertEqual(
+            len(matches), 1,
+            "expected exactly one POST /stop fetch with an AbortSignal.timeout "
+            "in processes.ts; if stopDelegatedCapture() was restructured, "
+            "re-point this check rather than relaxing it",
+        )
+        client_ms = float(matches[0].replace("_", ""))
+        self.assertGreater(
+            client_ms / 1000.0, cc.STOP_LADDER_BUDGET_SEC,
+            f"the console's POST /stop timeout ({client_ms / 1000.0:.0f}s) must "
+            f"exceed the control server's ladder "
+            f"({cc.STOP_LADDER_BUDGET_SEC:.0f}s), or a correct stop is "
+            f"reported to the operator as a failure",
+        )
+        self.assertGreaterEqual(client_ms / 1000.0, cc.STOP_LADDER_BUDGET_SEC + 5.0)
 
 
 class Op25AliveTest(unittest.TestCase):
@@ -762,7 +1009,7 @@ class ShutdownSignalTest(unittest.TestCase):
         # too -- it does not. Two nested shutdown-signal invocations would
         # stack a second ~10s wait on top of the first (unlike two /stop
         # calls, which both wait out roughly the SAME window), risking
-        # Docker's 15s stop_grace_period cutting the second wait short with
+        # Docker's stop_grace_period cutting the second wait short with
         # a SIGKILL -- see _handle_shutdown_signal's docstring. The second
         # signal here must be a complete no-op: no second STATE.stop(), no
         # second os._exit call.
