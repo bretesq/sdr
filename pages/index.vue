@@ -47,8 +47,15 @@
 
         <div class="bay__livebody">
           <TransitionGroup name="file" tag="div">
+            <!--
+              Only a clip the FEED pulled off the queue gets a strip here. A
+              reviewed one is already on screen in the filed rail, so printing
+              it again above would duplicate the strip the operator just
+              clicked — and the rail growing to hold it is what shoved the page
+              down under their cursor.
+            -->
             <BayCallStrip
-              v-if="feed.nowPlaying.value"
+              v-if="feed.nowPlaying.value && !feed.reviewing.value"
               :key="`now-${feed.nowPlaying.value.id}`"
               :call="feed.nowPlaying.value"
               :held-key-ids="feed.heldKeyIds.value"
@@ -63,7 +70,16 @@
             />
           </TransitionGroup>
 
-          <p v-if="!feed.nowPlaying.value && !feed.entries.value.length" class="idle">
+          <!--
+            The idle notice stays put while a reviewed clip plays. The transport
+            below it carries the waveform and the clock, which is the whole of
+            what reviewing needs to show — the rail has no arrivals to report,
+            and saying "bay not armed" is still true.
+          -->
+          <p
+            v-if="(!feed.nowPlaying.value || feed.reviewing.value) && !feed.entries.value.length"
+            class="idle"
+          >
             {{ feed.armed.value ? 'waiting for traffic' : 'bay not armed' }}
             <span class="idle__sub">{{ liveHint }}</span>
           </p>
@@ -155,10 +171,18 @@ const feed = useScannerFeed()
 const archive = useArchive()
 const sheet = ref(false)
 
-/** Strips the live rail is already holding must not also appear filed. */
+/**
+ * Strips the live rail is already holding must not also appear filed.
+ *
+ * A REVIEWED clip is the exception, and it matters: it is playing *because* the
+ * operator clicked it in the filed rail. Hiding it there would delete the strip
+ * out from under the cursor that just pressed it and shuffle every strip below
+ * up one — the same page-moves-while-you-look-at-it problem as the rail
+ * expanding, arriving from the other direction.
+ */
 const liveIds = computed(() => {
   const s = new Set<number>()
-  if (feed.nowPlaying.value) s.add(feed.nowPlaying.value.id)
+  if (feed.nowPlaying.value && !feed.reviewing.value) s.add(feed.nowPlaying.value.id)
   for (const e of feed.entries.value) s.add(e.call.id)
   return s
 })
@@ -167,8 +191,17 @@ const filed = computed(() => archive.rows.value.filter(r => !liveIds.value.has(r
 
 /* An idle bay is the normal state, not a failure — but a live rail holding
    38% of the screen to say "nothing yet" is dead space. When it has no strips
-   it collapses to its header and gives the room to the filed rail. */
-const liveEmpty = computed(() => !feed.nowPlaying.value && feed.entries.value.length === 0)
+   it collapses to its header and gives the room to the filed rail.
+
+   A REVIEWED clip does not count as a strip. Playing one used to flip this
+   false, so the rail expanded from its collapsed height to 38% — the whole
+   page shifting under the operator's cursor at the exact moment they clicked
+   something, which is the worst possible time to move it. Reviewing shows in
+   the transport instead: the shape, the clock, the talkgroup. Nothing arrived,
+   so nothing needs room. */
+const liveEmpty = computed(() =>
+  (!feed.nowPlaying.value || feed.reviewing.value) && feed.entries.value.length === 0,
+)
 
 /**
  * The mobile bar's compact status. Shares receiverStatus() with BayCommStack

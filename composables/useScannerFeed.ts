@@ -330,10 +330,24 @@ export function useScannerFeed() {
    * separately — or in the wrong order — makes the handler early-return and
    * reintroduces the wedge this whole mechanism exists to prevent.
    */
+  /**
+   * True while `nowPlaying` is a clip the operator picked out of the FILED
+   * rail, rather than one the live feed pulled off the queue.
+   *
+   * The two look identical to the audio element and must not look identical to
+   * the bay. A live clip belongs in the live rail, which grows to hold it. A
+   * reviewed clip is already on screen in the filed rail — rendering it a
+   * second time above duplicates the strip the operator just clicked, and
+   * expanding the rail to do it shoves the whole page down under their cursor.
+   * Reviewing is a transport action, not an arrival.
+   */
+  const reviewing = ref(false)
+
   function finishClip(didFail: boolean): void {
     clearTimers()
     if (didFail) failed.value += 1
     nowPlaying.value = null
+    reviewing.value = false
     playIfIdle()
   }
 
@@ -491,6 +505,7 @@ export function useScannerFeed() {
     // nowPlaying and treats the empty-src error as teardown rather than a
     // failed clip.
     nowPlaying.value = null
+    reviewing.value = false
     if (audio) {
       audio.pause()
       audio.removeAttribute('src')
@@ -518,6 +533,7 @@ export function useScannerFeed() {
     if (!audio) return
     clearTimers()
     nowPlaying.value = call
+    reviewing.value = true
     audio.src = `/api/recordings/${encodeURIComponent(call.file)}`
 
     const dur = Number.isFinite(call.dur)
@@ -553,7 +569,7 @@ export function useScannerFeed() {
 
   return {
     followed, heldKeyIds, selected, armed, stalenessSec, settingPersists,
-    entries, skipped, failed, nowPlaying, streamOk, radioBusy, tracked, sessionStartedAt, sessionDurationSec,
+    entries, skipped, failed, nowPlaying, reviewing, streamOk, radioBusy, tracked, sessionStartedAt, sessionDurationSec,
     receiverLayout, error,
     load, arm, disarm, review,
   }
