@@ -19,6 +19,8 @@ interface FollowedResponse {
     heldKeyIds: number[]
     radioBusy: boolean
     tracked: boolean
+    /** Epoch seconds the tracked session opened, or null when untracked. */
+    sessionStartedAt: number | null
     whitelistMtime: number | null
   }
 }
@@ -128,6 +130,8 @@ export function useScannerFeed() {
   const streamOk = ref(false)
   const radioBusy = ref(false)
   const tracked = ref(false)
+  /** Epoch seconds the tracked session opened, or null when untracked. */
+  const sessionStartedAt = ref<number | null>(null)
   const error = ref('')
 
   const queue: ScannerQueue = createQueue()
@@ -185,6 +189,7 @@ export function useScannerFeed() {
       heldKeyIds.value = res.data.heldKeyIds
       radioBusy.value = res.data.radioBusy
       tracked.value = res.data.tracked
+      sessionStartedAt.value = res.data.sessionStartedAt
       error.value = ''
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Could not load talkgroups'
@@ -462,7 +467,7 @@ export function useScannerFeed() {
 
   return {
     followed, heldKeyIds, selected, armed, stalenessSec, settingPersists,
-    entries, skipped, failed, nowPlaying, streamOk, radioBusy, tracked, error,
+    entries, skipped, failed, nowPlaying, streamOk, radioBusy, tracked, sessionStartedAt, error,
     load, arm, disarm, review,
   }
 }

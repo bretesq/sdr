@@ -69,6 +69,8 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { receiverStatus } from '~/utils/captureStatus'
+import type { ReceiverStatus } from '~/utils/captureStatus'
 
 /**
  * The comm stack: active above, standby below, exactly as a radio stack reads.
@@ -85,6 +87,8 @@ const props = defineProps<{
   armed: boolean
   radioBusy: boolean
   tracked: boolean
+  /** Epoch seconds the tracked session opened, or null when untracked. */
+  sessionStartedAt: number | null
 }>()
 
 defineEmits<{ toggle: [], toggleTg: [tgid: number] }>()
@@ -106,16 +110,47 @@ const shown = computed(() => {
  * from a shell rather than through this console reads busy-but-untracked, and
  * the feed works perfectly in that state — calling it "no session" would make a
  * working bay look dead.
+ *
+ * The fourth state — tracked with no radio, past a grace period — is the one
+ * this component used to have no way to say at all: RADIO_PATTERNS matches
+ * op25 itself, not its recorders, so op25 dying while its recorders survive
+ * used to fall through to "idle" here, the calmest possible reading of a
+ * session that is open with nothing receiving. receiverStatus() (utils/
+ * captureStatus.ts) is what tells "just started" apart from "actually
+ * stalled" — see that file for the grace period and its measurement.
+ *
+ * No ticking clock drives this: Date.now() is read fresh each time this
+ * computed re-evaluates, which is only when a prop changes (a fresh
+ * /api/listen/followed read). A timer that just re-ran the same stale
+ * radioBusy/tracked values through Date.now() would buy nothing — the radio
+ * state itself only changes on the next server read, ticker or not.
  */
-const receiverLine = computed(() => {
-  if (props.radioBusy && props.tracked) return 'on air · console session'
-  if (props.radioBusy) return 'on air · outside session'
-  return 'idle'
-})
+const status = computed(() => receiverStatus({
+  radioBusy: props.radioBusy,
+  tracked: props.tracked,
+  sessionStartedAt: props.sessionStartedAt,
+  nowMs: Date.now(),
+}))
 
-const receiverNote = computed(() => {
-  if (props.radioBusy && props.tracked) return 'This console started the capture and can stop it.'
-  if (props.radioBusy) return 'Something else started this capture. The bay still fills; stopping it is not this console’s to do.'
-  return 'No capture running. Filed strips still read; nothing new will land.'
-})
+// Record, not a switch: TS's exhaustiveness check on a Record's key type
+// catches a future ReceiverStatus member left unhandled at compile time,
+// which a switch with no default cannot (and vue/return-in-computed-property
+// rejects a switch with no default anyway, since it cannot see the switch is
+// exhaustive over a closed union).
+const RECEIVER_LINE: Record<ReceiverStatus, string> = {
+  onAirConsole: 'on air · console session',
+  onAirOutside: 'on air · outside session',
+  stalled: 'stalled · console session open',
+  idle: 'idle',
+}
+
+const RECEIVER_NOTE: Record<ReceiverStatus, string> = {
+  onAirConsole: 'This console started the capture and can stop it.',
+  onAirOutside: 'Something else started this capture. The bay still fills; stopping it is not this console’s to do.',
+  stalled: 'A session is still open but nothing is receiving. Start will refuse while it stays open — Stop reaches the recorders even though op25 is gone.',
+  idle: 'No capture running. Filed strips still read; nothing new will land.',
+}
+
+const receiverLine = computed(() => RECEIVER_LINE[status.value])
+const receiverNote = computed(() => RECEIVER_NOTE[status.value])
 </script>

@@ -25,6 +25,7 @@
       :armed="feed.armed.value"
       :radio-busy="feed.radioBusy.value"
       :tracked="feed.tracked.value"
+      :session-started-at="feed.sessionStartedAt.value"
       @toggle="toggleArm"
       @toggle-tg="toggleTg"
     />
@@ -108,6 +109,8 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { receiverStatus } from '~/utils/captureStatus'
+import type { ReceiverStatus } from '~/utils/captureStatus'
 
 useHead({ title: 'Strip Bay — LWIN P25' })
 
@@ -130,7 +133,26 @@ const filed = computed(() => archive.rows.value.filter(r => !liveIds.value.has(r
    it collapses to its header and gives the room to the filed rail. */
 const liveEmpty = computed(() => !feed.nowPlaying.value && feed.entries.value.length === 0)
 
-const receiverShort = computed(() => (feed.radioBusy.value ? 'on air' : 'idle'))
+/**
+ * The mobile bar's compact status. Shares receiverStatus() with BayCommStack
+ * so the same "session open, no radio" reading does not silently say "idle"
+ * here just because this line is a separate, shorter render of the same fact.
+ * Record, not a switch, for the same exhaustiveness reason as CommStack.vue's
+ * RECEIVER_LINE.
+ */
+const RECEIVER_SHORT: Record<ReceiverStatus, string> = {
+  onAirConsole: 'on air',
+  onAirOutside: 'on air',
+  stalled: 'stalled',
+  idle: 'idle',
+}
+
+const receiverShort = computed(() => RECEIVER_SHORT[receiverStatus({
+  radioBusy: feed.radioBusy.value,
+  tracked: feed.tracked.value,
+  sessionStartedAt: feed.sessionStartedAt.value,
+  nowMs: Date.now(),
+})])
 
 interface ApiResponse<T> { success: boolean, data?: T, error?: string }
 
@@ -172,8 +194,9 @@ async function refreshSttStatus(): Promise<void> {
 
 const liveHint = computed(() => {
   if (!feed.armed.value) return 'Tick talkgroups, then arm the bay.'
-  if (!feed.radioBusy.value) return 'No capture is running, so nothing new will land.'
-  return 'Armed and listening. Strips appear as calls end.'
+  if (feed.radioBusy.value) return 'Armed and listening. Strips appear as calls end.'
+  if (feed.tracked.value) return 'A session is open but nothing is receiving. Nothing new will land until it does.'
+  return 'No capture is running, so nothing new will land.'
 })
 
 /* The transport fill is a clock, not a real seek position: the element is owned
