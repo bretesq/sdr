@@ -132,6 +132,25 @@ class BuildArgsTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             build_args({"mode": "multi", "sessionId": -5})
 
+    def test_rejects_out_of_range_session_id(self):
+        # final-review.md I4: sessionId had a floor (MIN_SESSION_ID) but no
+        # ceiling. An absurdly large value reached SDR_SESSION_ID in the
+        # child environment and then sdr_db.upsert_call()'s 64-bit SQLite
+        # column, raising OverflowError there instead of being rejected here
+        # -- a silent corpus outage for the whole session. This asserts the
+        # boundary itself, not the downstream OverflowError, because the
+        # fix's whole point is that build_args() must refuse it before any
+        # of that happens.
+        with self.assertRaises(ValidationError):
+            build_args({"mode": "multi", "sessionId": cc.MAX_SESSION_ID + 1})
+        with self.assertRaises(ValidationError):
+            build_args({"mode": "multi", "sessionId": 10 ** 30})
+
+    def test_accepts_session_id_at_the_max_boundary(self):
+        args, session_id = build_args({"mode": "multi", "sessionId": cc.MAX_SESSION_ID})
+        self.assertEqual(session_id, cc.MAX_SESSION_ID)
+        self.assertEqual(args, [])
+
     def test_accepts_a_valid_session_id(self):
         args, session_id = build_args({"mode": "multi", "sessionId": 42})
         self.assertEqual(session_id, 42)
@@ -234,14 +253,49 @@ class CaptureStateTest(unittest.TestCase):
 
         # killpg(555, 0) succeeding (no exception) means the kernel still
         # has at least one member of group 555 -- op25 or a recorder,
-        # reparented once the launcher exited.
-        with mock.patch.object(cc.os, "killpg", return_value=None) as killpg:
+        # reparented once the launcher exited. _op25_alive() is mocked
+        # separately (True) because this test is specifically about op25
+        # surviving -- see the sibling degraded test below for op25 NOT
+        # surviving the same group-alive condition.
+        with mock.patch.object(cc.os, "killpg", return_value=None) as killpg, \
+             mock.patch.object(cc, "_op25_alive", return_value=True) as op25_alive:
             snapshot = state.snapshot()
 
         killpg.assert_called_once_with(555, 0)
+        op25_alive.assert_called_once_with(555)
         self.assertEqual(snapshot["running"], True)
         self.assertEqual(snapshot["pid"], 555)
+        self.assertNotIn("degraded", snapshot)
         self.assertIsNotNone(state.pgid)  # NOT cleared -- the group is still alive
+
+    def test_status_reports_degraded_when_op25_died_but_recorders_survive(self):
+        # final-review.md finding 5, reproduced directly: the process GROUP
+        # is still alive (recorders survive op25), but op25 itself -- the
+        # thing that actually holds the HackRFs -- is gone.
+        # `lwin_listen_multi.sh:243` waits on recorder 0, not op25, so this
+        # is exactly the state a dead op25 leaves behind. Before this fix,
+        # snapshot() only asked whether ANY group member was alive, so it
+        # kept reporting `running: true` for a session with no radio at all
+        # -- confirmed as the mechanism behind this project's unattended
+        # multi-hour outages.
+        state = CaptureState()
+        state.process = _FakeProc(pid=555, returncode=0)
+        state.pgid = 555
+        state.request = {"mode": "multi", "durationSec": 600}
+        state.started_at = 0.0
+
+        with mock.patch.object(cc.os, "killpg", return_value=None), \
+             mock.patch.object(cc, "_op25_alive", return_value=False) as op25_alive:
+            snapshot = state.snapshot()
+
+        op25_alive.assert_called_once_with(555)
+        self.assertEqual(snapshot["running"], False)
+        self.assertEqual(snapshot["degraded"], True)
+        self.assertIn("op25", snapshot["message"])
+        # Only the REPORTED answer changes -- self.pgid is untouched, so
+        # POST /start still correctly 409s (the orphaned recorders still
+        # hold their UDP ports) and POST /stop still correctly reaps them.
+        self.assertEqual(state.pgid, 555)
 
     def test_snapshot_never_crashes_with_nothing_running(self):
         self.assertEqual(CaptureState().snapshot(), {"running": False, "pid": None})
@@ -305,6 +359,57 @@ class CaptureStateTest(unittest.TestCase):
         killpg.assert_any_call(777, signal.SIGINT)
         self.assertEqual(result, {"stopped": True, "pid": 777, "forced": False})
         self.assertIsNone(state.pgid)
+
+
+class Op25AliveTest(unittest.TestCase):
+    """_op25_alive() in isolation, mocking subprocess.run rather than
+    CaptureState, so the pgrep-specific exit-code/exception handling is
+    covered directly rather than only through snapshot()'s two tests above."""
+
+    def test_true_when_pgrep_matches(self):
+        with mock.patch.object(
+            cc.subprocess, "run",
+            return_value=mock.Mock(returncode=0, stderr=b""),
+        ) as run:
+            self.assertTrue(cc._op25_alive(555))
+        args = run.call_args.args[0]
+        self.assertEqual(args[:2], ["pgrep", "-g"])
+        self.assertIn("555", args)
+
+    def test_false_when_pgrep_finds_nothing(self):
+        # exit 1 is pgrep's own documented "no process matched" -- a real
+        # negative answer, not an error.
+        with mock.patch.object(
+            cc.subprocess, "run",
+            return_value=mock.Mock(returncode=1, stderr=b""),
+        ):
+            self.assertFalse(cc._op25_alive(555))
+
+    def test_false_when_pgrep_itself_errors(self):
+        # A non-0/1 exit is pgrep reporting ITS OWN failure (bad argument,
+        # internal error) -- not an authoritative "no match", but this
+        # function must still fail toward "not confirmed alive" rather than
+        # silently reporting a capture as healthy on the strength of a check
+        # that did not actually run. This is the opposite direction from
+        # isRadioBusy()'s documented pgrep-missing gap (false there means
+        # "not busy", the dangerous direction for THAT check) -- see this
+        # function's own docstring for why the two must fail differently.
+        with mock.patch.object(
+            cc.subprocess, "run",
+            return_value=mock.Mock(returncode=2, stderr=b"pgrep: error"),
+        ):
+            self.assertFalse(cc._op25_alive(555))
+
+    def test_false_when_pgrep_binary_is_missing(self):
+        with mock.patch.object(cc.subprocess, "run", side_effect=FileNotFoundError):
+            self.assertFalse(cc._op25_alive(555))
+
+    def test_false_when_pgrep_times_out(self):
+        with mock.patch.object(
+            cc.subprocess, "run",
+            side_effect=cc.subprocess.TimeoutExpired(cmd="pgrep", timeout=2),
+        ):
+            self.assertFalse(cc._op25_alive(555))
 
 
 class ShutdownSignalTest(unittest.TestCase):

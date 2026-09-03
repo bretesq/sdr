@@ -107,7 +107,28 @@ ALLOWED_FIELDS = frozenset({"mode", "ess", "includeEncrypted", "durationSec", "s
 # practice -- but this endpoint validates every field to the same standard
 # regardless of how trustworthy its usual caller is, per build_args()'s own
 # stated job as this feature's security boundary.
+#
+# MIN_SESSION_ID had no ceiling counterpart until final-review.md's I4: a
+# sessionId of, say, 10**30 passed straight through, became SDR_SESSION_ID in
+# the child's environment, and reached sdr_db.upsert_call()'s session_id
+# column -- which SQLite backs with a 64-bit signed integer. The insert then
+# raised OverflowError, caught by udp_audio_record.py's broad `except
+# Exception` (its job is to keep recording even when the DB write for one
+# call fails), so the .wav files kept landing while EVERY call silently
+# dropped out of sdr.db for the rest of the session -- a corpus outage whose
+# only trace was a WARNING line in `docker compose logs capture`.
+#
+# MAX_SESSION_ID applies the same PLAUSIBILITY standard as MAX_DURATION_SEC
+# above, not a type-limit standard (i.e. this is not simply "the largest
+# int64 SQLite can store" -- that would still let a wildly-wrong value, like
+# an accidental swap with durationSec's own range, pass as "plausible").
+# sessions is an autoincrement rowid seeded entirely by this app's own real
+# usage -- 30 rows as of this writing. One million is generous across many
+# orders of magnitude of headroom (at 10 sessions/day that's ~274 years)
+# while still catching the class of value that would otherwise overflow
+# SQLite's column: a typo, a unit confusion, or a caller sending garbage.
 MIN_SESSION_ID = 1
+MAX_SESSION_ID = 1_000_000
 
 
 class ValidationError(ValueError):
@@ -213,8 +234,10 @@ def build_args(req: object) -> tuple[list[str], int | None]:
         # through as session_id=1.
         if isinstance(session_id, bool) or not isinstance(session_id, int):
             raise ValidationError("sessionId must be an integer")
-        if session_id < MIN_SESSION_ID:
-            raise ValidationError(f"sessionId must be >= {MIN_SESSION_ID}")
+        if not (MIN_SESSION_ID <= session_id <= MAX_SESSION_ID):
+            raise ValidationError(
+                f"sessionId must be between {MIN_SESSION_ID} and {MAX_SESSION_ID}"
+            )
 
     return args, session_id
 
@@ -356,19 +379,53 @@ class CaptureState:
     def snapshot(self) -> dict:
         """GET /status's payload. Never raises, even if nothing is running
         or the tracked process just exited -- that is the normal, expected
-        common case, not an error."""
+        common case, not an error.
+
+        `running` reflects op25 ITSELF (_op25_alive()), not merely the
+        process group's own liveness -- see that function's docstring for
+        why the group alone (self.pgid, self.process) is not enough: the
+        eight recorders can keep a group alive for hours after op25 has
+        died, and this endpoint existing to report that as `running: true`
+        is precisely final-review.md's finding 5. `self.pgid` itself is
+        deliberately left untouched here (see _reap_if_exited_locked() and
+        start()'s AlreadyRunning check, neither of which this function
+        calls into) -- POST /start still correctly refuses a second capture
+        while the orphaned recorders hold their UDP ports, and POST /stop
+        still correctly reaps them by pgid regardless of whether op25 is
+        the thing still alive in the group. Only the REPORTED answer
+        changes here; nothing about what counts as "still occupying
+        resources" does.
+        """
         with self.lock:
             self._reap_if_exited_locked()
             if self.pgid is None:
                 return {"running": False, "pid": None}
-            return {
-                "running": True,
+            op25_alive = _op25_alive(self.pgid)
+            payload = {
+                "running": op25_alive,
                 "pid": self.pgid,
                 "startedAt": datetime.fromtimestamp(
                     self.started_at, tz=timezone.utc
                 ).isoformat(),
                 "request": self.request,
             }
+            if not op25_alive:
+                # The process group is still alive (self.pgid survived
+                # _reap_if_exited_locked() above) but op25 itself is gone --
+                # the exact state this function's docstring names. `degraded`
+                # spells out why for whoever reads this response: the
+                # capture is not cleanly stopped (POST /stop still has real
+                # work to do -- reaping the orphaned recorders by pgid), it
+                # is just not doing anything useful. Detection only, per the
+                # brief that added this: no auto-restart happens here or
+                # anywhere else in this file.
+                payload["degraded"] = True
+                payload["message"] = (
+                    "op25 has exited but its process group is still alive "
+                    "(recorders holding no radio); stop this session, then "
+                    "start a new one, to recover"
+                )
+            return payload
 
     def start(self, req: dict) -> dict:
         """Validate, then start a capture. Raises ValidationError for a bad
@@ -536,6 +593,64 @@ def _pgid_alive(pgid: int) -> bool:
         # but if it ever did, "cannot signal it" must not be conflated with
         # "cannot see it": report alive rather than silently going stale.
         return True
+
+
+def _op25_alive(pgid: int) -> bool:
+    """Is op25 (multi_rx.py) ITSELF still a member of process group `pgid` --
+    as opposed to merely _pgid_alive()'s question, which only asks whether
+    ANY member of the group still exists.
+
+    This is the fix for final-review.md's finding 5: `lwin_listen_multi.sh:243`
+    is `wait "${REC_PIDS[0]}"`, not a wait on op25, so op25 can die (SDR
+    driver fault, a signal that only reaches it, a crash) while the launcher
+    already exited and all eight recorders keep running -- keeping the group
+    alive on their own, with no radio behind them at all. Before this,
+    snapshot() asked only _pgid_alive(), so it kept reporting `running: true`
+    for a session with a fully dead radio -- confirmed as the actual
+    mechanism behind this project's multi-hour unattended radio outages (see
+    the ledger's "STANDING ISSUE: op25 is not staying up on this host").
+
+    Scoped to the GROUP with pgrep's own `-g`/`--pgroup` filter (verified on
+    this host's procps-ng 4.0.4 via `man pgrep`; the capture image installs
+    the same procps package -- see docker/capture/Dockerfile), never a bare
+    `-f` across the whole container, so this can only ever answer about
+    THIS capture's own recorders/op25, never an unrelated process.
+
+    UNLIKE _pgid_alive() (a kernel kill(pgid, 0) that can only say "exists"
+    or "does not"), this shells out to pgrep, which has failure modes of its
+    own -- a missing binary, an unexpected exit. Those must NOT read as "op25
+    is alive": this function exists specifically so a capture's health can
+    no longer be reported with unearned confidence, so an inability to prove
+    op25 is there fails toward the answer that keeps /status honest
+    (`False`, i.e. "not confirmed alive"), never toward silently assuming the
+    radio is fine. This is the opposite direction from isRadioBusy()'s own
+    documented pgrep-missing gap (a `false` there means "not busy", which is
+    the DANGEROUS direction for a radio-contention check) -- the direction
+    that is safe depends on what the caller is protecting against, and here
+    it is a false "running: true", not a missed contention.
+    """
+    try:
+        result = subprocess.run(
+            ["pgrep", "-g", str(pgid), "-f", "python3 multi_rx\\.py"],
+            capture_output=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log(f"pgrep unavailable while checking op25 liveness for pgid={pgid}: {e}")
+        return False
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False  # pgrep's own documented "no process matched"
+    # Any other exit code is pgrep reporting its OWN error (bad argument,
+    # internal failure) -- not an authoritative "no match" either, but the
+    # same fail-toward-honest direction applies: do not report a capture as
+    # healthy on the strength of a check that itself did not work.
+    log(
+        f"pgrep exited {result.returncode} while checking op25 liveness for "
+        f"pgid={pgid}: {result.stderr.decode(errors='replace').strip()}"
+    )
+    return False
 
 
 def _wait_for_group_exit(pgid: int, timeout_sec: float) -> bool:
