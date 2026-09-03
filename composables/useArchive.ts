@@ -1,4 +1,5 @@
 import { ref, computed, watch, onUnmounted } from 'vue'
+import type { CodeMention } from '~/utils/tencodeSegments'
 
 /**
  * The filed half of the bay.
@@ -25,6 +26,14 @@ export interface ArchiveCall {
   dur: number
   endedAt: number | null
   transcript: string | null
+  /**
+   * The normalised transcript and the codes found in it. Both already ride the
+   * /api/recordings/list response -- `Recording` has carried them since the
+   * ten-code work -- but this type stopped at `keyid`, so the strip could not
+   * see them. Declaring them is the whole change on this side.
+   */
+  transcriptNorm: string | null
+  codes: CodeMention[]
   algid: number | null
   keyid: number | null
 }

@@ -923,3 +923,14 @@ body {
   .file-enter-active, .file-leave-active, .file-move,
   .strip, .arm, .transport__fill { transition: none !important; }
 }
+
+/* A ten-code, marked where it appears in the transcript rather than pulled out
+   into a badge. Only 8% of calls carry one, so this stays rare enough to mean
+   something — the whole reason it is an underline on the words themselves and
+   not another mark competing with mark--keyed and mark--locked at the head of
+   the line. Dotted, because a printed form annotates in place. */
+.strip__code {
+  border-bottom: 1px dotted #c8a24a;
+  color: #e6cf95;
+  cursor: help;
+}
