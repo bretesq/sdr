@@ -316,6 +316,44 @@ describe('capture capability guard on startListening()', () => {
     })
   })
 
+  it('forwards nVoice700/nVoice800 to the control API when the caller sets them', async () => {
+    forceNotCapable()
+    mockFetch.mockResolvedValue(fakeControlResponse(200, true, {
+      started: true, pid: 4242,
+      args: ['--n-voice-700', '3', '--n-voice-800', '7', '--pd', '10800'],
+    }))
+
+    const opts = {
+      mode: 'multi' as const, preset: 'pd', duration: 10800, nVoice700: 3, nVoice800: 7,
+    }
+    const result = await startListening(opts, 7)
+
+    expect(result).toEqual({ pid: 4242, config: opts, backend: 'delegated' })
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit]
+    // Same shape as the plain-delegation test above, PLUS nVoice700/nVoice800
+    // — this used to be on the `unsupported` list (buildControlRequest threw
+    // "receiver counts are fixed remotely" for either field); the fix is
+    // exactly this pass-through, so this test fails if that refusal comes
+    // back.
+    expect(JSON.parse(init.body as string)).toEqual({
+      mode: 'multi', durationSec: 10800, sessionId: 7, nVoice700: 3, nVoice800: 7,
+    })
+  })
+
+  it('omits nVoice700/nVoice800 from the delegated request when the caller does not set them', async () => {
+    forceNotCapable()
+    mockFetch.mockResolvedValue(fakeControlResponse(200, true, {
+      started: true, pid: 4242, args: ['--pd', '10800'],
+    }))
+
+    await startListening({ mode: 'multi', preset: 'pd', duration: 10800 })
+
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit]
+    const body = JSON.parse(init.body as string)
+    expect(body).not.toHaveProperty('nVoice700')
+    expect(body).not.toHaveProperty('nVoice800')
+  })
+
   it('refuses a request the control API cannot express, before any network call', async () => {
     forceNotCapable()
     // No `mode` at all -> defaults to 'single' on the web side, which the

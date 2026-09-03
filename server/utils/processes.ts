@@ -386,16 +386,23 @@ function controlErrorMessage(status: number, json: { error?: string } | null, ra
 /**
  * Turn ListenOptions into exactly the request scripts/capture_control.py's
  * build_args() can express: `{ mode: 'multi', ess?, includeEncrypted?,
- * durationSec }`. That server hardcodes `--pd` itself (emitted only when
- * durationSec is present) and rejects every field outside that set
- * (scripts/capture_control.py:96,:126) — it deliberately exposes ONE
- * operational profile, a bounded PD multi-receiver capture, not the full
- * surface lwin_listen_multi.sh supports when run locally.
+ * durationSec, nVoice700?, nVoice800? }`. That server hardcodes `--pd` itself
+ * (emitted only when durationSec is present) and rejects every field outside
+ * that set (scripts/capture_control.py's ALLOWED_FIELDS) — it deliberately
+ * exposes ONE operational profile, a bounded PD multi-receiver capture, not
+ * the full surface lwin_listen_multi.sh supports when run locally.
+ *
+ * `legs` stays fixed at the remote default (700,800) rather than becoming a
+ * passthrough field: nVoice700/nVoice800 are receiver-count TUNING of that
+ * fixed shape (the measurement behind the current defaults is in
+ * scripts/make_multirx_cfg.py's LEG_800 comment), not a way to change which
+ * bands run — that distinction is why they get to pass through here while
+ * `legs` itself does not.
  *
  * Anything ListenOptions can ask for that this shape cannot — single-receiver
- * mode, a different preset, talkgroup/tag/match selection, per-band receiver
- * counts, --stt, an unbounded run — is refused HERE, before any network call,
- * rather than silently dropped or substituted. Coercing `mode` to "multi" or
+ * mode, a different preset, talkgroup/tag/match selection, which legs run,
+ * --stt, an unbounded run — is refused HERE, before any network call, rather
+ * than silently dropped or substituted. Coercing `mode` to "multi" or
  * dropping `legs` would start a capture shaped differently from the one the
  * operator asked for, with no way for them to tell from the response; the
  * only safe response to a request this API cannot honor faithfully is to
@@ -413,7 +420,15 @@ function controlErrorMessage(status: number, json: { error?: string } | null, ra
 function buildControlRequest(
   opts: ListenOptions,
   sessionId?: number,
-): { mode: 'multi'; ess?: boolean; includeEncrypted?: boolean; durationSec: number; sessionId?: number } {
+): {
+  mode: 'multi'
+  ess?: boolean
+  includeEncrypted?: boolean
+  durationSec: number
+  sessionId?: number
+  nVoice700?: number
+  nVoice800?: number
+} {
   const unsupported: string[] = []
   if (opts.mode !== 'multi') {
     unsupported.push(
@@ -430,8 +445,6 @@ function buildControlRequest(
   if (opts.includePartial) unsupported.push('includePartial')
   if (opts.stt) unsupported.push('stt (the capture container does not run the transcription watcher)')
   if (opts.legs !== undefined) unsupported.push('legs (fixed to 700,800 remotely)')
-  if (opts.nVoice700 !== undefined) unsupported.push('nVoice700 (receiver counts are fixed remotely)')
-  if (opts.nVoice800 !== undefined) unsupported.push('nVoice800 (receiver counts are fixed remotely)')
   if (opts.census !== undefined) unsupported.push('census (fixed remotely)')
   if (opts.duration === undefined) {
     unsupported.push('duration (required — the remote PD preset is only emitted when a duration is given)')
@@ -442,19 +455,35 @@ function buildControlRequest(
       'This request cannot be delegated to the capture container — unsupported: '
       + unsupported.join('; ')
       + '. The control API only supports a bounded PD capture '
-      + '({ mode: "multi", ess, includeEncrypted, duration }). Run the full '
-      + 'request directly on a host with HackRF access instead, for example: '
+      + '({ mode: "multi", ess, includeEncrypted, duration, nVoice700, nVoice800 }). '
+      + 'Run the full request directly on a host with HackRF access instead, for example: '
       + './scripts/lwin_listen_multi.sh --ess --include-encrypted --pd 10800',
     )
   }
 
-  const body: { mode: 'multi'; ess?: boolean; includeEncrypted?: boolean; durationSec: number; sessionId?: number } = {
+  const body: {
+    mode: 'multi'
+    ess?: boolean
+    includeEncrypted?: boolean
+    durationSec: number
+    sessionId?: number
+    nVoice700?: number
+    nVoice800?: number
+  } = {
     mode: 'multi',
     durationSec: opts.duration as number,
   }
   if (opts.ess !== undefined) body.ess = opts.ess
   if (opts.includeEncrypted !== undefined) body.includeEncrypted = opts.includeEncrypted
   if (sessionId !== undefined) body.sessionId = sessionId
+  // Already range-checked by server/api/listen/start.post.ts's handler
+  // (1..MAX_VOICE) before startListening() is ever called, but that upstream
+  // check is not this function's security boundary — capture_control.py's
+  // build_args() validates these fields again independently, to the same
+  // standard as every other field it accepts, regardless of how trustworthy
+  // this caller is.
+  if (opts.nVoice700 !== undefined) body.nVoice700 = opts.nVoice700
+  if (opts.nVoice800 !== undefined) body.nVoice800 = opts.nVoice800
   return body
 }
 

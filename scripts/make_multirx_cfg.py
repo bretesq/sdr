@@ -142,7 +142,13 @@ LEG_700 = {
     'radio': 'one',
     'centre': 771_418_500,        # 662 kHz clear of the nearest audible carrier
     'rate': 8_000_000,
-    'n_voice': 3,                 # 3 receivers took 28/28 of this leg's calls
+    # 3 receivers took 28/28 of this leg's calls in the original census, and
+    # the later concurrency measurement (see LEG_800's comment below) found
+    # the 700 leg has NEVER exceeded 2 concurrent calls across 1,354 calls --
+    # so 3 stays as-is: it is already one spare over the observed peak, and a
+    # leg that has never been censused as thoroughly as the 800 leg is worth
+    # keeping that spare on rather than trimming to the bare peak of 2.
+    'n_voice': 3,
     'voice': [769_681_250, 769_931_250, 770_756_250, 772_681_250],
     # 773.05625 is the ACTIVE control channel: 1,459 TSBK updates / 26 talkgroups
     # / 48 radio IDs / 1 startup timeout in 75 s on the One at VGA:20.
@@ -156,7 +162,26 @@ LEG_800 = {
     'radio': 'pro',
     'centre': 855_725_000,
     'rate': 12_000_000,
-    'n_voice': 5,                 # 5 receivers took 81/83 of this leg's calls
+    # Concurrency measured from `calls` (start, dur, freq) across 8,490 calls
+    # with frequency recorded, split by leg at 800 MHz:
+    #
+    #   700 leg: 1,354 calls   peak concurrency 2 of 3 receivers   at/above capacity:  0     (0.0%)
+    #            distribution: 1 -> 1273,  2 -> 81
+    #   800 leg: 7,136 calls   peak concurrency 5 of 5 receivers   at/above capacity: 17     (0.2%)
+    #            distribution: 1 -> 4574, 2 -> 1907, 3 -> 509, 4 -> 129, 5 -> 17
+    #
+    # The 800 leg carries 84% of all traffic and hit its old ceiling of 5
+    # seventeen times -- each one a moment a 6th simultaneous call had nowhere
+    # to go. Dropped calls are invisible in this data by definition (a call
+    # that never got a receiver was never recorded), so at-capacity events are
+    # the only available proxy, and it agrees with the census already cited in
+    # server/api/listen/start.post.ts's MAX_VOICE comment: 5 receivers took
+    # 81/83 of the 800 leg's calls, ~2.4% missed. Raised 5 -> 7, not to 8
+    # (MAX_VOICE): 7 covers the measured peak (5) with two full spares, and
+    # nothing in this data justifies provisioning past that. The 700 leg's
+    # n_voice stays at 3 above -- it has NEVER exceeded 2 concurrent calls in
+    # 1,354 calls, so 3 already gives it a spare over its observed peak.
+    'n_voice': 7,
     'voice': [851_287_500, 851_837_500, 852_037_500, 852_150_000, 852_350_000,
               852_562_500, 852_750_000, 852_912_500, 852_987_500,
               855_987_500, 856_237_500, 856_462_500,

@@ -31,7 +31,10 @@
 # Usage: lwin_listen_multi.sh [options] [seconds]
 #   --legs 700|800|700,800   which bands (default 700,800)
 #   --n-voice-700 N          voice receivers on the One (default 3)
-#   --n-voice-800 N          voice receivers on the Pro (default 5)
+#   --n-voice-800 N          voice receivers on the Pro (default 7 -- raised
+#                            from 5: measured peak concurrency on this leg is
+#                            5 of 5, hit 17 times in 7,136 calls; see
+#                            scripts/make_multirx_cfg.py's LEG_800 comment)
 #   --stt                    transcribe new .wav files as they land
 #   --ess                    op25 -v 10 so ESS (algid/keyid/mi) is logged
 #   --no-census              skip the grant import at exit (see below)

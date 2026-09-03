@@ -160,6 +160,62 @@ class BuildArgsTest(unittest.TestCase):
         _, session_id = build_args({"mode": "multi"})
         self.assertIsNone(session_id)
 
+    # --- nVoice700 / nVoice800 ----------------------------------------------
+    # Receiver-count overrides for lwin_listen_multi.sh's own
+    # --n-voice-700/--n-voice-800 flags. Bounds mirror
+    # server/api/listen/start.post.ts's MAX_VOICE exactly (see this module's
+    # own MIN_VOICE/MAX_VOICE comment for why).
+
+    def test_rejects_non_integer_n_voice(self):
+        with self.assertRaises(ValidationError):
+            build_args({"mode": "multi", "nVoice700": "3; rm -rf /"})
+        with self.assertRaises(ValidationError):
+            build_args({"mode": "multi", "nVoice800": 4.2})
+
+    def test_rejects_boolean_n_voice(self):
+        # isinstance(True, int) is True in Python -- without an explicit bool
+        # exclusion, {"nVoice700": true} would otherwise sail through as
+        # n_voice=1.
+        with self.assertRaises(ValidationError):
+            build_args({"mode": "multi", "nVoice700": True})
+        with self.assertRaises(ValidationError):
+            build_args({"mode": "multi", "nVoice800": True})
+
+    def test_rejects_out_of_range_n_voice(self):
+        with self.assertRaises(ValidationError):
+            build_args({"mode": "multi", "nVoice700": 0})
+        with self.assertRaises(ValidationError):
+            build_args({"mode": "multi", "nVoice700": -1})
+        with self.assertRaises(ValidationError):
+            build_args({"mode": "multi", "nVoice800": cc.MAX_VOICE + 1})
+        with self.assertRaises(ValidationError):
+            build_args({"mode": "multi", "nVoice800": 10 ** 9})
+
+    def test_accepts_n_voice_at_the_boundaries_and_emits_the_flags(self):
+        args, _ = build_args({
+            "mode": "multi", "nVoice700": cc.MIN_VOICE, "nVoice800": cc.MAX_VOICE,
+        })
+        self.assertEqual(
+            args,
+            ["--n-voice-700", str(cc.MIN_VOICE), "--n-voice-800", str(cc.MAX_VOICE)],
+        )
+
+    def test_n_voice_flags_omitted_when_not_requested(self):
+        args, _ = build_args({"mode": "multi"})
+        self.assertNotIn("--n-voice-700", args)
+        self.assertNotIn("--n-voice-800", args)
+
+    def test_n_voice_flags_land_before_the_positional_duration(self):
+        # --pd/duration must stay LAST in argv (build_args()'s own docstring
+        # and the comment above the durationSec block explain why: the bare
+        # number after --pd has no flag of its own and falls through to
+        # lwin_listen_multi.sh's `*)` catch-all). Assert that directly rather
+        # than trusting field declaration order to keep it true.
+        args, _ = build_args({
+            "mode": "multi", "nVoice700": 3, "nVoice800": 7, "durationSec": 600,
+        })
+        self.assertEqual(args[-2:], ["--pd", "600"])
+
     def test_no_string_ever_reaches_the_argument_list_unvalidated(self):
         # Every element build_args can possibly emit is drawn from a fixed
         # set of literals it owns (--ess, --include-encrypted, --pd) or is

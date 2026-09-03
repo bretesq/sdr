@@ -38,8 +38,9 @@ THE SECURITY BOUNDARY. POST /start decides what argv runs on a machine with
 SDR hardware, and anything that can reach the web app can reach this
 endpoint. build_args() is the only function that turns a request into a
 command line, and it does so by picking fixed, literal tokens (`--ess`,
-`--include-encrypted`, `--pd`) off a validated, structured request -- never by
-forwarding a caller-supplied string. Everything else in this file exists to
+`--include-encrypted`, `--pd`, `--n-voice-700`, `--n-voice-800`) off a
+validated, structured request -- never by forwarding a caller-supplied
+string. Everything else in this file exists to
 get a validated request to build_args() and a subprocess.Popen() argument
 list from it, with shell=True never used anywhere.
 
@@ -99,7 +100,16 @@ MAX_DURATION_SEC = 24 * 60 * 60
 # endpoint must still work for a caller that omits it -- the capture simply
 # runs with no SDR_SESSION_ID, and every call it records gets session_id
 # NULL, exactly like a session started from a bare shell already does.
-ALLOWED_FIELDS = frozenset({"mode", "ess", "includeEncrypted", "durationSec", "sessionId"})
+#
+# nVoice700/nVoice800 are also optional -- omitted, lwin_listen_multi.sh (via
+# scripts/make_multirx_cfg.py's LEG_700/LEG_800 defaults) picks its own
+# measurement-derived default for each leg. They are receiver-count TUNING
+# of the one fixed operational profile this endpoint exposes, not a way to
+# change which legs run or which preset is used -- that is why they get to
+# pass through here while `legs` and `preset` still do not.
+ALLOWED_FIELDS = frozenset(
+    {"mode", "ess", "includeEncrypted", "durationSec", "sessionId", "nVoice700", "nVoice800"}
+)
 
 # Sane bounds on sessionId, mirroring durationSec's MIN/MAX pair above. It is
 # an autoincrement SQLite rowid (server/utils/session.ts's sessionStore.open()
@@ -130,6 +140,19 @@ ALLOWED_FIELDS = frozenset({"mode", "ess", "includeEncrypted", "durationSec", "s
 MIN_SESSION_ID = 1
 MAX_SESSION_ID = 1_000_000
 
+# Bounds for nVoice700/nVoice800, mirroring server/api/listen/start.post.ts's
+# MAX_VOICE exactly (both must agree: this is the same physical launcher,
+# lwin_listen_multi.sh, reached by two different front doors). Not arbitrary:
+# each channel adds a decimating FIR running at the device's full sample
+# rate, and each needs its own udp_audio_record.py process and a UDP port two
+# above the last, so the count has to stay small enough that the port block
+# (BASE_PORT 23460 in lwin_listen_multi.sh) stays inside 23460-23492. 1 is the
+# floor because scripts/make_multirx_cfg.py's build() raises ValueError for a
+# leg with zero voice channels -- a caller sending 0 here should get this
+# server's own clear 400, not a 500 from that downstream ValueError.
+MIN_VOICE = 1
+MAX_VOICE = 8
+
 
 class ValidationError(ValueError):
     """A /start request does not fit the fixed, validated request shape.
@@ -151,10 +174,10 @@ def build_args(req: object) -> tuple[list[str], int | None]:
 
     No element of the returned argv is ever a caller-supplied string. Every
     token is either a fixed literal this function owns (--ess,
-    --include-encrypted, --pd) or str(n) of an int that has already been
-    range-checked. `mode` is checked against a fixed allowlist and never
-    itself appears in the output -- it only selects (elsewhere, in main())
-    which script gets run.
+    --include-encrypted, --pd, --n-voice-700, --n-voice-800) or str(n) of an
+    int that has already been range-checked. `mode` is checked against a
+    fixed allowlist and never itself appears in the output -- it only selects
+    (elsewhere, in main()) which script gets run.
 
     sessionId never becomes an argv token at all -- it becomes SDR_SESSION_ID
     in the launched process's environment instead (CaptureState.start(),
@@ -193,6 +216,27 @@ def build_args(req: object) -> tuple[list[str], int | None]:
         raise ValidationError("includeEncrypted must be a boolean")
     if include_encrypted:
         args.append("--include-encrypted")
+
+    # nVoice700/nVoice800: receiver-count overrides for lwin_listen_multi.sh's
+    # own --n-voice-700/--n-voice-800 flags (see that script's own defaults,
+    # sourced from scripts/make_multirx_cfg.py's LEG_700/LEG_800). Each is an
+    # independent flag-plus-value pair consumed by that script's own arg loop
+    # (`--n-voice-700) NV700="$2"; shift`), so where either lands relative to
+    # --pd/duration below does not matter -- only THAT flag stays last
+    # matters, because the bare number after it is the one token with no
+    # flag of its own.
+    for field, flag in (("nVoice700", "--n-voice-700"), ("nVoice800", "--n-voice-800")):
+        n_voice = req.get(field)
+        if n_voice is not None:
+            # Same bool-before-int trap as durationSec/sessionId above:
+            # isinstance(True, int) is True in Python, so {"nVoice700": true}
+            # would otherwise sail through as n_voice=1.
+            if isinstance(n_voice, bool) or not isinstance(n_voice, int):
+                raise ValidationError(f"{field} must be an integer")
+            if not (MIN_VOICE <= n_voice <= MAX_VOICE):
+                raise ValidationError(f"{field} must be between {MIN_VOICE} and {MAX_VOICE}")
+            args.append(flag)
+            args.append(str(n_voice))
 
     duration = req.get("durationSec")
     if duration is not None:
