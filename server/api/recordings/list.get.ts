@@ -1,4 +1,35 @@
 import { listRecordings } from '~/server/utils/queries'
+import type { CallEncryptionFilter } from '~/server/utils/queries'
+
+/**
+ * The only values `encState` may take. A Set, not a cast: the point is to
+ * REJECT anything else rather than trust the query string.
+ */
+const ENC_STATES = new Set<string>(['all', 'open', 'encrypted'])
+
+/**
+ * Validate the filter, and THROW on an unrecognised value rather than ignoring
+ * it.
+ *
+ * Ignoring is what `afterId` above does, and it is right there: a missing
+ * cursor legitimately means "from the beginning". A filter is different. Drop a
+ * misspelled `?encState=encrytped` and the route answers with all 13,390 rows
+ * and a `total` that looks authoritative — the caller cannot tell the filter
+ * was discarded, and reads the whole corpus as the filtered subset. That is the
+ * same class of failure as a health check that reports success because the
+ * thing it asked never ran. Better to refuse and say which values exist.
+ */
+function encState(raw: unknown): CallEncryptionFilter | undefined {
+  if (raw === undefined) return undefined
+  const v = String(raw)
+  if (!ENC_STATES.has(v)) {
+    throw createError({
+      statusCode: 400,
+      statusMessage: `Unknown encState "${v}". Use one of: ${[...ENC_STATES].join(', ')}`,
+    })
+  }
+  return v as CallEncryptionFilter
+}
 
 /** "17094,17095" -> [17094, 17095]. Non-numeric entries are dropped. */
 function parseTgids(raw: string): number[] {
@@ -37,6 +68,7 @@ export default defineEventHandler((event) => {
   const { rows, total, maxId } = listRecordings({
     search: q.search ? String(q.search) : undefined,
     enc: q.enc ? String(q.enc) : undefined,
+    encState: encState(q.encState),
     tgid: q.tgid ? Number.parseInt(String(q.tgid), 10) : undefined,
     // Present-but-empty is meaningful: it matches nothing. So this checks for
     // the parameter's presence, not its truthiness — `tgids=` must not read as

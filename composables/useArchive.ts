@@ -42,6 +42,14 @@ export function useArchive() {
   const rows = ref<ArchiveCall[]>([])
   const total = ref(0)
   const search = ref('')
+  /**
+   * Per-call encryption filter, applied in SQL over the whole corpus.
+   *
+   * Server-side on purpose: the rail pages, so filtering `rows` here would
+   * filter the loaded window and report it as the corpus — the archive is
+   * 13,000+ calls and a page is `PAGE`.
+   */
+  const encState = ref<'all' | 'open' | 'encrypted'>('all')
   const loading = ref(false)
   const error = ref('')
 
@@ -55,7 +63,12 @@ export function useArchive() {
     loading.value = true
     try {
       const res = await $fetch<ListResponse>('/api/recordings/list', {
-        query: { search: search.value.trim() || undefined, limit: PAGE },
+        query: {
+          search: search.value.trim() || undefined,
+          // Omitted when 'all' so the common case sends no filter at all.
+          encState: encState.value === 'all' ? undefined : encState.value,
+          limit: PAGE,
+        },
       })
       if (mine !== generation) return
       rows.value = res.data
@@ -73,6 +86,11 @@ export function useArchive() {
     if (debounce) clearTimeout(debounce)
     debounce = setTimeout(() => { void load() }, 220)
   })
+
+  // Undebounced: a filter is a discrete click, not typing, and `generation`
+  // already discards a stale response that resolves after a newer one — so a
+  // fast switch cannot render the previous filter's rows.
+  watch(encState, () => { void load() })
 
   function watchCorpus(): void {
     if (es) return
@@ -93,5 +111,5 @@ export function useArchive() {
     return computed(() => rows.value.filter(r => !excludeIds.has(r.id)))
   }
 
-  return { rows, total, search, loading, error, load, watchCorpus, stop, filed }
+  return { rows, total, search, encState, loading, error, load, watchCorpus, stop, filed }
 }

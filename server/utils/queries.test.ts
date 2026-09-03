@@ -9,6 +9,7 @@ import {
   followedTalkgroups, transcriptionHealth, whitelistTgids, talkgroupEncryptionTallies,
 } from './queries'
 import { dbPath, closeDb, getDb } from './db'
+import { CLEAR_ALGID } from '../../utils/callEncryption'
 
 /**
  * Count the SQL statements a call actually EXECUTES.
@@ -853,5 +854,53 @@ describe('transcriptionHealth', () => {
     // above. Without that IS NULL guard this would read 3, not 1.
     const h = transcriptionHealth(600, 300, OLD_AWAITING + 400)
     expect(h.awaiting).toBe(1)
+  })
+})
+
+describe('listRecordings encState', () => {
+  // These run against the REAL corpus, which grows whenever the radio runs, so
+  // every assertion here is an INVARIANT rather than a count — the same rule
+  // the listRecordings block above spells out.
+  //
+  // CLEAR_ALGID is 128. A call carries a non-clear algid, exactly 128, or no
+  // algid at all (no ESS captured, which is ~77% of this corpus).
+
+  it('partitions the corpus: open + encrypted === all', () => {
+    // The property that makes the filter trustworthy. If a future definition
+    // drops the NULL bucket from 'open' — the tempting simplification, since
+    // "open" sounds like "algid = 128" — this goes red immediately, because
+    // those ~10,000 calls would belong to neither half.
+    const all = listRecordings({ limit: 1 }).total
+    const open = listRecordings({ limit: 1, encState: 'open' }).total
+    const enc = listRecordings({ limit: 1, encState: 'encrypted' }).total
+    expect(open + enc).toBe(all)
+    expect(open).toBeGreaterThan(0)
+    expect(enc).toBeGreaterThan(0)
+  })
+
+  it("'all' is the same as no filter at all", () => {
+    expect(listRecordings({ limit: 1, encState: 'all' }).total)
+      .toBe(listRecordings({ limit: 1 }).total)
+  })
+
+  it("'encrypted' returns only calls the radio marked encrypted", () => {
+    const rows = listRecordings({ limit: 200, encState: 'encrypted' }).rows
+    expect(rows.length).toBeGreaterThan(0)
+    for (const r of rows) {
+      expect(r.algid).not.toBeNull()
+      expect(r.algid).not.toBe(CLEAR_ALGID)
+    }
+  })
+
+  it("'open' returns only calls NOT known to be encrypted, NULLs included", () => {
+    const rows = listRecordings({ limit: 400, encState: 'open' }).rows
+    expect(rows.length).toBeGreaterThan(0)
+    for (const r of rows) {
+      expect(r.algid === null || r.algid === CLEAR_ALGID).toBe(true)
+    }
+    // The NULL half must actually be present, not merely permitted: 'open'
+    // meaning `algid = 128` alone would still pass every assertion above while
+    // hiding most of the audible traffic.
+    expect(rows.some(r => r.algid === null)).toBe(true)
   })
 })

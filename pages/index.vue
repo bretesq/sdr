@@ -90,6 +90,27 @@
             placeholder="search transcripts, talkgroups, ten-codes"
             aria-label="Search filed calls"
           >
+          <!--
+            Filed by what the RADIO sent (c.algid), never by the talkgroup
+            roster's `enc` label — that label is scraped and wrong often enough
+            to mislead: 24-PPD DISP is listed clear and ran 62 ADP calls of 63.
+
+            "Open" reads as NOT KNOWN TO BE ENCRYPTED, which is why it is
+            labelled that way in the title rather than "clear". 77% of this
+            corpus carries no algid because no ESS was captured, and 93% of
+            those transcribed to real speech — so counting them as anything but
+            open would hide most of the audible traffic behind a filter.
+          -->
+          <select
+            v-model="archive.encState.value"
+            class="field bay__encfilter"
+            aria-label="Filter filed calls by encryption"
+            title="Open = not known to be encrypted. Most calls carry no encryption field at all; nearly all of those were audible."
+          >
+            <option value="all">all calls</option>
+            <option value="open">open</option>
+            <option value="encrypted">encrypted</option>
+          </select>
         </header>
 
         <div class="bay__filedbody">
@@ -300,6 +321,14 @@ onUnmounted(() => {
 .bay__search {
   width: min(360px, 42vw);
   padding: 3px 8px;
+  font-size: 12px;
+}
+
+/* Sits beside the search field and reads as its sibling, not as a control of
+   its own — same .field stock, same 12px, just narrower. */
+.bay__encfilter {
+  margin-left: 8px;
+  padding: 3px 6px;
   font-size: 12px;
 }
 

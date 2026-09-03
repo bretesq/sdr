@@ -165,9 +165,35 @@ function toRecording(r: CallRow, codes: CodeMention[] = []): Recording {
   }
 }
 
+/**
+ * The filed list's encryption filter, decided per CALL rather than per
+ * talkgroup.
+ *
+ * Deliberately NOT `enc` below, which filters on `t.enc` — the talkgroup
+ * roster's scraped RadioReference label. That label is unreliable: 24-PPD DISP
+ * is listed `clear` while having run 62 ADP calls out of 63. Filtering on it
+ * answers "what does the spreadsheet claim about this talkgroup", not "was this
+ * call encrypted". `c.algid` is what the radio actually sent.
+ *
+ * 'open' means NOT KNOWN TO BE ENCRYPTED, and the distinction is load-bearing.
+ * Measured on this corpus: 2,636 calls carry algid 128 (explicitly clear), 463
+ * carry a non-clear algid, and 10,220 — 77% — carry no algid at all because no
+ * ESS was captured. Of those 10,220, 9,509 (93%) transcribed to real speech, so
+ * they were audible. Defining 'open' as `algid = 128` alone would return 2,636
+ * of the ~12,145 calls the operator can actually hear and silently hide the
+ * rest: a filter that lies. NULL therefore counts as open, and the UI says so.
+ */
+export type CallEncryptionFilter = 'all' | 'open' | 'encrypted'
+
 export interface RecordingQuery {
   search?: string
+  /**
+   * Talkgroup-roster encryption label (`t.enc`). Unreliable — see
+   * CallEncryptionFilter above for why the filed list does not use it.
+   */
   enc?: string
+  /** Per-call encryption, from `c.algid`. */
+  encState?: CallEncryptionFilter
   tgid?: number
   /**
    * Talkgroups for the live feed. ANDs with `tgid` — each is an independent
@@ -268,6 +294,17 @@ export function listRecordings(q: RecordingQuery = {}): { rows: Recording[], tot
       where.push('t.enc = ?')
       params.push(q.enc)
     }
+  }
+
+  // Per-call encryption, from what the radio actually sent. See
+  // CallEncryptionFilter's own comment for why NULL counts as open rather than
+  // as a third bucket: 77% of this corpus carries no algid, and 93% of those
+  // transcribed to real speech, so treating "no ESS captured" as anything but
+  // open would hide most of the audible traffic behind a filter.
+  if (q.encState === 'open') {
+    where.push(`(c.algid IS NULL OR c.algid = ${CLEAR_ALGID})`)
+  } else if (q.encState === 'encrypted') {
+    where.push(`(c.algid IS NOT NULL AND c.algid != ${CLEAR_ALGID})`)
   }
 
   if (q.search?.trim()) {
