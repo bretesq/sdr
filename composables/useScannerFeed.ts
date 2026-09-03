@@ -228,9 +228,10 @@ export function useScannerFeed() {
   // today": `followedPollTimer` is a variable local to THIS invocation of
   // useScannerFeed() (a fresh closure per call), and Vue's onMounted fires
   // at most once per component INSTANCE. So even a second component that
-  // called useScannerFeed() (components/ScannerFeed.vue does exist in this
-  // tree, though nothing currently renders it — see pages/index.vue, the
-  // only page) would get its own independent closure and its own single
+  // called useScannerFeed() — pages/index.vue is the only caller today, but
+  // the argument deliberately does not rest on that, because "only one call
+  // site" is a fact about today's tree and this is a claim about the
+  // lifecycle — would get its own independent closure and its own single
   // onMounted firing once, not a second interval racing this one. What
   // would actually double a timer — calling useScannerFeed() a second time
   // for the SAME already-mounted instance, or this file's onMounted running

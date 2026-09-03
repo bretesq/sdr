@@ -27,10 +27,31 @@ export interface FeedCall {
   keyid: number | null
 }
 
+/**
+ * What the queue decided to DO with a call — never what the call IS.
+ *
+ * `'locked'` is deliberately coarser than the encryption vocabulary: it means
+ * "do not push this at the speakers", and it covers BOTH `'locked'` (ADP under
+ * a key we do not hold) and `'unhandled'` (encrypted under an algorithm this
+ * console does not implement). Those are genuinely different facts about the
+ * call, and collapsing them is correct HERE because the playback decision is
+ * identical for both.
+ *
+ * It is not correct anywhere a sentence about the call gets rendered. A
+ * renderer that reads `kind === 'locked'` and prints "no key held · crack
+ * target" is wrong for every non-ADP algid: there is no ADP key involved, "no
+ * key held" implies one exists that we could hold, and "crack target"
+ * nominates it for ADP keystream recovery. components/ScannerFeed.vue did
+ * exactly that and was deleted for it. Anything that needs to SAY what a call
+ * is must call `encryptionState()` on `entry.call` — which is what
+ * components/bay/CallStrip.vue does — rather than re-deriving a claim from
+ * this three-valued verdict.
+ */
 export type Admission = 'playable' | 'locked' | 'rejected'
 
 export interface QueueEntry {
   call: FeedCall
+  /** See `Admission`: a playback verdict, not a description of the call. */
   kind: 'playable' | 'locked'
 }
 
