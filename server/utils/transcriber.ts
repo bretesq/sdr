@@ -2,6 +2,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { openSync, closeSync } from 'node:fs'
 import { join } from 'node:path'
 import { scriptsDir, sdrRoot, recordingsDir } from './paths'
+import { inContainer } from './processes'
 
 /**
  * The speech-to-text watcher, as a process independent of any recording session.
@@ -79,9 +80,43 @@ export function isTranscriberRunning(): boolean {
 /**
  * Start the watcher, detached, if one is not already running.
  *
+ * @throws in a container, before anything below is attempted — see the guard.
  * @returns true if this call started one, false if one was already up.
  */
 export function startTranscriber(): boolean {
+  // This is the fourth case on this branch of containerization silently
+  // breaking a host assumption (after procps/pgrep, the 127.0.0.1 loopback,
+  // and PID-1 signal immunity) — and the worst of the four, because it fires
+  // on the exact incident this whole effort exists to surface.
+  //
+  // `spawn('python3', ...)` below can NEVER succeed in the web image: it
+  // carries no Python (verified — no python* on any PATH directory of
+  // rtl-web). Node's spawn() reports a missing binary as an asynchronous
+  // 'error' event on the ChildProcess, not as a thrown exception, so it
+  // arrives one tick AFTER this function — and the try/catch in
+  // start.post.ts around it — have already returned control to the caller.
+  // The route would answer `{success: true, started: true}` — a false
+  // success reported to the operator — and the unhandled 'error' event would
+  // then crash the whole Nuxt process on the next tick. Nothing downstream of
+  // the spawn call can defend against this; the only fix is to never reach
+  // it. Refusing here, before ensureSttServer() or the spawn, is why this
+  // guard is the FIRST statement in the function rather than a check wrapped
+  // around the spawn: an asynchronous failure cannot be caught after the
+  // fact, so it must be prevented before the fact.
+  //
+  // The watcher is compose-managed now (rtl-stt-watch, `restart:
+  // unless-stopped`), so the correct recovery action is a compose command,
+  // not a spawn from inside this container.
+  if (inContainer()) {
+    throw new Error(
+      'The transcriber runs under compose now, not as a process this server '
+      + 'can spawn — the web image carries no python3, and a missing binary '
+      + "fails asynchronously in a way nothing here can catch. Restart it "
+      + 'on the host instead: ./scripts/stack.sh restart stt-watch '
+      + '(or: docker compose restart stt-watch)',
+    )
+  }
+
   if (isTranscriberRunning()) return false
 
   ensureSttServer()
@@ -113,9 +148,32 @@ export function startTranscriber(): boolean {
  * top of its loop, so it finishes the file it is transcribing and exits cleanly
  * rather than orphaning a half-written .txt.
  *
+ * @throws in a container, before anything below is attempted — see the guard.
  * @returns true if a signal was sent, false if nothing was running.
  */
 export function stopTranscriber(): boolean {
+  // Refused for coherence with startTranscriber()'s guard above, not because
+  // this call is itself dangerous. Left unguarded, `pkill -INT -f
+  // stt_watch.py` still works here — it reaches the containerized watcher
+  // through `pid: host`, and both containers run as UID 1000, so the signal
+  // is permitted. But `restart: unless-stopped` on rtl-stt-watch revives it
+  // within about a second, so the Stop the operator just clicked silently
+  // does not stick: `isTranscriberRunning()` goes false for a moment, the UI
+  // flips its control to "Start the transcriber", and one click on THAT is
+  // the direct path into the startTranscriber() guard above. Reporting a
+  // signalled stop that does not actually stop anything is exactly the kind
+  // of appears-to-work outcome this branch keeps finding — refusing honestly
+  // here is strictly better than a Stop that quietly un-does itself.
+  if (inContainer()) {
+    throw new Error(
+      'The transcriber runs under compose now — pkill here would signal the '
+      + 'containerized watcher, but `restart: unless-stopped` revives it '
+      + 'within about a second, so Stop would not actually stick. To take it '
+      + 'down for real: docker compose stop stt-watch (it comes back at the '
+      + 'next ./scripts/stack.sh up or restart)',
+    )
+  }
+
   if (!isTranscriberRunning()) return false
   try {
     execFileSync('pkill', ['-INT', '-f', STT_PATTERN], { timeout: 2000 })

@@ -64,6 +64,25 @@ PY
 case "${1:-status}" in
   up)     docker compose up -d && echo && host_status ;;
   down)   docker compose down ;;
+  # The command manual recovery actually reaches for. Recovery here is
+  # deliberately manual — Docker restart policies fire on container EXIT, not
+  # on an `unhealthy` health status, so nothing brings whisper back on its
+  # own when it wedges (see docker-compose.yml's comment on stt-watch). This
+  # verb is the safe, named thing to run instead: `docker compose restart`
+  # stops and starts the container(s) IN PLACE, on the same compose-managed
+  # network (rtl-console_default) and with the same config — unlike
+  # scripts/stt_server.sh's `restart`, which `docker rm -f`s the container and
+  # `docker run`s a replacement with no --network at all, silently dropping
+  # it onto the default bridge where `http://whisper:8081` no longer resolves
+  # for stt-watch or web. Takes an optional service name (e.g. `whisper` or
+  # `stt-watch`); with none, every compose service restarts.
+  restart)
+    if [ -n "${2:-}" ]; then
+      docker compose restart "$2"
+    else
+      docker compose restart
+    fi
+    ;;
   status)
     echo "CONTAINERS"
     docker compose ps --format '  {{.Service}}\t{{.Status}}' 2>/dev/null \
@@ -71,5 +90,5 @@ case "${1:-status}" in
     echo
     host_status
     ;;
-  *) echo "usage: $0 {up|down|status}" >&2; exit 1 ;;
+  *) echo "usage: $0 {up|down|restart [service]|status}" >&2; exit 1 ;;
 esac
