@@ -1,9 +1,9 @@
-import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createRequire } from 'node:module'
-import { sessionStore } from './session'
+import { sessionStore, UNKNOWN_TOLERANCE_MS } from './session'
 import { closeDb, getWritableDb } from './db'
 
 /**
@@ -19,7 +19,11 @@ import { closeDb, getWritableDb } from './db'
  * namespace. Mocking both means this file can assert "which one got called"
  * directly, deterministically, with neither one ever touching anything real.
  * It also covers fix-round-2's finding (isSessionAlive()'s tolerance for
- * consecutive 'unknown' answers before giving up) below.
+ * sustained 'unknown' answers before giving up) below, and the follow-up
+ * correction that made that tolerance wall-clock-based (UNKNOWN_TOLERANCE_MS)
+ * instead of call-count-based — see session.ts's own comment on
+ * `unknownSince` for why the call-count version stopped being safe once a
+ * periodic poll of /api/listen/followed existed.
  *
  * Vitest hoists this vi.mock() call above the imports above at runtime
  * (regardless of its lexical position here — see transcriber.test.ts's
@@ -189,14 +193,27 @@ describe('sessionStore backend dispatch (task-3-review.md Critical C1)', () => {
   })
 })
 
-describe('delegated session liveness: "unknown" tolerance (task-3-review.md fix-round-2)', () => {
-  // The finding this guards: fix round 1 collapsed 'unknown' (network error,
-  // timeout, unparseable response) into the same outcome as 'stopped', so a
-  // single transient control-API blip permanently untracked a healthy,
-  // still-running session — close() is one-way. These tests exercise
-  // isSessionAlive()'s retry tolerance (MAX_CONSECUTIVE_UNKNOWN = 3 in
-  // session.ts) directly through repeated sessionStore.get() calls, the way
-  // ListenControl.vue's 5s poll actually would.
+describe('delegated session liveness: "unknown" tolerance is wall-clock, not call-count', () => {
+  // The finding this guards, in two layers:
+  //
+  // Layer 1 (task-3-review.md fix-round-2): fix round 1 collapsed 'unknown'
+  // (network error, timeout, unparseable response) into the same outcome as
+  // 'stopped', so a single transient control-API blip permanently untracked
+  // a healthy, still-running session — close() is one-way.
+  //
+  // Layer 2 (this task): the fix for layer 1 originally counted CONSECUTIVE
+  // calls (MAX_CONSECUTIVE_UNKNOWN = 3), which is silently poll-rate
+  // dependent — its real duration shrinks to whatever three consecutive
+  // polls take at whatever rate something happens to call get(). Once
+  // useScannerFeed.ts gained an actual periodic poll, that became load-
+  // bearing: a brief hiccup during a fast poll could burn the whole budget in
+  // seconds. isSessionAlive() now tracks the wall-clock age of the current
+  // 'unknown' streak (unknownSince) against UNKNOWN_TOLERANCE_MS instead, so
+  // these tests drive fake time directly rather than counting calls — the
+  // number of sessionStore.get() calls made no longer matters, only how much
+  // time elapses between them.
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
 
   it('a single "unknown" answer does NOT close the session — it stays tracked, unchanged', async () => {
     const id = sessionStore.open({ mode: 'multi', preset: 'pd', duration: 600 })
@@ -213,16 +230,36 @@ describe('delegated session liveness: "unknown" tolerance (task-3-review.md fix-
     expect(row.ended_at).toBeNull()
   })
 
-  it('closes only after MAX_CONSECUTIVE_UNKNOWN consecutive "unknown" answers, not before', async () => {
+  it('a blip shorter than UNKNOWN_TOLERANCE_MS does not close the session, no matter how many polls it spans', async () => {
     const id = sessionStore.open({ mode: 'multi', preset: 'pd', duration: 600 })
     sessionStore.attach(id, 42, 'delegated')
     mockDelegatedSessionLiveness.mockResolvedValue('unknown')
 
-    // session.ts's MAX_CONSECUTIVE_UNKNOWN is 3 — the first two must both
-    // still report the session as tracked.
-    expect(await sessionStore.get()).not.toBeNull()
-    expect(await sessionStore.get()).not.toBeNull()
-    // The third consecutive 'unknown' exhausts the budget.
+    // Many polls, all still inside the tolerance window — proves this is a
+    // TIME bound: a call-count bound of 3 would already have closed this on
+    // poll 3 regardless of elapsed time.
+    for (let i = 0; i < 10; i++) {
+      expect(await sessionStore.get()).not.toBeNull()
+      vi.advanceTimersByTime(1_000) // 10 polls x 1s = 10s total, well under 60s
+    }
+
+    const row = getWritableDb().prepare('SELECT ended_at FROM sessions WHERE id = ?').get(id) as {
+      ended_at: number | null
+    }
+    expect(row.ended_at).toBeNull()
+  })
+
+  it('closes once "unknown" has been sustained for UNKNOWN_TOLERANCE_MS, regardless of poll rate', async () => {
+    const id = sessionStore.open({ mode: 'multi', preset: 'pd', duration: 600 })
+    sessionStore.attach(id, 42, 'delegated')
+    mockDelegatedSessionLiveness.mockResolvedValue('unknown')
+
+    expect(await sessionStore.get()).not.toBeNull() // starts the streak's clock
+
+    // A SINGLE poll, made once the tolerance window has fully elapsed — not
+    // a burst of calls. This is exactly what a call-count bound could never
+    // express: one poll, a long time later, must still be enough to close it.
+    vi.advanceTimersByTime(UNKNOWN_TOLERANCE_MS)
     expect(await sessionStore.get()).toBeNull()
 
     const row = getWritableDb().prepare('SELECT ended_at FROM sessions WHERE id = ?').get(id) as {
@@ -231,24 +268,40 @@ describe('delegated session liveness: "unknown" tolerance (task-3-review.md fix-
     expect(row.ended_at).not.toBeNull()
   })
 
-  it('a confirmed "alive" answer resets the consecutive-unknown count', async () => {
+  it('does not close one millisecond before the tolerance window elapses', async () => {
+    const id = sessionStore.open({ mode: 'multi', preset: 'pd', duration: 600 })
+    sessionStore.attach(id, 42, 'delegated')
+    mockDelegatedSessionLiveness.mockResolvedValue('unknown')
+
+    expect(await sessionStore.get()).not.toBeNull()
+    vi.advanceTimersByTime(UNKNOWN_TOLERANCE_MS - 1)
+    expect(await sessionStore.get()).not.toBeNull()
+
+    const row = getWritableDb().prepare('SELECT ended_at FROM sessions WHERE id = ?').get(id) as {
+      ended_at: number | null
+    }
+    expect(row.ended_at).toBeNull()
+  })
+
+  it('a confirmed "alive" answer resets the unknown streak\'s clock', async () => {
     const id = sessionStore.open({ mode: 'multi', preset: 'pd', duration: 600 })
     sessionStore.attach(id, 42, 'delegated')
 
     mockDelegatedSessionLiveness.mockResolvedValue('unknown')
-    expect(await sessionStore.get()).not.toBeNull() // 1st unknown
-    expect(await sessionStore.get()).not.toBeNull() // 2nd unknown
+    expect(await sessionStore.get()).not.toBeNull() // starts the streak
+    vi.advanceTimersByTime(UNKNOWN_TOLERANCE_MS - 1_000) // almost exhausted
 
     mockDelegatedSessionLiveness.mockResolvedValue('alive')
-    expect(await sessionStore.get()).not.toBeNull() // confirmed alive — resets the count
+    expect(await sessionStore.get()).not.toBeNull() // confirmed alive — resets the streak
 
     mockDelegatedSessionLiveness.mockResolvedValue('unknown')
-    // Two more unknowns after the reset must NOT close the session — if the
-    // count were not reset, this would be the 4th overall and would already
-    // have closed on the previous test's logic. It takes a full THIRD
-    // consecutive unknown since the reset to close it.
+    // Advance PAST what would have closed the OLD streak (which had only 1s
+    // left). If the reset had not happened, this single advance-then-poll
+    // would close the session; because the streak restarted at the 'alive'
+    // answer, the clock has barely moved since then.
+    vi.advanceTimersByTime(2_000)
     expect(await sessionStore.get()).not.toBeNull()
-    expect(await sessionStore.get()).not.toBeNull()
+
     const row = getWritableDb().prepare('SELECT ended_at FROM sessions WHERE id = ?').get(id) as {
       ended_at: number | null
     }
@@ -263,6 +316,6 @@ describe('delegated session liveness: "unknown" tolerance (task-3-review.md fix-
     expect(await sessionStore.get()).not.toBeNull() // 1st unknown — within tolerance
 
     mockDelegatedSessionLiveness.mockResolvedValue('stopped')
-    expect(await sessionStore.get()).toBeNull() // definitive — closes NOW, not after 3
+    expect(await sessionStore.get()).toBeNull() // definitive — closes NOW, not after the tolerance window
   })
 })

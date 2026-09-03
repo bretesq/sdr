@@ -1,4 +1,4 @@
-import { ref, computed, watch, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
   createQueue, admit, prune, takeNext,
   type FeedCall, type QueueEntry, type ScannerQueue,
@@ -66,6 +66,27 @@ const CLIP_SLACK_MS = 3000
 
 /** `dur` comes from the database and is not validated there. */
 const MAX_CLIP_SEC = 60
+
+/**
+ * How often to re-fetch /api/listen/followed while a component is mounted.
+ *
+ * Before this, `load()` ran exactly once, in the consumer's onMounted — a
+ * console left open across a stall would never learn radioBusy had gone
+ * false; the operator would have to reload the page to see it (see
+ * utils/captureStatus.ts for the stall this exists to surface). This is what
+ * makes that live rather than reload-only.
+ *
+ * 20s, chosen against server/utils/session.ts's UNKNOWN_TOLERANCE_MS (60s):
+ * comfortably coarse — a delegated session's liveness check is a real
+ * control-API HTTP call, so this poll is exactly the "something polls" case
+ * UNKNOWN_TOLERANCE_MS's wall-clock (not call-count) budget was corrected to
+ * stay safe under. At 20s, roughly three polls fit inside one tolerance
+ * window, so a session only closes on a control-API problem that outlasts
+ * several consecutive checks, not a single bad one — while still being fast
+ * enough that a stall reads within one or two polls of crossing
+ * STALL_GRACE_MS (45s in captureStatus.ts), not many minutes later.
+ */
+const FOLLOWED_POLL_MS = 20_000
 
 export function useScannerFeed() {
   const followed = ref<FollowedTalkgroup[]>([])
@@ -166,6 +187,15 @@ export function useScannerFeed() {
   let startTimer: ReturnType<typeof setTimeout> | null = null
   let clipTimer: ReturnType<typeof setTimeout> | null = null
   let es: EventSource | null = null
+  // Set once in onMounted below and cleared once in onUnmounted — never
+  // reassigned anywhere else, so this can't become the same orphaned-timer
+  // bug `arm`'s armInFlight guard exists to prevent (a double EventSource
+  // that's never closed, doubling the poll rate for the life of the page).
+  // Vue only invokes a given component instance's onMounted once, and this
+  // composable is constructed fresh per component instance (there is
+  // currently exactly one call site, pages/index.vue), so there is no path
+  // that creates a second one of these for the same feed.
+  let followedPollTimer: ReturnType<typeof setInterval> | null = null
   // ONE element, created on the first arm and reused for every clip.
   //
   // Browsers gate autoplay on a user gesture and the unlock attaches to the
@@ -463,6 +493,19 @@ export function useScannerFeed() {
     })
   }
 
+  // Keeps radioBusy/tracked/sessionStartedAt (and the talkgroup list) live
+  // for as long as this component stays mounted, independent of whether the
+  // feed is armed — the operator needs to see a stall even when nobody has
+  // pressed Play. onMounted runs once per component instance (never during
+  // SSR, so no server-side timer leaks), which is what makes the "created
+  // twice" hazard structurally impossible rather than merely unlikely — see
+  // followedPollTimer's own comment above.
+  onMounted(() => {
+    followedPollTimer = setInterval(() => { void load() }, FOLLOWED_POLL_MS)
+  })
+  onUnmounted(() => {
+    if (followedPollTimer) { clearInterval(followedPollTimer); followedPollTimer = null }
+  })
   onUnmounted(disarm)
 
   return {

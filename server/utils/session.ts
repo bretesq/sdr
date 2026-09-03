@@ -48,13 +48,15 @@ import type { ListenOptions, SessionBackend } from './processes'
  * docstring: "idempotent" means safe to call again, not reversible) — so a
  * SINGLE transient control-API blip permanently untracked a healthy,
  * still-running session for the rest of its life. isSessionAlive() below
- * tolerates a bounded number of CONSECUTIVE 'unknown' answers
- * (MAX_CONSECUTIVE_UNKNOWN) before finally giving up and treating the
- * session as stopped — long enough to absorb one blip, short enough that a
+ * tolerates a bounded STRETCH of wall-clock time spent answering 'unknown'
+ * (UNKNOWN_TOLERANCE_MS) before finally giving up and treating the session
+ * as stopped — long enough to absorb one blip, short enough that a
  * genuinely, permanently dead control API doesn't wedge a session as
  * "running" forever with nothing left to ever close it. A single
- * 'alive'/'stopped' answer resets the count: only CONSECUTIVE failures count
- * against the budget.
+ * 'alive'/'stopped' answer resets the streak: only a SUSTAINED run of
+ * 'unknown' spanning the whole tolerance window counts against the budget.
+ * This is deliberately a TIME bound, not a call-count bound — see
+ * unknownSince's own comment below for why that distinction was corrected.
  */
 
 export interface Session {
@@ -104,38 +106,58 @@ function toSession(row: SessionRow): Session {
 }
 
 /**
- * How many consecutive 'unknown' liveness answers a delegated session has
- * accumulated, keyed by session id — the retry budget behind
- * MAX_CONSECUTIVE_UNKNOWN below. In-memory only, deliberately not persisted:
- * a server restart already resets `current` to null, and starting the count
- * fresh at 0 on the next check is the same conservative "tolerate a blip,
- * within the same bound" default a genuinely fresh process should apply
- * anyway. Keyed by id rather than kept only on the `Session` object itself
- * so it survives get()'s own `current = null` / reload churn — the count is
- * about the SESSION's run of bad luck, not about any one in-memory object.
+ * Epoch ms of the FIRST 'unknown' liveness answer in the current unbroken
+ * streak, keyed by session id — the retry budget behind
+ * UNKNOWN_TOLERANCE_MS below. In-memory only, deliberately not persisted: a
+ * server restart already resets `current` to null, and starting fresh on
+ * the next check is the same conservative "tolerate a blip, within the same
+ * bound" default a genuinely fresh process should apply anyway. Keyed by id
+ * rather than kept only on the `Session` object itself so it survives
+ * get()'s own `current = null` / reload churn — the streak is about the
+ * SESSION's run of bad luck, not about any one in-memory object.
+ *
+ * WHY A TIMESTAMP, NOT A COUNT (this replaces a call-count budget that used
+ * to live here)
+ * -------------------------------------------------------------------------
+ * The previous version of this tolerance was `consecutiveUnknown: Map<number,
+ * number>` counting up to MAX_CONSECUTIVE_UNKNOWN = 3 calls, and its own
+ * comment already flagged the problem this caused (final-review.md M3): its
+ * real-world duration depended entirely on how often something happened to
+ * call get(). At the polling rate that existed when that bound was written
+ * (nothing — `/api/listen/followed` was fetched exactly once per page load,
+ * never on an interval; see docs/../stall-indicator-report.md for how that
+ * was verified), 3 consecutive checks could span anything from seconds to
+ * hours depending on how long the operator's tab happened to sit unpolled.
+ * Once `composables/useScannerFeed.ts` gained a periodic poll of its own
+ * (added alongside this change, to make a stalled capture visible in an
+ * already-open tab — see utils/captureStatus.ts), that same call-count
+ * budget would have become load-bearing in the wrong way: a brief
+ * control-API network hiccup during a fast poll could burn all three
+ * tolerances in seconds and permanently untrack a healthy session — close()
+ * is one-way. A wall-clock budget makes the tolerance mean the same thing
+ * regardless of how often, or how rarely, anything happens to call get().
  */
-const consecutiveUnknown = new Map<number, number>()
+const unknownSince = new Map<number, number>()
 
 /**
- * How many consecutive 'unknown' answers (see this file's module comment,
- * "UNREACHABLE IS NOT THE SAME ANSWER AS STOPPED") a delegated session's
- * liveness check tolerates before this file gives up and treats it as
- * stopped anyway.
+ * How long a delegated session's liveness check may keep answering 'unknown'
+ * (see this file's module comment, "UNREACHABLE IS NOT THE SAME ANSWER AS
+ * STOPPED") before this file gives up and treats it as stopped anyway,
+ * measured in wall-clock milliseconds from the FIRST 'unknown' in the
+ * current streak — not a call count (see unknownSince's own comment for why
+ * that distinction matters now that a poll actually exists).
  *
- * This is a CALL-COUNT bound, not a time bound (final-review.md M3 —
- * corrects this comment's own earlier claim of "~15s+"). Nothing resets the
- * counter on elapsed wall-clock time; it only resets on a definitive 'alive'
- * or 'stopped' answer (see isSessionAlive() below). `components/
- * ListenControl.vue` polls `GET /api/listen/status` every 5s for a session
- * someone is actively watching, so in THAT case three consecutive unknowns
- * roughly is ~15s of sustained unreachability. But for an unattended
- * session with nobody polling, those same three consecutive checks (the
- * only three ever made) could span far longer than 15s of real time before
- * this fires. Do not rely on "~15s" as an operational guarantee — the
- * property this bound actually gives is "never closes on one blip, always
- * closes eventually on sustained failure," not a specific duration.
+ * 60s: several times longer than a transient network blip or a brief
+ * control-API restart, so an operator's newly-added periodic poll (see
+ * composables/useScannerFeed.ts) surviving a couple of bad reads in a row
+ * does not cost a healthy session its tracked state. Still short enough
+ * that a control API that is genuinely, permanently gone stops holding a
+ * dead session open forever — this file has no other mechanism that will
+ * ever close it once that happens. A single 'alive' or 'stopped' answer
+ * resets the streak entirely (see isSessionAlive() below): only a SUSTAINED
+ * run of 'unknown' spanning this whole window counts against the budget.
  */
-const MAX_CONSECUTIVE_UNKNOWN = 3
+export const UNKNOWN_TOLERANCE_MS = 60_000
 
 /**
  * Is `session` still actually running? Dispatches on `backend` — see this
@@ -146,7 +168,7 @@ const MAX_CONSECUTIVE_UNKNOWN = 3
  * For a delegated session, this is also where 'unknown' gets turned into a
  * decision (see "UNREACHABLE IS NOT THE SAME ANSWER AS STOPPED" above):
  * delegatedSessionLiveness() itself stays a pure, policy-free reporter of
- * what the control API said, and every bit of "how many blips is too many"
+ * what the control API said, and every bit of "how long is too long"
  * judgment lives HERE, the one place session lifecycle decisions are
  * actually made.
  */
@@ -157,22 +179,28 @@ async function isSessionAlive(session: Session): Promise<boolean> {
 
   const liveness = await delegatedSessionLiveness(session.pid)
   if (liveness === 'alive') {
-    consecutiveUnknown.delete(session.id)
+    unknownSince.delete(session.id)
     return true
   }
   if (liveness === 'stopped') {
-    consecutiveUnknown.delete(session.id)
+    unknownSince.delete(session.id)
     return false
   }
 
-  // 'unknown': tolerate it, up to the bound, rather than treating a single
-  // control-API hiccup as indistinguishable from a real stop.
-  const failures = (consecutiveUnknown.get(session.id) ?? 0) + 1
-  if (failures >= MAX_CONSECUTIVE_UNKNOWN) {
-    consecutiveUnknown.delete(session.id)
+  // 'unknown': tolerate it, up to the wall-clock bound, rather than treating
+  // a single control-API hiccup as indistinguishable from a real stop.
+  const now = Date.now()
+  const since = unknownSince.get(session.id)
+  if (since === undefined) {
+    // First 'unknown' in a fresh streak — always tolerated, and the streak
+    // starts timing from right now.
+    unknownSince.set(session.id, now)
+    return true
+  }
+  if (now - since >= UNKNOWN_TOLERANCE_MS) {
+    unknownSince.delete(session.id)
     return false
   }
-  consecutiveUnknown.set(session.id, failures)
   return true
 }
 
@@ -239,14 +267,15 @@ export const sessionStore = {
    * the freshly-loaded `candidate`) is returned exactly as it would be for a
    * confirmed-alive session — same pid, same config, same startTime — because
    * isSessionAlive() only returns `false` for 'unknown' once
-   * MAX_CONSECUTIVE_UNKNOWN has been exhausted, and until then it returns
-   * `true`. So GET /api/listen/status keeps reporting `running: true` with
-   * the session's real data through a tolerated blip, not a degraded or
-   * "uncertain" variant of it — a transient network hiccup one layer down
-   * should not rewrite what the operator sees. This does mean a genuinely
-   * dead capture during that tolerance window would ALSO still read as
-   * "running" for up to MAX_CONSECUTIVE_UNKNOWN polls — the accepted cost of
-   * not making a single blip indistinguishable from a real stop.
+   * UNKNOWN_TOLERANCE_MS worth of wall-clock time has elapsed since the
+   * first 'unknown' in the streak, and until then it returns `true`. So GET
+   * /api/listen/status keeps reporting `running: true` with the session's
+   * real data through a tolerated blip, not a degraded or "uncertain"
+   * variant of it — a transient network hiccup one layer down should not
+   * rewrite what the operator sees. This does mean a genuinely dead capture
+   * during that tolerance window would ALSO still read as "running" for up
+   * to UNKNOWN_TOLERANCE_MS — the accepted cost of not making a single blip
+   * indistinguishable from a real stop.
    */
   async get(): Promise<Session | null> {
     if (current && current.pid > 0 && !(await isSessionAlive(current))) {
@@ -287,14 +316,15 @@ export const sessionStore = {
       .prepare('UPDATE sessions SET ended_at = ? WHERE id = ? AND ended_at IS NULL')
       .run(Date.now() / 1000, id)
     if (current?.id === id) current = null
-    // A session can be closed while it still owes a nonzero consecutiveUnknown
-    // count (e.g. clear()/an explicit Stop hits it mid-tolerance-window rather
-    // than exhausting MAX_CONSECUTIVE_UNKNOWN on its own). The id is dead
-    // either way, so drop the entry rather than leave it keyed to a session
-    // nothing will ever look up again — harmless if left (bounded by sessions
-    // started per process lifetime, and get() never age-checks the map), but
-    // free to remove and answers "was that count ever cleaned up" cleanly.
-    consecutiveUnknown.delete(id)
+    // A session can be closed while it still owes a live unknownSince streak
+    // (e.g. clear()/an explicit Stop hits it mid-tolerance-window rather than
+    // the streak ever reaching UNKNOWN_TOLERANCE_MS on its own). The id is
+    // dead either way, so drop the entry rather than leave it keyed to a
+    // session nothing will ever look up again — harmless if left (bounded by
+    // sessions started per process lifetime, and get() never age-checks the
+    // map), but free to remove and answers "was that streak ever cleaned up"
+    // cleanly.
+    unknownSince.delete(id)
   },
 
   clear(): void {
