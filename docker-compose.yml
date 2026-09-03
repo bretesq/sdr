@@ -188,7 +188,8 @@ services:
       - /usr/local/lib/x86_64-linux-gnu:/usr/local/lib/x86_64-linux-gnu:ro
       - /usr/local/lib/python3.14/dist-packages:/usr/local/lib/python3.14/dist-packages:ro
     working_dir: /home/besquivel/rtl
-    # Task 2 replaces this with the control server. Until then the container
-    # exists only to prove the hardware path, so it idles rather than exiting
-    # and fighting the restart policy.
-    command: ["sleep", "infinity"]
+    # scripts/capture_control.py is PID 1 here and owns op25 as its own
+    # child, exposing GET /status, POST /start, POST /stop on the compose
+    # network (port 8082, never published -- see that file's module
+    # docstring for the security boundary POST /start sits behind).
+    command: ["python3", "scripts/capture_control.py"]
