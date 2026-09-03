@@ -7,8 +7,15 @@
     every strip rendered as that component instead of a native one.
   -->
   <!-- A locked strip is not playable, so it is not a button. It sits cocked
-       out of the rail and stays there. -->
-  <div v-if="locked" class="strip strip--locked">
+       out of the rail and stays there.
+
+       Both encrypted-and-undecodable states print here: ADP under a key we do
+       not hold, and a call encrypted under an algorithm this console does not
+       implement at all. They share one stock because the operator-facing fact
+       is identical — recorded, cannot be played — and differ only in the mark
+       and the sentence, which say which of the two it is rather than letting
+       the unhandled case borrow ADP's wording. -->
+  <div v-if="stock === 'locked'" class="strip strip--locked">
     <div class="strip__head">
       <span class="strip__tg">{{ call.tgid ?? '—' }}</span>
       <span class="strip__alpha">{{ call.alpha ?? 'unlisted talkgroup' }}</span>
@@ -16,7 +23,12 @@
       <span class="strip__dur">{{ dur }}</span>
     </div>
     <div class="strip__rule" />
-    <p class="strip__body">
+    <p v-if="encryption === 'unhandled'" class="strip__body">
+      <span class="mark mark--locked">algorithm not handled</span>
+      — encrypted under algid {{ algLabel }}, which this console cannot decode.
+      Recorded, not decoded.
+    </p>
+    <p v-else class="strip__body">
       <span class="mark mark--locked">no key held</span>
       — encrypted under key {{ keyLabel }}. Recorded, not decoded.
     </p>
@@ -52,6 +64,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { FeedCall } from '~/utils/scannerQueue'
+import { encryptionState, stripStock } from '~/utils/callEncryption'
 
 /**
  * One call, as one printed strip.
@@ -81,18 +94,21 @@ const props = defineProps<{
 
 defineEmits<{ play: [call: FeedCall] }>()
 
-/** P25 ADP. Anything else in algid is not an encryption algorithm we gate on. */
-const ADP_ALGID = 170
-
-const locked = computed(
-  () => props.call.algid === ADP_ALGID && !props.heldKeyIds.includes(props.call.keyid ?? -1),
+/**
+ * Which of the five encryption states this call is in, and which of the four
+ * stocks that prints on. Both live in utils/callEncryption.ts — see that file
+ * for why a non-ADP algid is no longer allowed to fall through to clear stock,
+ * why the eight one-off algids share a single 'unhandled' case, and why a null
+ * algid stays on the stock it has always had instead of gaining a badge.
+ *
+ * The scanner queue's classify() reads the SAME function, so a strip can never
+ * say "recorded, not decoded" about a call the feed is busy playing.
+ */
+const encryption = computed(() =>
+  encryptionState(props.call, new Set(props.heldKeyIds)),
 )
 
-const stock = computed(() => {
-  if (locked.value) return 'locked'
-  if (props.call.algid === ADP_ALGID) return 'keyed'
-  return body.value ? 'clear' : 'void'
-})
+const stock = computed(() => stripStock(encryption.value, Boolean(body.value)))
 
 /**
  * `?? 0` would be a lie rather than a default: a call really can be encrypted
@@ -103,6 +119,21 @@ const keyLabel = computed(() =>
   props.call.keyid === null || props.call.keyid === undefined
     ? 'unknown key'
     : `0x${props.call.keyid.toString(16).toUpperCase()}`,
+)
+
+/**
+ * The raw algid byte, printed rather than translated into an algorithm name.
+ *
+ * Every value that reaches this label occurs exactly once in a corpus of
+ * 11,743 calls — 0x08, 0x0E, 0x45, 0x48, 0x82, 0xA8, 0xAB, 0xB8 — which is
+ * what an ESS bit error looks like, not what eight algorithms in daily use
+ * look like (0xA8 and 0xAB are each one bit off ADP's 0xAA). Printing the byte
+ * lets an operator recognise that; printing "AES-256" would invent a fact.
+ */
+const algLabel = computed(() =>
+  props.call.algid === null || props.call.algid === undefined
+    ? 'unknown'
+    : `0x${props.call.algid.toString(16).toUpperCase().padStart(2, '0')}`,
 )
 
 /** op25 writes this literal when it silenced a burst; it is not speech. */

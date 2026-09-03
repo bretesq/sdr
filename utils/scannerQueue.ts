@@ -12,8 +12,7 @@
  * behind live during a burst and never catch up.
  */
 
-/** P25 ADP. Anything else in `algid` is not an encryption algorithm we gate on. */
-export const ADP_ALGID = 170        // 0xAA
+import { encryptionState } from './callEncryption'
 
 /** The fields of a `Recording` the queue actually needs. */
 export interface FeedCall {
@@ -68,6 +67,16 @@ export function endedAtMs(call: FeedCall): number {
  * `encEvidence`. Those two are filled by a later reconciliation pass and are
  * null on every live row, so a filter keyed off them classifies everything as
  * clear and plays noise.
+ *
+ * It is also decided by utils/callEncryption.ts rather than by an `algid ===
+ * ADP_ALGID` test written out here. This function used to carry that test
+ * itself, which meant a call encrypted under any algorithm OTHER than ADP was
+ * admitted as `'playable'` and its undecodable audio actually pushed through
+ * the speakers — the docstring above warns about playing noise, and the
+ * predicate underneath it did exactly that for every non-ADP algid. Sharing
+ * one classifier with the strip also guarantees the two can never disagree:
+ * a strip reading "recorded, not decoded" while that same call plays is a
+ * worse failure than either half alone.
  */
 export function classify(
   call: FeedCall,
@@ -75,8 +84,11 @@ export function classify(
   heldKeyIds: ReadonlySet<number>,
 ): Admission {
   if (call.tgid === null || !selectedTgids.has(call.tgid)) return 'rejected'
-  if (call.algid === ADP_ALGID && !heldKeyIds.has(call.keyid ?? -1)) return 'locked'
-  return 'playable'
+  const enc = encryptionState(call, heldKeyIds)
+  // 'unknown' (no ESS captured) stays playable: 77% of the corpus has no
+  // algid, and refusing to play all of it on the chance some is encrypted
+  // would silence the scanner. Encrypted-but-undecodable is what we refuse.
+  return enc === 'locked' || enc === 'unhandled' ? 'locked' : 'playable'
 }
 
 /**

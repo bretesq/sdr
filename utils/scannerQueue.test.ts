@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
-  ADP_ALGID, createQueue, endedAtMs, classify, admit, prune, takeNext,
+  createQueue, endedAtMs, classify, admit, prune, takeNext,
   type FeedCall,
 } from './scannerQueue'
+import { ADP_ALGID } from './callEncryption'
 
 const HELD = new Set([1, 8, 12040])
 const SELECTED = new Set([17094, 17095])
@@ -57,6 +58,22 @@ describe('classify', () => {
   it('treats algid 128 as clear', () => {
     // 0x80 is P25's "unencrypted" algorithm id, not an encryption algorithm.
     expect(classify(call({ algid: 128, keyid: 0 }), SELECTED, HELD)).toBe('playable')
+  })
+
+  it.each([8, 14, 69, 72, 130, 168, 171, 184])(
+    'locks algid %i rather than playing an algorithm it cannot decode',
+    (algid) => {
+      // These eight used to be admitted as 'playable', which put undecodable
+      // audio through the speakers — the exact failure this function's
+      // docstring warns about, committed by the predicate under it.
+      expect(classify(call({ algid, keyid: null }), SELECTED, HELD)).toBe('locked')
+    },
+  )
+
+  it('still plays a call with no algid at all', () => {
+    // 77% of the corpus carries no ESS. Refusing all of it would silence the
+    // scanner; only encrypted-and-undecodable is refused.
+    expect(classify(call({ algid: null, keyid: null }), SELECTED, HELD)).toBe('playable')
   })
 })
 
