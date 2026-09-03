@@ -167,6 +167,27 @@ services:
     image: rtl-capture
     container_name: rtl-capture
     restart: unless-stopped
+    # Without this, scripts/capture_control.py becomes PID 1 of the
+    # container's PID namespace and inherits the kernel's PID-1 signal
+    # immunity: an unhandled SIGTERM (what `docker compose stop/restart
+    # capture` sends) is silently discarded, and Docker's only recourse
+    # after the grace period is SIGKILL — which tears down the whole
+    # namespace, including op25's process group, in one shot and skips
+    # lwin_listen_multi.sh's cleanup trap entirely. This is the SAME bug,
+    # same fix, as `whisper` above (init: true, after that service's own
+    # 26-hour outage from the identical root cause) — see that service's
+    # comment for the full mechanism. `init: true` alone only gets SIGTERM
+    # delivered to capture_control.py (now PID 2, not PID 1); the process
+    # still has to choose to run its own stop() sequence before exiting,
+    # which is why capture_control.py additionally installs a SIGTERM
+    # handler (install_shutdown_handlers(), see its module docstring).
+    init: true
+    # STATE.stop()'s own ladder is bounded at 8s (SIGINT) + 2s (SIGKILL
+    # fallback) = 10s worst case. Compose's default stop_grace_period is
+    # also 10s — right at the edge, and a race Docker could win by SIGKILLing
+    # the whole container before our own graceful ladder finishes running.
+    # 15s gives that ladder headroom to complete on its own terms.
+    stop_grace_period: 15s
     user: "1000:1000"
     # plugdev by NUMERIC gid. The HackRF device nodes are root:plugdev 0660, and
     # this container's /etc/group has no plugdev entry to resolve the name
@@ -188,8 +209,9 @@ services:
       - /usr/local/lib/x86_64-linux-gnu:/usr/local/lib/x86_64-linux-gnu:ro
       - /usr/local/lib/python3.14/dist-packages:/usr/local/lib/python3.14/dist-packages:ro
     working_dir: /home/besquivel/rtl
-    # scripts/capture_control.py is PID 1 here and owns op25 as its own
-    # child, exposing GET /status, POST /start, POST /stop on the compose
-    # network (port 8082, never published -- see that file's module
-    # docstring for the security boundary POST /start sits behind).
+    # scripts/capture_control.py (PID 2, under tini via init: true above)
+    # owns op25 as its own child, exposing GET /status, POST /start,
+    # POST /stop on the compose network (port 8082, never published -- see
+    # that file's module docstring for the security boundary POST /start
+    # sits behind).
     command: ["python3", "scripts/capture_control.py"]

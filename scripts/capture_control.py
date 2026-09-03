@@ -1,14 +1,38 @@
 #!/usr/bin/env python3
 """The capture container's control server.
 
-PID 1 of the `capture` container (docker-compose.yml's `command:`). op25 and
-its recorders need real USB access to two HackRFs plus the whole GNU Radio
-stack, which the `web` container deliberately does not have -- see
-server/utils/processes.ts's inContainer() guard. This server is what `web`
-talks to instead: it owns op25 as its own child and exposes that over
-GET /status, POST /start, POST /stop on the compose network only (port 8082,
-never published -- see docker-compose.yml's `whisper` service for the same
-pattern with a published vs. unpublished port).
+PID 2 of the `capture` container (docker-compose.yml's `command:`, with
+`init: true` running tini as PID 1 -- see the "signal handling" note below
+for why this is load-bearing, not incidental). op25 and its recorders need
+real USB access to two HackRFs plus the whole GNU Radio stack, which the
+`web` container deliberately does not have -- see server/utils/processes.ts's
+inContainer() guard. This server is what `web` talks to instead: it owns op25
+as its own child and exposes that over GET /status, POST /start, POST /stop
+on the compose network only (port 8082, never published -- see
+docker-compose.yml's `whisper` service for the same pattern with a published
+vs. unpublished port).
+
+SIGNAL HANDLING. Whatever is PID 1 of a container's PID namespace gets the
+kernel's PID-1 signal immunity: a signal whose disposition is the default
+("terminate") is silently discarded unless that process has installed its
+own handler for it (man 7 pid_namespaces). Without `init: true`, THIS process
+would be PID 1, `docker compose stop/restart capture` would send SIGTERM,
+nothing would happen, Docker would wait out the grace period and then
+SIGKILL the whole cgroup -- tearing down op25's process group instantly and
+skipping lwin_listen_multi.sh's cleanup trap entirely. That is exactly the
+orphaned-recorder failure mode this project has already hit twice, and it is
+the identical bug `docker-compose.yml`'s `whisper` service already carries a
+fix for (its own `init: true`, after a 26-hour outage from the same root
+cause). `init: true` alone is NOT sufficient here, though: it makes tini PID
+1 and this process PID 2, where SIGTERM is deliverable -- but the *default*
+disposition for PID 2 is still "terminate immediately", with no chance to
+run STATE.stop()'s SIGINT-first-then-SIGKILL ladder before dying, and tini
+exits (tearing down the whole namespace) as soon as this process does. So
+this file ALSO installs an explicit SIGTERM/SIGINT handler
+(install_shutdown_handlers(), called from main()) that runs STATE.stop()
+synchronously -- letting the cleanup trap run -- before this process exits.
+Both halves are required; either alone leaves recorders orphaned on a plain
+`docker compose stop capture`.
 
 THE SECURITY BOUNDARY. POST /start decides what argv runs on a machine with
 SDR hardware, and anything that can reach the web app can reach this
@@ -236,23 +260,63 @@ class CaptureState:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.process: subprocess.Popen | None = None
+        # The launcher's original pid, which is ALSO its process group id
+        # (start_new_session=True makes it its own group leader). Tracked
+        # separately from `process` because the two can outlive each other:
+        # `process` is only ever OUR direct child, the launcher bash -- but
+        # op25 and the eight recorders it forks are members of the SAME
+        # group without being bash's dependents once bash itself exits. If
+        # bash dies first (crash, or reaching the end of its script) while
+        # they are still alive and holding the HackRFs, `process` becomes
+        # None on reap while `pgid` -- and the capture it identifies -- must
+        # keep reporting as running. See _capture_actually_alive_locked().
+        self.pgid: int | None = None
         self.request: dict | None = None      # the validated request that started it
         self.started_at: float | None = None  # time.time(), for status reporting
         self.stopping = False                 # set while a stop is in flight
 
-    def _reap_if_exited_locked(self) -> None:
-        """If the tracked child has exited on its own (duration ran out, or
-        it crashed), reap it and clear state. Must be called with lock held.
+    def _capture_actually_alive_locked(self) -> bool:
+        """Is the contended resource -- the process GROUP holding the
+        HackRFs -- actually still alive, independent of whether the one
+        process this server happens to have spawned (`self.process`, the
+        launcher bash) is still around?
 
-        Without this, a duration-limited capture that finished its run keeps
-        looking "running" forever afterwards: /status would report a stale
-        pid and /start would refuse a legitimate next capture with a
-        spurious "already running" -- for a process that is, in fact, long
-        dead. poll() is non-blocking and safe to call on an already-reaped
-        child, so this is cheap enough to call from both /status and /start.
+        This is the same question server/utils/processes.ts's isRadioBusy()
+        asks on the host, for the same reason: a pid is not the resource.
+        Trusting `self.process`'s own liveness alone reproduces exactly the
+        bug that function exists to prevent -- the launcher can exit while
+        op25/recorders it forked (same group, not its dependents once it
+        exits) are still running and still holding the radios.
         """
-        if self.process is not None and self.process.poll() is not None:
+        return self.pgid is not None and _pgid_alive(self.pgid)
+
+    def _reap_if_exited_locked(self) -> None:
+        """Clear state once the capture is ACTUALLY gone -- every member of
+        its process group, not merely our own direct child. Must be called
+        with lock held.
+
+        Two things happen here, in order, and the order matters:
+
+        1. If `self.process` (our own direct child, the launcher bash) has
+           exited, reap it via poll(). This is not optional bookkeeping: an
+           un-reaped zombie is still a member of its process group as far as
+           the kernel is concerned, so leaving it un-reaped would make
+           _capture_actually_alive_locked() report "alive" forever even
+           after every other member of the group is long gone.
+        2. THEN check whether the group has any member left at all. If not,
+           clear every field -- including `pgid` -- so /status stops
+           reporting a stale pid and /start does not refuse a legitimate
+           next capture with a spurious "already running" for hardware that
+           is not, in fact, in use. If the group DOES still have a member
+           (op25 or a recorder outliving a dead launcher), state is left
+           exactly as-is: still running, by pgid, even though `self.process`
+           itself may already be gone.
+        """
+        if self.process is not None:
+            self.process.poll()
+        if self.pgid is not None and not self._capture_actually_alive_locked():
             self.process = None
+            self.pgid = None
             self.request = None
             self.started_at = None
 
@@ -262,11 +326,11 @@ class CaptureState:
         common case, not an error."""
         with self.lock:
             self._reap_if_exited_locked()
-            if self.process is None:
+            if self.pgid is None:
                 return {"running": False, "pid": None}
             return {
                 "running": True,
-                "pid": self.process.pid,
+                "pid": self.pgid,
                 "startedAt": datetime.fromtimestamp(
                     self.started_at, tz=timezone.utc
                 ).isoformat(),
@@ -284,8 +348,8 @@ class CaptureState:
 
         with self.lock:
             self._reap_if_exited_locked()
-            if self.process is not None or self.stopping:
-                raise AlreadyRunning(self.process.pid if self.process else None)
+            if self.pgid is not None or self.stopping:
+                raise AlreadyRunning(self.pgid)
 
             # start_new_session=True is Python's setsid(): the child becomes
             # the leader of its own new process group (and session), so
@@ -311,6 +375,7 @@ class CaptureState:
                 start_new_session=True,
             )
             self.process = proc
+            self.pgid = proc.pid  # the launcher is its own process-group leader (start_new_session=True)
             self.request = dict(req)
             self.started_at = time.time()
 
@@ -325,9 +390,9 @@ class CaptureState:
         time.sleep(0.3)
         with self.lock:
             self._reap_if_exited_locked()
-            if self.process is None:
+            if self.pgid is None:
                 raise LaunchFailed(proc.returncode)
-            pid = self.process.pid
+            pid = self.pgid
 
         log(f"started pid={pid} args={args}")
         return {"started": True, "pid": pid, "args": args}
@@ -335,10 +400,9 @@ class CaptureState:
     def stop(self) -> dict:
         with self.lock:
             self._reap_if_exited_locked()
-            if self.process is None:
+            if self.pgid is None:
                 return {"stopped": False, "message": "no capture running"}
-            proc = self.process
-            pgid = proc.pid  # the launcher is its own process-group leader (start_new_session=True)
+            pgid = self.pgid
             self.stopping = True
 
         # Signalling and waiting happen OUTSIDE the lock. A stop can take
@@ -348,6 +412,12 @@ class CaptureState:
         # than blocking on this method's own mutex -- `self.stopping` above
         # is what a concurrent start() checks instead, so it still gets a
         # correct 409 without needing the lock held here.
+        #
+        # Waiting is done by polling the GROUP's liveness (_pgid_alive), not
+        # by waiting on `self.process` alone -- the launcher bash can exit
+        # (or already be gone) while op25/recorders it forked are still the
+        # thing actually holding the HackRFs; see
+        # _capture_actually_alive_locked()'s comment.
         forced = False
         try:
             # SIGINT, never SIGKILL first. lwin_listen_multi.sh's trap runs
@@ -361,18 +431,19 @@ class CaptureState:
         except ProcessLookupError:
             pass  # already gone between the check above and here -- fine, not an error
 
-        exited = _wait_for_exit(proc, timeout_sec=8.0)
+        exited = _wait_for_group_exit(pgid, timeout_sec=8.0)
         if not exited:
-            log(f"pid={pgid} still alive 8s after SIGINT; sending SIGKILL")
+            log(f"pgid={pgid} still alive 8s after SIGINT; sending SIGKILL")
             forced = True
             try:
                 os.killpg(pgid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            _wait_for_exit(proc, timeout_sec=2.0)
+            _wait_for_group_exit(pgid, timeout_sec=2.0)
 
         with self.lock:
             self.process = None
+            self.pgid = None
             self.request = None
             self.started_at = None
             self.stopping = False
@@ -393,18 +464,43 @@ class LaunchFailed(Exception):
         self.returncode = returncode
 
 
-def _wait_for_exit(proc: subprocess.Popen, timeout_sec: float) -> bool:
-    """Poll (never blocking-wait) for `proc` to exit, up to `timeout_sec`.
-    Polling rather than proc.wait(timeout=...) so the caller's intent --
-    "wait briefly, then act" -- stays a plain, readable loop, and so a future
-    caller adding logic between checks doesn't have to fight a timed
-    blocking call to do it."""
+def _pgid_alive(pgid: int) -> bool:
+    """Does process group `pgid` still have ANY member, per the kernel?
+
+    signal 0 sends nothing -- os.killpg's existence/permission check alone
+    decides the outcome (see man 2 kill). ESRCH (raised here as
+    ProcessLookupError) means the group is empty. This is the primitive
+    _capture_actually_alive_locked() and _wait_for_group_exit() both build
+    on: it asks the kernel directly whether the RADIO is still held, rather
+    than trusting whichever single process object this server happens to
+    have a Python reference to.
+    """
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # The group exists but every remaining member is owned by another
+        # uid -- cannot happen under this container's design (everything in
+        # the group is spawned by this same process as the same uid 1000),
+        # but if it ever did, "cannot signal it" must not be conflated with
+        # "cannot see it": report alive rather than silently going stale.
+        return True
+
+
+def _wait_for_group_exit(pgid: int, timeout_sec: float) -> bool:
+    """Poll (never blocking-wait) until process group `pgid` has no member
+    left, up to `timeout_sec`. Polls _pgid_alive() rather than waiting on any
+    single Popen object, for the same reason stop() signals the whole group
+    rather than one pid: the launcher can exit while op25/recorders it
+    forked are still the thing actually holding the radios."""
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
-        if proc.poll() is not None:
+        if not _pgid_alive(pgid):
             return True
         time.sleep(0.2)
-    return proc.poll() is not None
+    return not _pgid_alive(pgid)
 
 
 STATE = CaptureState()
@@ -420,10 +516,99 @@ def log(message: str) -> None:
     print(f"capture_control: {message}", flush=True)
 
 
+# --- shutdown signal handling ------------------------------------------
+
+def _stop_for_shutdown() -> None:
+    """The actual body of the shutdown handler, split out from
+    _handle_shutdown_signal() so it can be unit tested without exercising
+    os._exit() (which would kill the test runner). Runs the SAME
+    SIGINT-first-then-SIGKILL ladder as POST /stop -- letting
+    lwin_listen_multi.sh's cleanup trap run -- before the caller (the signal
+    handler) terminates this process. Never raises: a bug in STATE.stop()
+    must not prevent the process from exiting when asked to.
+    """
+    log("shutdown signal received; stopping any running capture before exiting")
+    try:
+        STATE.stop()
+    except Exception as exc:  # noqa: BLE001 -- shutdown must proceed regardless
+        log(f"error while stopping during shutdown (exiting anyway): {exc}")
+
+
+def _handle_shutdown_signal(signum: int, frame) -> None:  # noqa: ANN001 (stdlib signal handler signature)
+    """Registered for SIGTERM and SIGINT by install_shutdown_handlers().
+
+    See the module docstring's "SIGNAL HANDLING" section for why this must
+    exist at all: with `init: true`, tini is PID 1 and forwards SIGTERM to
+    THIS process (PID 2) -- but PID 2's own default disposition for SIGTERM
+    is still immediate termination, and tini exits (tearing down the whole
+    PID namespace, and with it op25's entire process group) as soon as this
+    process does. Without this handler, the fix's second half is missing:
+    tini alone gets the signal delivered, but nothing here would ever run
+    the cleanup ladder before dying.
+
+    os._exit(), not sys.exit(): this runs inside a signal handler, which in
+    CPython executes as ordinary Python code in the main thread (safe to
+    call blocking functions from), but raising SystemExit here would unwind
+    into whatever the main thread happened to be doing when the signal
+    arrived (typically socketserver's request-accept loop) with no
+    guarantee it propagates cleanly all the way out. os._exit() ends the
+    process immediately and unconditionally once STATE.stop() has already
+    run -- there is nothing left to flush (log() already used
+    flush=True) and nothing left to clean up.
+
+    No reentrancy guard: a second signal arriving while this is still
+    blocked inside STATE.stop()'s wait loop can invoke this function again
+    on the same thread (CPython checks for pending signals between bytecode
+    instructions, including after time.sleep() returns). That is fine
+    without one -- CaptureState.stop() concurrently running its own ladder
+    twice is the same "harmless, already possible via two POST /stop calls"
+    case this project has already decided not to guard against (see
+    STATE.stop()'s own docstring); adding a guard here would solve a
+    problem this codebase has explicitly chosen to accept elsewhere.
+    """
+    _stop_for_shutdown()
+    os._exit(0)
+
+
+def install_shutdown_handlers() -> None:
+    """Wire SIGTERM and SIGINT to _handle_shutdown_signal.
+
+    SIGTERM is what `docker compose stop/restart/down` sends. SIGINT is
+    handled too so a manual, interactive `docker exec ... python3
+    scripts/capture_control.py` (or a plain Ctrl-C) gets the same clean
+    shutdown -- mirroring scripts/udp_audio_record.py's own
+    signal.signal(SIGINT)/signal.signal(SIGTERM) pair.
+    """
+    signal.signal(signal.SIGTERM, _handle_shutdown_signal)
+    signal.signal(signal.SIGINT, _handle_shutdown_signal)
+
+
 # --- HTTP layer ---------------------------------------------------------
+
+
+# The whole valid request body is four short fields -- {"mode": "multi",
+# "ess": true, "includeEncrypted": true, "durationSec": 86400} is well under
+# 100 bytes. 4 KiB is generous headroom for that and rejects anything that
+# isn't a small, legitimate /start body outright, before it is ever read into
+# memory. Per the brief's own threat model ("anything that can reach the web
+# app can reach this endpoint"), an unbounded read here would let a caller
+# force this thread to buffer an arbitrarily large body, or claim a huge
+# Content-Length and never send it -- tying the thread up indefinitely.
+MAX_BODY_BYTES = 4096
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "capture-control/1.0"
+
+    # Bounds how long a read (rfile.read in _handle_start) can block waiting
+    # for bytes that never arrive -- e.g. a caller that declares a
+    # Content-Length and then sends it one byte at a time, or not at all.
+    # Paired with MAX_BODY_BYTES above: that bounds HOW MUCH a caller can
+    # make this thread buffer, this bounds HOW LONG a caller can make it
+    # wait. ThreadingHTTPServer hands each connection its own thread with no
+    # cap on how many it will create, so a stuck read is not free even though
+    # it only blocks one thread.
+    timeout = 10
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002 (stdlib signature)
         # Route through log() so every line -- ours and http.server's own
@@ -454,11 +639,35 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "not found"})
 
     def _handle_start(self) -> None:
-        length = int(self.headers.get("Content-Length", 0) or 0)
+        raw_length = self.headers.get("Content-Length")
+        try:
+            # int() on a caller-controlled header: a non-numeric value (or
+            # one int() otherwise chokes on) must become a clean 400, not an
+            # uncaught ValueError that socketserver turns into a bare
+            # traceback dumped to stdout with no HTTP response at all.
+            length = int(raw_length) if raw_length is not None else 0
+        except ValueError:
+            self._send_json(400, {"error": "Content-Length must be an integer"})
+            return
+        if length < 0:
+            self._send_json(400, {"error": "Content-Length must not be negative"})
+            return
+        if length > MAX_BODY_BYTES:
+            # Reject BEFORE reading a single byte -- the whole point is to
+            # never let a caller-declared size make this thread buffer (or
+            # block waiting on) more than a small, legitimate request body.
+            self._send_json(400, {"error": f"request body too large (max {MAX_BODY_BYTES} bytes)"})
+            return
+
         raw = self.rfile.read(length) if length else b""
         try:
             req = json.loads(raw) if raw else {}
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, RecursionError) as exc:
+            # RecursionError alongside JSONDecodeError: a deeply nested body
+            # (thousands of nested `[`) blows the parser's recursion limit
+            # instead of raising a JSONDecodeError, and would otherwise hit
+            # the same uncaught-exception-becomes-a-bare-traceback outcome
+            # as the Content-Length cases above.
             self._send_json(400, {"error": f"invalid JSON body: {exc}"})
             return
 
@@ -475,6 +684,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    # Installed before anything else: cheap, has no effect while no capture
+    # is running (the common case during a StartupError crash loop below),
+    # and there is no reason to leave a window where a SIGTERM would still
+    # hit Python's default disposition.
+    install_shutdown_handlers()
+
     try:
         check_op25_available()
     except StartupError as exc:
