@@ -316,23 +316,37 @@ interface ControlStartResponse {
  * The JSON shape scripts/capture_control.py's GET /status returns. Never an
  * error response — see that file's snapshot().
  *
- * `running` already reflects op25 ITSELF, not merely its process group
- * (final-review.md's finding 5: `lwin_listen_multi.sh:243` waits on recorder
- * 0, not op25, so op25 can die while the launcher and all eight recorders
- * keep the group alive with no radio behind it). snapshot() used to answer
- * from group liveness alone and reported `running: true` for exactly that
- * dead-radio state — confirmed as the mechanism behind this project's
- * multi-hour unattended outages. Nothing on THIS side needs to special-case
- * that anymore: a `false` here already flows through
- * delegatedSessionLiveness() -> isSessionAlive() into the ordinary
- * session-closed path, the same as any other "stopped" answer.
+ * `running` is PROCESS-GROUP liveness, exactly as it always was — it does
+ * NOT reflect op25's own health. CORRECTED (final-review.md section 8,
+ * round-2 re-review): a prior version of this comment claimed `running` had
+ * been changed to track op25 itself, as the fix for finding 5
+ * (`lwin_listen_multi.sh:243` waits on recorder 0, not op25, so op25 can die
+ * while the launcher and all eight recorders keep the group alive with no
+ * radio behind it). That version of the fix was reverted one field over: it
+ * made a `pgrep` subprocess hiccup (timeout, missing binary — not exotic on
+ * a box this busy) indistinguishable from a CONFIRMED op25 death, and
+ * either one collapsed straight into `running: false` — which
+ * delegatedSessionLiveness() maps to `'stopped'` with NO retry tolerance
+ * (unlike the adjacent 'unknown'/network-unreachable path this same file
+ * already built `MAX_CONSECUTIVE_UNKNOWN` for). A single blip could then
+ * permanently close a live, healthy session's DB row, and even a genuine
+ * death took away the console's own Stop button for a state the operator
+ * still needed to act on. Both problems are closed by NOT touching
+ * `running` for this at all: it is back to being the group-liveness signal
+ * `delegatedSessionLiveness()`/`isSessionAlive()` were already built and
+ * tested against, so nothing on THIS side needed to change.
  *
- * `degraded`/`message` are present only in that dead-radio-but-group-alive
- * case, for a caller talking to the control API directly (an operator, a
- * monitoring script) — server/utils/session.ts's liveness policy does not
- * need them, since `running: false` alone already says enough for THIS
- * app's purposes. Detection only, per the brief that added this: nothing
- * here or in capture_control.py auto-restarts anything.
+ * `degraded`/`message` are the honest signal instead — additive, present
+ * ONLY on a CONFIRMED op25 death (never on an inconclusive check), and read
+ * by nothing in server/utils/session.ts's liveness policy or anywhere else
+ * in this app: a degraded delegated session stays tracked and stoppable
+ * exactly like a healthy one. They exist for a caller talking to the
+ * control API directly (an operator, a monitoring script) today; wiring
+ * them into a console-facing warning is deliberately left for later (see
+ * final-review.md's I3 deferral) since a degraded capture is now, at
+ * minimum, no longer strandable from here. Detection only, per the brief
+ * that added this: nothing here or in capture_control.py auto-restarts
+ * anything.
  */
 interface ControlStatusResponse {
   running?: boolean

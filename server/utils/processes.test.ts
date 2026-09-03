@@ -440,6 +440,23 @@ describe('delegatedSessionLiveness', () => {
     mockFetch.mockResolvedValue(fakeControlResponse(200, true, { unexpected: 'shape' }))
     expect(await delegatedSessionLiveness(42)).toBe('unknown')
   })
+
+  it('reports "alive" — NOT "stopped" — when the capture is confirmed degraded but still tracked', async () => {
+    // final-review.md section 8 (round-2 re-review): capture_control.py's
+    // `degraded` field (op25 confirmed dead, recorders still holding the
+    // group) is deliberately layered on top of `running`, never a
+    // replacement for it — `running` stays true precisely so a degraded
+    // capture remains a live, stoppable session from the console, the same
+    // way it always has. This function must keep ignoring `degraded`
+    // entirely (it isn't part of this function's own three-state contract)
+    // rather than let it leak into a 'stopped' answer, which is exactly the
+    // regression a prior version of the /status fix introduced one layer
+    // down (running:false on ANY op25 doubt, confirmed or not).
+    mockFetch.mockResolvedValue(
+      fakeControlResponse(200, true, { running: true, pid: 42, degraded: true, message: 'op25 has exited' }),
+    )
+    expect(await delegatedSessionLiveness(42)).toBe('alive')
+  })
 })
 
 describe('stopDelegatedCapture', () => {

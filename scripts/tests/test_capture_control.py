@@ -273,11 +273,20 @@ class CaptureStateTest(unittest.TestCase):
         # is still alive (recorders survive op25), but op25 itself -- the
         # thing that actually holds the HackRFs -- is gone.
         # `lwin_listen_multi.sh:243` waits on recorder 0, not op25, so this
-        # is exactly the state a dead op25 leaves behind. Before this fix,
-        # snapshot() only asked whether ANY group member was alive, so it
-        # kept reporting `running: true` for a session with no radio at all
-        # -- confirmed as the mechanism behind this project's unattended
+        # is exactly the state a dead op25 leaves behind. Before finding 5's
+        # fix, snapshot() only asked whether ANY group member was alive, so
+        # it kept reporting `running: true` for a session with no radio at
+        # all -- confirmed as the mechanism behind this project's unattended
         # multi-hour outages.
+        #
+        # CORRECTED (final-review.md section 8, round-2 re-review): `running`
+        # must stay `true` here, NOT flip to `false` -- a prior version of
+        # this fix flipped it, which made sessionStore.get() auto-close the
+        # tracked session the instant this fired, taking away the console's
+        # own Stop button for a state the operator still needs to act on
+        # (Task 4 had relied on exactly that button to recover an equivalent
+        # stale session before). `degraded` carries the honest signal
+        # instead, additively, without touching session lifecycle.
         state = CaptureState()
         state.process = _FakeProc(pid=555, returncode=0)
         state.pgid = 555
@@ -289,12 +298,42 @@ class CaptureStateTest(unittest.TestCase):
             snapshot = state.snapshot()
 
         op25_alive.assert_called_once_with(555)
-        self.assertEqual(snapshot["running"], False)
+        self.assertEqual(snapshot["running"], True)
         self.assertEqual(snapshot["degraded"], True)
         self.assertIn("op25", snapshot["message"])
-        # Only the REPORTED answer changes -- self.pgid is untouched, so
-        # POST /start still correctly 409s (the orphaned recorders still
-        # hold their UDP ports) and POST /stop still correctly reaps them.
+        # self.pgid is untouched either way -- POST /start still correctly
+        # 409s (the orphaned recorders still hold their UDP ports) and POST
+        # /stop still correctly reaps them regardless of op25's state.
+        self.assertEqual(state.pgid, 555)
+
+    def test_status_is_not_degraded_when_the_op25_check_is_inconclusive(self):
+        # final-review.md section 8, round-2 re-review, Important #1: a
+        # `pgrep` spawn hiccup (timeout, missing binary, its own error exit)
+        # is genuinely NO INFORMATION about op25, not a lean toward "dead".
+        # Before this fix, _op25_alive() collapsed that into the same
+        # `False` as a CONFIRMED death, which snapshot() then reported as
+        # `running: false` indistinguishably from the real thing --
+        # `delegatedSessionLiveness()` mapped that straight to 'stopped'
+        # with NO retry tolerance (unlike the adjacent 'unknown' path this
+        # same codebase already built MAX_CONSECUTIVE_UNKNOWN for), so a
+        # single transient pgrep failure could permanently close a live,
+        # healthy session's DB row. Reproduced directly here: an
+        # inconclusive check (_op25_alive() returns None) must leave
+        # `running` untouched and must NOT set `degraded` -- no claim in
+        # either direction.
+        state = CaptureState()
+        state.process = _FakeProc(pid=555, returncode=0)
+        state.pgid = 555
+        state.request = {"mode": "multi", "durationSec": 600}
+        state.started_at = 0.0
+
+        with mock.patch.object(cc.os, "killpg", return_value=None), \
+             mock.patch.object(cc, "_op25_alive", return_value=None) as op25_alive:
+            snapshot = state.snapshot()
+
+        op25_alive.assert_called_once_with(555)
+        self.assertEqual(snapshot["running"], True)
+        self.assertNotIn("degraded", snapshot)
         self.assertEqual(state.pgid, 555)
 
     def test_snapshot_never_crashes_with_nothing_running(self):
@@ -385,31 +424,37 @@ class Op25AliveTest(unittest.TestCase):
         ):
             self.assertFalse(cc._op25_alive(555))
 
-    def test_false_when_pgrep_itself_errors(self):
+    def test_none_when_pgrep_itself_errors(self):
         # A non-0/1 exit is pgrep reporting ITS OWN failure (bad argument,
-        # internal error) -- not an authoritative "no match", but this
-        # function must still fail toward "not confirmed alive" rather than
-        # silently reporting a capture as healthy on the strength of a check
-        # that did not actually run. This is the opposite direction from
-        # isRadioBusy()'s documented pgrep-missing gap (false there means
-        # "not busy", the dangerous direction for THAT check) -- see this
-        # function's own docstring for why the two must fail differently.
+        # internal error) -- not an authoritative "no match" and not an
+        # authoritative "alive" either. CORRECTED (final-review.md section 8,
+        # round-2 re-review): a prior version of this function collapsed
+        # this into `False`, "not confirmed alive", on the reasoning that an
+        # inability to prove op25 is there must not silently read as
+        # healthy. That reasoning was right for THIS function taken alone,
+        # but wrong for the whole system: the caller (snapshot()) could not
+        # tell this apart from a CONFIRMED death, so a transient pgrep
+        # hiccup and a real op25 death produced the identical `running:
+        # false` -- and downstream, delegatedSessionLiveness() maps that
+        # straight to 'stopped' with no retry tolerance, so one blip could
+        # permanently close a live session's DB row. `None` lets the caller
+        # keep the two apart -- see snapshot()'s own docstring for how.
         with mock.patch.object(
             cc.subprocess, "run",
             return_value=mock.Mock(returncode=2, stderr=b"pgrep: error"),
         ):
-            self.assertFalse(cc._op25_alive(555))
+            self.assertIsNone(cc._op25_alive(555))
 
-    def test_false_when_pgrep_binary_is_missing(self):
+    def test_none_when_pgrep_binary_is_missing(self):
         with mock.patch.object(cc.subprocess, "run", side_effect=FileNotFoundError):
-            self.assertFalse(cc._op25_alive(555))
+            self.assertIsNone(cc._op25_alive(555))
 
-    def test_false_when_pgrep_times_out(self):
+    def test_none_when_pgrep_times_out(self):
         with mock.patch.object(
             cc.subprocess, "run",
             side_effect=cc.subprocess.TimeoutExpired(cmd="pgrep", timeout=2),
         ):
-            self.assertFalse(cc._op25_alive(555))
+            self.assertIsNone(cc._op25_alive(555))
 
 
 class ShutdownSignalTest(unittest.TestCase):

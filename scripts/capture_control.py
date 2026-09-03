@@ -381,50 +381,77 @@ class CaptureState:
         or the tracked process just exited -- that is the normal, expected
         common case, not an error.
 
-        `running` reflects op25 ITSELF (_op25_alive()), not merely the
-        process group's own liveness -- see that function's docstring for
-        why the group alone (self.pgid, self.process) is not enough: the
-        eight recorders can keep a group alive for hours after op25 has
-        died, and this endpoint existing to report that as `running: true`
-        is precisely final-review.md's finding 5. `self.pgid` itself is
-        deliberately left untouched here (see _reap_if_exited_locked() and
-        start()'s AlreadyRunning check, neither of which this function
-        calls into) -- POST /start still correctly refuses a second capture
-        while the orphaned recorders hold their UDP ports, and POST /stop
-        still correctly reaps them by pgid regardless of whether op25 is
-        the thing still alive in the group. Only the REPORTED answer
-        changes here; nothing about what counts as "still occupying
-        resources" does.
+        `running` is GROUP liveness (_capture_actually_alive_locked(), via
+        _reap_if_exited_locked() above) -- the same meaning it has always had,
+        and the same meaning start()'s AlreadyRunning check and stop() give
+        `self.pgid`. CORRECTED (final-review.md section 8, round-2 re-review):
+        an earlier version of this method reported `running` from op25's OWN
+        liveness instead, to fix finding 5 (op25 dying while recorders keep
+        the group alive). That went too far two ways at once: (1) `_op25_alive()`
+        shells out to `pgrep`, which can fail transiently (timeout, contention
+        on a box already running op25 + 8 recorders + whisper's GPU
+        transcription) -- collapsing THAT into the same `running: false` as a
+        real death meant one blip could permanently close a live session's
+        tracked row, with none of the retry tolerance this codebase already
+        built for the analogous network-unreachable case
+        (session.ts's MAX_CONSECUTIVE_UNKNOWN); (2) even a CONFIRMED op25
+        death then closed the session immediately (sessionStore.get()'s
+        auto-close), which took away the console's own Stop button for a
+        state the operator still needs to act on -- Task 4 had relied on
+        exactly that button to recover an equivalent stale session before.
+        Neither problem is reachable anymore because `running` no longer
+        depends on `_op25_alive()` at all -- it is back to being the SAME
+        pgid-based signal it always was, so the tracked session survives
+        exactly as long as it always did, and the console's Stop path
+        (POST /stop -> this class's own stop(), gated only on self.pgid,
+        never on op25's health) still reaches the orphaned recorders
+        regardless of which of the two below fires.
+
+        `degraded`/`message` are ADDITIVE, informational-only fields layered
+        on top -- they never change `running`, never touch `self.pgid`, and
+        nothing in this file's session-lifecycle-adjacent state reads them.
+        `degraded: true` fires ONLY on a CONFIRMED op25 death
+        (`_op25_alive() is False`, pgrep's own documented "no process
+        matched") -- never on `_op25_alive() is None` (inconclusive: a
+        missing binary, a timeout, pgrep's own error exit). An inconclusive
+        check produces NO claim in either direction, matching this project's
+        now-established doctrine that "could not determine" and "confirmed
+        gone" must never share one signal (see _op25_alive()'s own docstring
+        for the full trace of getting this wrong once already, in
+        `181e715..7870c61`).
         """
         with self.lock:
             self._reap_if_exited_locked()
             if self.pgid is None:
                 return {"running": False, "pid": None}
-            op25_alive = _op25_alive(self.pgid)
+            op25_state = _op25_alive(self.pgid)  # True | False | None
             payload = {
-                "running": op25_alive,
+                "running": True,
                 "pid": self.pgid,
                 "startedAt": datetime.fromtimestamp(
                     self.started_at, tz=timezone.utc
                 ).isoformat(),
                 "request": self.request,
             }
-            if not op25_alive:
-                # The process group is still alive (self.pgid survived
-                # _reap_if_exited_locked() above) but op25 itself is gone --
-                # the exact state this function's docstring names. `degraded`
-                # spells out why for whoever reads this response: the
-                # capture is not cleanly stopped (POST /stop still has real
-                # work to do -- reaping the orphaned recorders by pgid), it
-                # is just not doing anything useful. Detection only, per the
-                # brief that added this: no auto-restart happens here or
-                # anywhere else in this file.
+            if op25_state is False:
+                # CONFIRMED, not merely suspected: pgrep's own "no process
+                # matched" for op25 specifically, while the group (self.pgid)
+                # -- the recorders -- survives it. `running` above stays
+                # `true` on purpose (see this method's own docstring) so the
+                # session remains tracked and stoppable from the console;
+                # `degraded` is purely the honest label for whoever is
+                # looking, whether that is a future console affordance or an
+                # operator/monitoring script hitting this endpoint directly.
                 payload["degraded"] = True
                 payload["message"] = (
                     "op25 has exited but its process group is still alive "
                     "(recorders holding no radio); stop this session, then "
                     "start a new one, to recover"
                 )
+            # op25_state is True (confirmed alive) or None (inconclusive --
+            # see _op25_alive()'s docstring): no `degraded` key either way.
+            # An inconclusive pgrep run must produce NO claim, not a
+            # tentative one -- there is no "maybe degraded" in this contract.
             return payload
 
     def start(self, req: dict) -> dict:
@@ -595,7 +622,7 @@ def _pgid_alive(pgid: int) -> bool:
         return True
 
 
-def _op25_alive(pgid: int) -> bool:
+def _op25_alive(pgid: int) -> bool | None:
     """Is op25 (multi_rx.py) ITSELF still a member of process group `pgid` --
     as opposed to merely _pgid_alive()'s question, which only asks whether
     ANY member of the group still exists.
@@ -616,18 +643,36 @@ def _op25_alive(pgid: int) -> bool:
     `-f` across the whole container, so this can only ever answer about
     THIS capture's own recorders/op25, never an unrelated process.
 
-    UNLIKE _pgid_alive() (a kernel kill(pgid, 0) that can only say "exists"
-    or "does not"), this shells out to pgrep, which has failure modes of its
-    own -- a missing binary, an unexpected exit. Those must NOT read as "op25
-    is alive": this function exists specifically so a capture's health can
-    no longer be reported with unearned confidence, so an inability to prove
-    op25 is there fails toward the answer that keeps /status honest
-    (`False`, i.e. "not confirmed alive"), never toward silently assuming the
-    radio is fine. This is the opposite direction from isRadioBusy()'s own
-    documented pgrep-missing gap (a `false` there means "not busy", which is
-    the DANGEROUS direction for a radio-contention check) -- the direction
-    that is safe depends on what the caller is protecting against, and here
-    it is a false "running: true", not a missed contention.
+    THREE-WAY RETURN (CORRECTED after final-review.md's round-2 re-review --
+    see that file's section 8): a prior version of this function collapsed
+    "pgrep confirms op25 is gone" and "pgrep itself did not work" into the
+    same `False`, on the reasoning that an inability to prove op25 is alive
+    must not silently read as "alive". That reasoning is still right for
+    THIS function in isolation -- but the caller matters just as much: a
+    bare `bool` gave `snapshot()` no way to tell a CONFIRMED death apart from
+    an INCONCLUSIVE check, so it had to treat both identically. Downstream,
+    `delegatedSessionLiveness()` mapped that `False` straight to `'stopped'`
+    with NO retry tolerance -- unlike the adjacent 'unknown' path this same
+    codebase already built `MAX_CONSECUTIVE_UNKNOWN` for, specifically so one
+    blip could never look like "really stopped". A single transient `pgrep`
+    spawn hiccup (not exotic on this host: op25, 8 recorders, whisper's GPU
+    transcription and stt-watch all share it) would then permanently close a
+    live, healthy session's DB row -- worse than the bug this function exists
+    to fix, because it is non-deterministic on a currently-live capture
+    rather than consistently wrong.
+
+    So this now returns THREE distinct answers, and every caller must keep
+    them distinct rather than collapsing back to a bool:
+    - `True`  -- pgrep CONFIRMS op25 is a member of `pgid`.
+    - `False` -- pgrep CONFIRMS it is NOT (exit 1, "no process matched" --
+      pgrep's own documented meaning for that code, not an inference).
+    - `None`  -- COULD NOT DETERMINE: a missing binary, this function's own
+      2s timeout, or any other exit code (pgrep reporting ITS OWN failure,
+      not an authoritative answer either way). This is genuinely NO
+      INFORMATION, not a lean toward either alive or dead -- snapshot()
+      below only ever reports `degraded: true` on a CONFIRMED `False`, never
+      on `None`, so an inconclusive check produces no claim at all rather
+      than a wrong one in either direction.
     """
     try:
         result = subprocess.run(
@@ -637,20 +682,19 @@ def _op25_alive(pgid: int) -> bool:
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         log(f"pgrep unavailable while checking op25 liveness for pgid={pgid}: {e}")
-        return False
+        return None
     if result.returncode == 0:
         return True
     if result.returncode == 1:
         return False  # pgrep's own documented "no process matched"
     # Any other exit code is pgrep reporting its OWN error (bad argument,
-    # internal failure) -- not an authoritative "no match" either, but the
-    # same fail-toward-honest direction applies: do not report a capture as
-    # healthy on the strength of a check that itself did not work.
+    # internal failure) -- not an authoritative "no match", and not
+    # authoritative "alive" either. Genuinely unknown.
     log(
         f"pgrep exited {result.returncode} while checking op25 liveness for "
         f"pgid={pgid}: {result.stderr.decode(errors='replace').strip()}"
     )
-    return False
+    return None
 
 
 def _wait_for_group_exit(pgid: int, timeout_sec: float) -> bool:
