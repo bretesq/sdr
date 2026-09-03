@@ -6,7 +6,7 @@ import { createRequire } from 'node:module'
 import { sdrRoot, whitelistPath } from './paths'
 import {
   listRecordings, getRecording, listTalkgroups, listCategories, codeStats,
-  followedTalkgroups, transcriptionHealth,
+  followedTalkgroups, transcriptionHealth, whitelistTgids, talkgroupEncryptionTallies,
 } from './queries'
 import { dbPath, closeDb } from './db'
 
@@ -465,6 +465,180 @@ describe('followed talkgroups', () => {
       expect(r).toHaveProperty('alpha')
       expect(r).toHaveProperty('desc')
       expect(r).toHaveProperty('cat')
+    }
+  })
+
+  it('carries an encryption verdict on every followed talkgroup', () => {
+    // The gap this closes: the strip for a CALL has labelled encryption since
+    // 6b0e5e0, but the talkgroup list said nothing, so the operator learnt
+    // that BRPD Dispatch is encrypted by arming it and hearing silence.
+    const rows = followedTalkgroups()
+    for (const r of rows) {
+      expect(['clear', 'partial', 'encrypted', 'unknown']).toContain(r.encryption.state)
+      expect(['observed', 'listed', 'none']).toContain(r.encryption.basis)
+    }
+  })
+
+  it('labels BRPD dispatch as partially encrypted from its own traffic', () => {
+    // 17165 17-BRPD DSP1: 47 ADP against 79 clear at time of writing. Both
+    // halves matter — 'clear' would be the bug, 'encrypted' would write off 79
+    // playable calls. Skipped rather than failed if the running capture's
+    // preset does not follow it: the whitelist is what this function reads.
+    const row = followedTalkgroups().find(r => r.tgid === 17165)
+    if (!row) return
+    expect(row.encryption.basis).toBe('observed')
+    expect(row.encryption.state).toBe('partial')
+    expect(row.encryption.encCalls).toBeGreaterThan(0)
+    expect(row.encryption.knownCalls).toBeGreaterThan(row.encryption.encCalls)
+  })
+
+  it('does not dilute the ratio with the 77% of calls that carry no ESS', () => {
+    // The measured trap: counted into the denominator, BRPD DSP1's 0.373 reads
+    // 0.076 and prints as a nearly-clear channel.
+    const row = followedTalkgroups().find(r => r.tgid === 17165)
+    if (!row) return
+    const totalCalls = listRecordings({ tgid: 17165, limit: 1 }).total
+    expect(row.encryption.knownCalls).toBeLessThan(totalCalls)
+  })
+})
+
+describe('whitelistTgids', () => {
+  it('is the one parser for the whitelist file', () => {
+    // Three call sites used to read this file three different ways. A row
+    // marked in-whitelist by one and out by another is exactly the lie the
+    // roster search exists to prevent.
+    const ids = whitelistTgids()
+    expect(ids.length).toBeGreaterThan(0)
+    for (const id of ids) {
+      expect(Number.isInteger(id)).toBe(true)
+      expect(id).toBeGreaterThan(0)
+    }
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  it('agrees with followedTalkgroups, which is built from it', () => {
+    expect(followedTalkgroups().map(r => r.tgid).sort((a, b) => a - b))
+      .toEqual([...whitelistTgids()].sort((a, b) => a - b))
+  })
+})
+
+describe('talkgroupEncryptionTallies', () => {
+  it('rolls the whole corpus up in ONE query, not one per talkgroup', () => {
+    // Not a style preference: /api/listen/followed polls every 20s over 222
+    // whitelisted talkgroups, and roster search can match thousands of 4,163.
+    const tallies = talkgroupEncryptionTallies()
+    expect(tallies.size).toBeGreaterThan(0)
+    // Every talkgroup that has ever been recorded, and no more.
+    expect(tallies.size).toBeLessThan(listTalkgroups({ area: 'all' }).total)
+  })
+
+  it('buckets each call the way callEncryption.ts classifies it', () => {
+    const tallies = talkgroupEncryptionTallies()
+    let adp = 0
+    let unhandled = 0
+    for (const t of tallies.values()) {
+      adp += t.adp
+      unhandled += t.unhandled
+      expect(t.adp + t.clear + t.unhandled + t.unknown).toBeGreaterThan(0)
+    }
+    // Measured: 0xAA is in real use here, and the one-off algids are a handful
+    // of bit errors rather than a second algorithm.
+    expect(adp).toBeGreaterThan(100)
+    expect(unhandled).toBeLessThan(20)
+  })
+
+  it('never badges a talkgroup off a corrupted ESS alone', () => {
+    // The claim excluding `unhandled` from the ratio rests on: every talkgroup
+    // carrying a bit-error algid also carries real ADP, so excluding them
+    // relabels nothing today and only stops the next flipped bit from
+    // inventing a warning. Asserted rather than assumed.
+    for (const t of talkgroupEncryptionTallies().values()) {
+      if (t.unhandled > 0) expect(t.adp).toBeGreaterThan(0)
+    }
+  })
+
+  it('leaves never-recorded talkgroups absent rather than present with zeros', () => {
+    // A miss must mean 'unknown', not 'clear' — the distinction the whole
+    // rollup exists to preserve.
+    const tallies = talkgroupEncryptionTallies()
+    const all = listTalkgroups({ area: 'all', limit: 4163 }).rows
+    const unheard = all.find(t => !tallies.has(t.tgid))
+    expect(unheard).toBeDefined()
+    expect(unheard?.encryption.basis).not.toBe('observed')
+  })
+})
+
+describe('roster search', () => {
+  it('finds a talkgroup by id across the whole roster', () => {
+    // 24-PPD DISP is outside the BR area keywords, so the default view cannot
+    // reach it — the gap this feature closes.
+    const { rows } = listTalkgroups({ area: 'all', search: '19014' })
+    expect(rows.map(r => r.tgid)).toContain(19014)
+  })
+
+  it('finds talkgroups by name', () => {
+    const { rows } = listTalkgroups({ area: 'all', search: 'brpd dsp' })
+    expect(rows.length).toBeGreaterThan(1)
+    for (const r of rows) {
+      expect(`${r.tgid} ${r.alpha} ${r.desc} ${r.cat} ${r.tag}`.toLowerCase())
+        .toContain('brpd dsp')
+    }
+  })
+
+  it('marks every result in or out of the running capture', () => {
+    // A result outside the whitelist can never produce a clip. Arming it would
+    // be selecting into permanent silence with no explanation anywhere.
+    const whitelisted = new Set(whitelistTgids())
+    const { rows } = listTalkgroups({ area: 'all', search: 'disp' })
+    expect(rows.length).toBeGreaterThan(0)
+    for (const r of rows) {
+      expect(r.inWhitelist).toBe(whitelisted.has(r.tgid))
+    }
+    // Both cases actually occur in this result set, so the flag is load-bearing.
+    expect(rows.some(r => r.inWhitelist)).toBe(true)
+    expect(rows.some(r => !r.inWhitelist)).toBe(true)
+  })
+
+  it('caps returned rows but still reports how many matched', () => {
+    // "Showing 5 of 900" versus implying the roster holds five.
+    const all = listTalkgroups({ area: 'all', search: 'disp' })
+    const capped = listTalkgroups({ area: 'all', search: 'disp', limit: 5 })
+    expect(all.matched).toBeGreaterThan(5)
+    expect(capped.rows).toHaveLength(5)
+    expect(capped.matched).toBe(all.matched)
+  })
+
+  it('labels the most-encrypted talkgroup on the system as encrypted', () => {
+    // 19014 24-PPD DISP: 62 ADP calls against 1 clear. The roster lists it
+    // CLEAR, which is why observation has to win.
+    const row = listTalkgroups({ area: 'all', search: '19014' }).rows
+      .find(r => r.tgid === 19014)
+    expect(row).toBeDefined()
+    expect(row?.enc).toBe('clear')                     // the roster's claim
+    expect(row?.encryption.state).toBe('encrypted')    // what was on the air
+    expect(row?.encryption.basis).toBe('observed')
+  })
+
+  it('falls back to the roster label, marked as hearsay, when nothing was heard', () => {
+    // 4,044 of 4,163 talkgroups have never been recorded. A search that
+    // returned no encryption hint for a listed-encrypted tac channel would be
+    // the same silent failure this feature exists to fix.
+    const listedEnc = listTalkgroups({ area: 'all', enc: 'full', limit: 500 }).rows
+      .filter(r => r.encryption.basis === 'listed')
+    expect(listedEnc.length).toBeGreaterThan(0)
+    for (const r of listedEnc) {
+      expect(r.encryption.state).toBe('encrypted')
+      expect(r.encryption.encRatio).toBeNull()
+    }
+  })
+
+  it('does not let a listed-clear label stand in for evidence', () => {
+    const unheardClear = listTalkgroups({ area: 'all', enc: 'clear', limit: 500 }).rows
+      .filter(r => r.encryption.basis !== 'observed')
+    expect(unheardClear.length).toBeGreaterThan(0)
+    for (const r of unheardClear) {
+      expect(r.encryption.state).toBe('unknown')
+      expect(r.encryption.basis).toBe('none')
     }
   })
 })

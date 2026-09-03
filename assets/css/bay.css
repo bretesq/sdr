@@ -494,7 +494,12 @@ body {
 
 .standby__row {
   display: grid;
-  grid-template-columns: 14px 5.5ch minmax(0, 1fr) auto;
+  /* tick · tgid · alpha · encryption mark · recent-call count. The mark gets
+     its own track rather than riding inside the alpha cell so that a long
+     alpha ellipsises against it instead of pushing it off the row — an
+     encryption warning that the name can shove out of sight is worse than no
+     warning, because it is present exactly when the row is interesting. */
+  grid-template-columns: 14px 5.5ch minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 8px;
   width: 100%;
@@ -534,6 +539,56 @@ body {
   white-space: nowrap;
 }
 .standby__n { color: #8d947b; font-size: 11px; }
+
+/* --- encryption, in the same pencil the strips use --------------------------
+   A talkgroup's encryption must read the way a CALL's does — .mark/.mark--locked
+   from the strip vocabulary above, not a second badge idiom — so the operator
+   learns one language for one concept.
+
+   The colours are re-tuned rather than re-named, for the reason .mark--stalled
+   already carries in its own comment: the strip marks were tuned against light
+   strip stock, and this list is printed on the dark board. --pencil-blue at
+   #24506f is very nearly invisible here. Same class, same meaning, adjusted for
+   the stock it is printed on. */
+.standby .mark--locked { color: #74a3c7; }
+/* Hearsay — the scraped roster's claim about a talkgroup nothing has ever been
+   recorded on. Deliberately the same quiet grey as the call count rather than
+   the blue of measured evidence: it is a lead, not a finding. */
+.standby .mark--note   { color: #8d947b; }
+
+/* --- the roster beyond the capture ------------------------------------------
+   Search reaches all 4,163 talkgroups; the running capture records 222 of them.
+   A row from the other 3,941 CANNOT produce a clip, so it is printed as
+   reference rather than as a control: no tick, no hover, no cursor, not a
+   <button> at all. Marking it and leaving it clickable would let the operator
+   arm permanent silence, which is the failure this section exists to prevent. */
+.standby__group {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 12px 4px;
+  border-top: 1px solid rgba(84, 90, 69, 0.45);
+  font-family: var(--f-label);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #8d947b;
+}
+
+.standby__row--offair {
+  color: #949b83;
+  cursor: default;
+}
+.standby__row--offair:hover { background: transparent; }
+
+.standby__note {
+  padding: 2px 12px 9px;
+  font-family: var(--f-body);
+  font-size: 12px;
+  line-height: 1.35;
+  color: #757c66;
+}
 
 /* ===========================================================================
    Search — a printed field on the board

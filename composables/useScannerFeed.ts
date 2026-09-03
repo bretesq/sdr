@@ -4,6 +4,7 @@ import {
   type FeedCall, type QueueEntry, type ScannerQueue,
 } from '~/utils/scannerQueue'
 import type { ReceiverLayout } from '~/utils/receiverLayout'
+import type { TalkgroupEncryptionVerdict } from '~/utils/talkgroupEncryption'
 
 interface FollowedTalkgroup {
   tgid: number
@@ -11,6 +12,13 @@ interface FollowedTalkgroup {
   desc: string | null
   cat: string | null
   recentCalls: number
+  /**
+   * What this talkgroup's recorded calls say about its encryption, derived
+   * server-side (server/utils/queries.ts's followedTalkgroups, via
+   * utils/talkgroupEncryption.ts). A closed verdict plus its counts — never
+   * call rows, never a key.
+   */
+  encryption: TalkgroupEncryptionVerdict
 }
 
 interface FollowedResponse {

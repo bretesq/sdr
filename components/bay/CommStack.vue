@@ -207,12 +207,21 @@
         v-model="query"
         class="field"
         type="search"
-        placeholder="filter talkgroups"
-        aria-label="Filter talkgroups"
+        placeholder="search talkgroups — id or name"
+        aria-label="Filter the followed talkgroups and search the full roster"
       >
     </div>
 
     <div class="standby">
+      <!--
+        THE CAPTURE'S OWN TALKGROUPS — the only rows that are controls.
+
+        Armable, because op25 is recording them. The encryption mark rides in
+        the strip vocabulary (.mark--locked) rather than a badge of its own:
+        see utils/talkgroupEncryption.ts's talkgroupMark() for why a talkgroup
+        and a call strip must say "encrypted" the same way, and bay.css's
+        `.standby .mark--locked` for why the colour is re-tuned here.
+      -->
       <button
         v-for="t in shown"
         :key="t.tgid"
@@ -225,19 +234,62 @@
         <span class="standby__tick" />
         <span>{{ t.tgid }}</span>
         <span class="standby__name">{{ t.alpha ?? 'unlisted' }}</span>
+        <span v-if="t.mark" class="mark" :class="t.mark.cls" :title="t.mark.title">{{ t.mark.label }}</span>
+        <span v-else />
         <span class="standby__n">{{ t.recentCalls || '' }}</span>
       </button>
-      <p v-if="!shown.length" class="idle">
+
+      <p v-if="!shown.length && !rosterRows.length" class="idle">
         no match
-        <span class="idle__sub">{{ followed.length ? 'Nothing in the session whitelist matches that.' : 'No session has written a whitelist yet.' }}</span>
+        <span class="idle__sub">{{ noMatchNote }}</span>
       </p>
+
+      <!--
+        THE REST OF THE ROSTER — reference, never a control.
+
+        4,163 talkgroups exist; the running capture records 222. A row from the
+        other 3,941 can never produce a clip, so it is rendered as a <div>
+        with no tick and no handler: arming permanent silence is not something
+        the operator can do here by mistake, rather than something they are
+        merely warned about. The note below says what would actually be needed.
+      -->
+      <template v-if="rosterRows.length">
+        <p v-if="!shown.length" class="standby__note">
+          Nothing in the running capture matches that.
+        </p>
+        <div class="standby__group">
+          <span>Roster · not in this capture</span>
+          <span>{{ rosterCountLabel }}</span>
+        </div>
+        <div
+          v-for="t in rosterRows"
+          :key="`roster-${t.tgid}`"
+          class="standby__row standby__row--offair"
+        >
+          <span />
+          <span>{{ t.tgid }}</span>
+          <span class="standby__name">{{ t.alpha || 'unlisted' }}</span>
+          <span v-if="t.mark" class="mark" :class="t.mark.cls" :title="t.mark.title">{{ t.mark.label }}</span>
+          <span v-else />
+          <span class="mark mark--note">not captured</span>
+        </div>
+        <p class="standby__note">
+          op25 emits audio only for the talkgroups in the running capture’s whitelist, so
+          these cannot be armed — a tick here would arm silence. Recording one takes a
+          capture started on a preset that includes it, not a checkbox.
+        </p>
+      </template>
+
+      <p v-if="rosterError" class="standby__note capture__warn">{{ rosterError }}</p>
     </div>
   </aside>
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { receiverStatus, captureExpiry, canStartCapture, canStopCapture } from '~/utils/captureStatus'
+import { talkgroupMark } from '~/utils/talkgroupEncryption'
+import type { TalkgroupEncryptionVerdict, TalkgroupMark } from '~/utils/talkgroupEncryption'
 import type { ReceiverStatus } from '~/utils/captureStatus'
 import type { ReceiverLayout } from '~/utils/receiverLayout'
 import {
@@ -250,14 +302,63 @@ import type { CapturePreset } from '~/utils/listenControl'
 /**
  * The comm stack: active above, standby below, exactly as a radio stack reads.
  *
- * The standby list is the session whitelist rather than the full 4,163-row
- * reference, because op25 only emits audio for talkgroups the running session
- * follows — a row offered here that cannot produce sound would be a lie the
- * operator could not see through.
+ * The standby list — the ARMABLE list — is still the session whitelist rather
+ * than the full 4,163-row reference, because op25 only emits audio for
+ * talkgroups the running session follows, and a control offered here that
+ * cannot produce sound would be a lie the operator could not see through.
+ *
+ * WHAT THE SEARCH FIELD NOW REACHES, AND WHY THAT IS NOT A CONTRADICTION
+ * ----------------------------------------------------------------------
+ * The field used to filter the whitelist and nothing else, so a talkgroup that
+ * was not in the running capture simply did not exist as far as this console
+ * was concerned — an operator asking "is 19014 a thing?" got "no match", which
+ * is a different and wronger answer than "yes, and this capture isn't recording
+ * it". The field now also queries the roster (`/api/talkgroups/list?area=all`),
+ * and those hits are printed BELOW the armable list, as reference rows with no
+ * tick and no click handler. Two sections, two kinds of thing: controls above,
+ * facts below. The lie the old behaviour avoided is avoided structurally rather
+ * than by omission.
  */
 
+/** One row of the whitelist, as `/api/listen/followed` returns it. */
+interface FollowedRow {
+  tgid: number
+  alpha: string | null
+  recentCalls: number
+  encryption: TalkgroupEncryptionVerdict
+}
+
+/** A whitelist row with its pencil mark resolved once, for the template. */
+interface StandbyRow extends FollowedRow {
+  mark: TalkgroupMark | null
+}
+
+/** A roster hit, as `/api/talkgroups/list` returns it. */
+interface RosterTalkgroup {
+  tgid: number
+  alpha: string
+  desc: string
+  cat: string
+  tag: string
+  encryption: TalkgroupEncryptionVerdict
+  inWhitelist: boolean
+}
+
+interface RosterRow extends RosterTalkgroup {
+  mark: TalkgroupMark | null
+}
+
+interface RosterResponse {
+  success: boolean
+  data: RosterTalkgroup[]
+  /** Whole-roster count (4,163), independent of the filters. */
+  total: number
+  /** How many rows the filters hit, before `limit` capped the response. */
+  matched: number
+}
+
 const props = defineProps<{
-  followed: { tgid: number, alpha: string | null, recentCalls: number }[]
+  followed: FollowedRow[]
   selected: number[]
   armed: boolean
   radioBusy: boolean
@@ -306,12 +407,175 @@ const query = ref('')
 
 const activeCount = computed(() => props.followed.filter(t => t.recentCalls > 0).length)
 
-const shown = computed(() => {
+/* ---------------------------------------------------------------------------
+ * ROSTER SEARCH — the 4,163 talkgroups the capture is not recording
+ *
+ * Deliberately a second, debounced request rather than a client-side filter
+ * over a preloaded roster: 4,163 rows each carrying a category string is a
+ * payload this panel has no other use for, and the server already owns the
+ * search (server/utils/queries.ts's listTalkgroups, which matches id, alpha,
+ * description, category and tag — more fields than the local filter below can
+ * see) plus the whitelist comparison that decides whether a hit is armable.
+ * Deriving `inWhitelist` here would mean shipping the whitelist to the browser
+ * and re-implementing the file parser's agreement with the server's.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Below this, the roster is not queried at all. One character matches
+ * thousands of ids and answers nothing; it also means the common case — an
+ * operator scrubbing the whitelist down to a couple of rows — makes no
+ * requests at all.
+ */
+const ROSTER_MIN_CHARS = 2
+
+/**
+ * Rows asked for per search. The panel is a few dozen rows tall and `matched`
+ * reports the true hit count regardless, so this caps the payload without
+ * hiding the scale of the result — "12 shown · 384 matched" is honest where a
+ * silently truncated list of twelve is not.
+ */
+const ROSTER_LIMIT = 40
+
+/** Long enough that typing a talkgroup name is one request, not eight. */
+const ROSTER_DEBOUNCE_MS = 250
+
+const roster = ref<RosterTalkgroup[]>([])
+const rosterMatched = ref(0)
+const rosterPending = ref(false)
+const rosterError = ref('')
+let rosterTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * Monotonic request id. Two searches in flight can land out of order — a
+ * two-character query is slower than the five-character one typed after it —
+ * and the older response would then overwrite the newer, leaving results that
+ * do not match what is in the box. Only the newest sequence may write.
+ */
+let rosterSeq = 0
+
+async function searchRoster(term: string): Promise<void> {
+  const seq = ++rosterSeq
+  try {
+    const res = await $fetch<RosterResponse>('/api/talkgroups/list', {
+      query: { area: 'all', search: term, limit: ROSTER_LIMIT },
+    })
+    if (seq !== rosterSeq) return
+    roster.value = res.data
+    rosterMatched.value = res.matched
+    rosterError.value = ''
+  } catch (e) {
+    if (seq !== rosterSeq) return
+    roster.value = []
+    rosterMatched.value = 0
+    // Surfaced rather than swallowed: an empty roster section and a failed
+    // roster search look identical, and one of them means "it does not exist".
+    rosterError.value = apiError(e, 'Roster search failed')
+  } finally {
+    if (seq === rosterSeq) rosterPending.value = false
+  }
+}
+
+watch(query, (q) => {
+  const term = q.trim()
+  if (rosterTimer) {
+    clearTimeout(rosterTimer)
+    rosterTimer = null
+  }
+  if (term.length < ROSTER_MIN_CHARS) {
+    // Bump the sequence so a request already in flight cannot land after the
+    // operator has cleared the field and repopulate a section they closed.
+    rosterSeq++
+    roster.value = []
+    rosterMatched.value = 0
+    rosterPending.value = false
+    rosterError.value = ''
+    return
+  }
+  rosterPending.value = true
+  rosterTimer = setTimeout(() => { void searchRoster(term) }, ROSTER_DEBOUNCE_MS)
+})
+
+onUnmounted(() => {
+  if (rosterTimer) clearTimeout(rosterTimer)
+  // Blocks a landing response from writing to refs after teardown.
+  rosterSeq++
+})
+
+/**
+ * The armable list: the running capture's whitelist, filtered.
+ *
+ * Filtered locally on id and alpha, which is what it always did and what keeps
+ * the common case instant and offline. The roster response then contributes
+ * any WHITELISTED hit the local filter could not see — it matches description,
+ * category and tag too — appended after the locally-matched rows rather than
+ * merged into their busiest-first order, so the rows that were already there
+ * do not shuffle under the operator as a request lands. Capped at
+ * ROSTER_LIMIT, so a whitelisted row past the fortieth roster hit is reachable
+ * by a narrower query rather than by scrolling; the local filter covers the
+ * two fields anyone types.
+ */
+const shown = computed<StandbyRow[]>(() => {
   const q = query.value.trim().toLowerCase()
-  if (!q) return props.followed
-  return props.followed.filter(
+  const decorate = (t: FollowedRow): StandbyRow => ({ ...t, mark: talkgroupMark(t.encryption) })
+  if (!q) return props.followed.map(decorate)
+
+  const local = props.followed.filter(
     t => String(t.tgid).includes(q) || (t.alpha ?? '').toLowerCase().includes(q),
   )
+  const seen = new Set(local.map(t => t.tgid))
+  const byTgid = new Map(props.followed.map(t => [t.tgid, t]))
+  const extra = roster.value
+    .filter(r => r.inWhitelist && !seen.has(r.tgid))
+    .map(r => byTgid.get(r.tgid))
+    .filter((t): t is FollowedRow => t !== undefined)
+
+  return [...local, ...extra].map(decorate)
+})
+
+/**
+ * The reference list: roster hits the running capture is NOT recording.
+ *
+ * `inWhitelist` comes from the server, which reads the same whitelist file
+ * followedTalkgroups() does through the same parser — so a row cannot be
+ * armable in one list and uncaptured in the other. Whitelisted hits are
+ * excluded here because they belong above, as controls.
+ */
+const rosterRows = computed<RosterRow[]>(() =>
+  roster.value
+    .filter(r => !r.inWhitelist)
+    .map(r => ({ ...r, mark: talkgroupMark(r.encryption) })),
+)
+
+/**
+ * "12 shown · 384 matched", or just the count when nothing was truncated.
+ * The distinction matters: a capped list that says only "12" invites the
+ * reading that the roster holds twelve of these.
+ */
+const rosterCountLabel = computed(() => {
+  if (rosterPending.value) return 'searching…'
+  const shownN = rosterRows.value.length
+  if (rosterMatched.value > roster.value.length) return `${shownN} shown · ${rosterMatched.value} matched`
+  return `${shownN}`
+})
+
+/**
+ * The empty state, which has four genuinely different causes and used to have
+ * one sentence. "No match" for a talkgroup that exists but is not being
+ * recorded was the specific wrong answer this feature exists to replace, so it
+ * cannot come back here either.
+ */
+const noMatchNote = computed(() => {
+  if (!props.followed.length) return 'No session has written a whitelist yet.'
+  // An empty query cannot reach any branch below: with no term `shown` IS the
+  // whole whitelist, so an empty `shown` means an empty whitelist, which the
+  // line above already answered. A "nothing matches that" string here would be
+  // claiming a filter found nothing when no filter was applied.
+  const term = query.value.trim()
+  if (term.length < ROSTER_MIN_CHARS) {
+    return `Nothing in the running capture matches. Type ${ROSTER_MIN_CHARS} characters to search the full roster.`
+  }
+  if (rosterPending.value) return 'Searching the full roster…'
+  return 'Nothing in the running capture matches, and nothing in the 4,163-talkgroup roster either.'
 })
 
 /**

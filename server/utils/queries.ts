@@ -2,6 +2,11 @@ import { readFileSync } from 'node:fs'
 import { getDb } from './db'
 import type { CallRow, TalkgroupRow } from './db'
 import { whitelistPath } from './paths'
+import {
+  talkgroupEncryption, EMPTY_TALKGROUP_TALLY,
+  type TalkgroupEncryptionTally, type TalkgroupEncryptionVerdict,
+} from '../../utils/talkgroupEncryption'
+import { ADP_ALGID, CLEAR_ALGID } from '../../utils/callEncryption'
 
 /**
  * All database reads live here, so the API routes stay thin and every query is
@@ -359,9 +364,29 @@ export interface Talkgroup {
   desc: string
   cat: string
   tag: string
+  /**
+   * The scraped RadioReference label, verbatim. Hearsay: measured against the
+   * air it is wrong in both directions (24-PPD DISP is listed clear and runs
+   * 62 ADP calls out of 63). Kept because TalkgroupBrowser filters and colours
+   * on it and because it is the only thing we have for the 4,044 talkgroups
+   * nothing has ever been recorded on — never as the answer on its own. See
+   * `encryption` below and utils/talkgroupEncryption.ts.
+   */
   enc: 'clear' | 'partial' | 'full'
   mode: string
-  inWhitelist?: boolean
+  /**
+   * What this talkgroup's own recorded calls say about its encryption, with
+   * the roster label as a clearly-marked fallback. Derived server-side into a
+   * closed shape — the browser gets counts and a verdict, never call rows and
+   * never a key.
+   */
+  encryption: TalkgroupEncryptionVerdict
+  /**
+   * Whether the RUNNING capture's whitelist covers this talkgroup. False means
+   * op25 is not recording it, so arming it in the bay could never produce a
+   * clip — the reason search results carry this at all. Always populated.
+   */
+  inWhitelist: boolean
 }
 
 /**
@@ -376,14 +401,105 @@ const BR_AREA_KEYWORDS = [
   'Wildlife and Fisheries',
 ]
 
+/**
+ * The talkgroup ids the RUNNING capture's whitelist covers.
+ *
+ * ONE parser, deliberately. This file, server/api/talkgroups/whitelist.get.ts
+ * and the roster search all need the same answer, and until this existed they
+ * each read the file their own way — `split(/[\s,]/)[0]` with `isFinite` in the
+ * route, bare `parseInt` with `isInteger && n > 0` here. Divergent parsing on
+ * this path is not cosmetic: a row marked in-whitelist by one endpoint and
+ * out-of-whitelist by another is precisely the lie the search feature exists to
+ * prevent, and it would appear only on a malformed line nobody tests.
+ *
+ * The permissive split wins because op25's whitelist format allows a trailing
+ * comment or a comma; `> 0` wins because tgid 0 is not a talkgroup.
+ *
+ * The file is NOT proof anything is running — it persists unchanged after a
+ * session dies. Callers pair it with isRadioBusy(); see the routes.
+ */
+export function whitelistTgids(): number[] {
+  let text: string
+  try {
+    text = readFileSync(whitelistPath(), 'utf-8')
+  } catch {
+    return []          // no session has ever run on this checkout
+  }
+  const ids = text
+    .split('\n')
+    .map(l => Number.parseInt(l.trim().split(/[\s,]/)[0], 10))
+    .filter(n => Number.isInteger(n) && n > 0)
+  // Deduplicated: the file is generated, but a hand-edited one with a repeated
+  // id would otherwise inflate every count taken off this list.
+  return [...new Set(ids)]
+}
+
+interface EncTallyRow {
+  tgid: number
+  adp: number
+  clear: number
+  unhandled: number
+  unknown: number
+}
+
+/**
+ * Every talkgroup's calls bucketed by what their ESS said, in ONE aggregate.
+ *
+ * A per-row query was the obvious shape and is the one thing this must not be:
+ * the bay polls /api/listen/followed every 20 seconds with 222 whitelisted
+ * talkgroups, and roster search can match thousands of the 4,163. This is a
+ * single grouped scan of `calls` — 11,886 rows in, 119 rows out, measured at
+ * 3.2ms — so the cost is the same whether the caller wants one talkgroup's
+ * verdict or all of them.
+ *
+ * Talkgroups with no calls are simply absent from the map rather than present
+ * with zeros; `EMPTY_TALKGROUP_TALLY` is what a miss means, and
+ * talkgroupEncryption() turns it into 'unknown' rather than 'clear'.
+ *
+ * The bucket CASEs mirror utils/talkgroupEncryption.ts's tallyBucket() — that
+ * function is what the tests classify against, and the two must not drift.
+ */
+export function talkgroupEncryptionTallies(): Map<number, TalkgroupEncryptionTally> {
+  const db = getDb()
+  const rows = db.prepare(
+    `SELECT tgid,
+            SUM(CASE WHEN algid = ? THEN 1 ELSE 0 END) AS adp,
+            SUM(CASE WHEN algid = ? THEN 1 ELSE 0 END) AS clear,
+            SUM(CASE WHEN algid IS NOT NULL
+                      AND algid <> ? AND algid <> ? THEN 1 ELSE 0 END) AS unhandled,
+            SUM(CASE WHEN algid IS NULL THEN 1 ELSE 0 END) AS unknown
+       FROM calls
+      WHERE tgid IS NOT NULL
+      GROUP BY tgid`,
+  ).all(ADP_ALGID, CLEAR_ALGID, ADP_ALGID, CLEAR_ALGID) as unknown as EncTallyRow[]
+
+  return new Map(rows.map(r => [r.tgid, {
+    adp: Number(r.adp),
+    clear: Number(r.clear),
+    unhandled: Number(r.unhandled),
+    unknown: Number(r.unknown),
+  }]))
+}
+
 export interface TalkgroupQuery {
   area?: 'br' | 'all'
   category?: string
   enc?: string
   search?: string
+  /**
+   * Cap on returned rows, for the bay's roster search — a two-character query
+   * can match thousands of the 4,163 and the standby panel can show a few
+   * dozen. `matched` still reports the full count so the UI can say so.
+   * Omitted by TalkgroupBrowser, which wants every row it asked for.
+   */
+  limit?: number
 }
 
-export function listTalkgroups(q: TalkgroupQuery = {}): { rows: Talkgroup[], total: number } {
+export function listTalkgroups(q: TalkgroupQuery = {}): {
+  rows: Talkgroup[]
+  total: number
+  matched: number
+} {
   const db = getDb()
   const where: string[] = []
   const params: string[] = []
@@ -415,17 +531,39 @@ export function listTalkgroups(q: TalkgroupQuery = {}): { rows: Talkgroup[], tot
 
   const total = db.prepare('SELECT COUNT(*) AS n FROM talkgroups').get() as { n: number }
 
+  // Both taken once for the whole result set rather than per row: the rollup
+  // is one aggregate (see talkgroupEncryptionTallies) and the whitelist is one
+  // small file read. Doing either inside the map below would turn a search
+  // that matches 900 rows into 900 queries or 900 file reads.
+  const tallies = talkgroupEncryptionTallies()
+  const whitelisted = new Set(whitelistTgids())
+
+  // Limited in JS rather than with SQL LIMIT so `matched` needs no second
+  // COUNT(*) over a duplicated WHERE clause — the unlimited ceiling here is
+  // 4,163 rows, which TalkgroupBrowser already asks for on every load.
+  const matched = rows.length
+  const page = q.limit !== undefined ? rows.slice(0, q.limit) : rows
+
   return {
-    rows: rows.map(r => ({
-      tgid: r.tgid,
-      alpha: r.alpha ?? '',
-      desc: r.description ?? '',
-      cat: r.cat ?? '',
-      tag: r.tag ?? '',
-      enc: (r.enc ?? 'clear') as 'clear' | 'partial' | 'full',
-      mode: r.mode ?? '',
-    })),
+    rows: page.map((r) => {
+      const enc = (r.enc ?? 'clear') as 'clear' | 'partial' | 'full'
+      return {
+        tgid: r.tgid,
+        alpha: r.alpha ?? '',
+        desc: r.description ?? '',
+        cat: r.cat ?? '',
+        tag: r.tag ?? '',
+        enc,
+        mode: r.mode ?? '',
+        encryption: talkgroupEncryption(
+          tallies.get(r.tgid) ?? EMPTY_TALKGROUP_TALLY,
+          enc,
+        ),
+        inWhitelist: whitelisted.has(r.tgid),
+      }
+    }),
     total: total.n,
+    matched,
   }
 }
 
@@ -642,6 +780,14 @@ export interface FollowedTalkgroup {
   cat: string | null
   /** Calls in the trailing window. Display ordering only. */
   recentCalls: number
+  /**
+   * What this talkgroup's recorded calls say about its encryption — the whole
+   * corpus, NOT the `sinceSec` window, because "is this channel encrypted" is
+   * a property of the channel rather than of the last six hours, and a window
+   * narrow enough to be current is too narrow to be evidence. Derived
+   * server-side into a closed shape; see utils/talkgroupEncryption.ts.
+   */
+  encryption: TalkgroupEncryptionVerdict
 }
 
 interface TalkgroupMetaRow {
@@ -649,6 +795,7 @@ interface TalkgroupMetaRow {
   alpha: string | null
   description: string | null
   cat: string | null
+  enc: 'clear' | 'partial' | 'full' | null
 }
 
 interface TgidCountRow {
@@ -678,25 +825,22 @@ interface TgidCountRow {
  * ones sit below a wall of silent rows.
  */
 export function followedTalkgroups(sinceSec = 6 * 3600): FollowedTalkgroup[] {
-  let ids: number[]
-  try {
-    ids = readFileSync(whitelistPath(), 'utf-8')
-      .split('\n')
-      .map(l => Number.parseInt(l.trim(), 10))
-      .filter(n => Number.isInteger(n) && n > 0)
-  } catch {
-    return []          // no session has ever run on this checkout
-  }
-  if (!ids.length) return []
+  const ids = whitelistTgids()
+  if (!ids.length) return []          // no session has ever run on this checkout
 
   const db = getDb()
 
   const metaParams: (string | number)[] = []
   const metaClause = tgidInClause('tgid', ids, metaParams)
   const meta = db.prepare(
-    `SELECT tgid, alpha, description, cat FROM talkgroups WHERE ${metaClause}`,
+    `SELECT tgid, alpha, description, cat, enc FROM talkgroups WHERE ${metaClause}`,
   ).all(...metaParams) as unknown as TalkgroupMetaRow[]
   const byTgid = new Map(meta.map(m => [m.tgid, m]))
+
+  // One aggregate for all 222 whitelisted talkgroups, not one per row: this
+  // runs on a 20-second poll, so a per-row query would be 222 statements every
+  // 20s for a fact that changes on the timescale of a shift. 3.2ms measured.
+  const tallies = talkgroupEncryptionTallies()
 
   // cutoff must be pushed onto countParams BEFORE tgidInClause builds its
   // clause below — the builder appends to the array it is given in clause
@@ -719,6 +863,13 @@ export function followedTalkgroups(sinceSec = 6 * 3600): FollowedTalkgroup[] {
         desc: m?.description ?? null,
         cat: m?.cat ?? null,
         recentCalls: countByTgid.get(tgid) ?? 0,
+        // `m?.enc ?? null` rather than a 'clear' default: a whitelisted id
+        // with no roster row at all (the file can carry ids this DB has never
+        // heard of) must not inherit a clear claim from a missing record.
+        encryption: talkgroupEncryption(
+          tallies.get(tgid) ?? EMPTY_TALKGROUP_TALLY,
+          m?.enc ?? null,
+        ),
       }
     })
     // Busiest first, then by id so the order is stable between calls.
