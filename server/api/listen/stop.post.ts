@@ -23,19 +23,21 @@ export default defineEventHandler(async (event) => {
       // mean an ORDINARY host session whose bash already died (op25's rx.py
       // survives behind a dead pty). It should NOT mean "a still-alive
       // delegated session, tracking merely lost to a blip": that specific
-      // case is exactly what MAX_CONSECUTIVE_UNKNOWN in session.ts exists to
-      // prevent — get() now tolerates a bounded run of 'unknown' answers
-      // before ever closing a delegated row. CORRECTED FRAMING (final-review.md
-      // M3): that tolerance is COUNT-based (3 consecutive 'unknown' polls),
-      // not time-based — nothing resets it on elapsed wall-clock time. With
-      // ListenControl.vue polling every 5s, three unknowns in a row IS
-      // roughly 15s of SUSTAINED unreachability for a session someone is
-      // actively watching — but for an unattended session with nobody
-      // polling, those same three consecutive answers could span far longer
-      // than 15s. The count still only ever moves toward closing on
-      // consecutive bad answers, never on one blip, which is the actual
-      // safety property this fence relies on — just don't read "~15s" as a
-      // real-time guarantee.
+      // case is exactly what UNKNOWN_TOLERANCE_MS in session.ts exists to
+      // prevent — get() tolerates a sustained run of 'unknown' answers
+      // before ever closing a delegated row. CURRENT MODEL (corrected from
+      // an earlier COUNT-based version — final-review.md M3 flagged that
+      // version's count as silently poll-rate dependent, and it was later
+      // replaced outright, not just re-documented): the tolerance is now
+      // WALL-CLOCK based — a delegated row only closes once 'unknown' has
+      // been the answer continuously for UNKNOWN_TOLERANCE_MS (60s),
+      // measured from the first 'unknown' in the streak, regardless of how
+      // many times or how rarely anything calls get() in between. A single
+      // 'alive' or 'stopped' answer resets that streak entirely. This is
+      // what lets a periodic poll (composables/useScannerFeed.ts, every
+      // 20s) coexist safely with this tolerance: poll rate no longer
+      // changes how long a blip is tolerated, which a count-based version
+      // could not say.
       //
       // This is deliberately the untargeted, pid-less stopListening(0), not
       // stopDelegatedCapture() — task-3-review.md's fix-round-2 finding was

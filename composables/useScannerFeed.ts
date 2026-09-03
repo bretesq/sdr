@@ -191,10 +191,17 @@ export function useScannerFeed() {
   // reassigned anywhere else, so this can't become the same orphaned-timer
   // bug `arm`'s armInFlight guard exists to prevent (a double EventSource
   // that's never closed, doubling the poll rate for the life of the page).
-  // Vue only invokes a given component instance's onMounted once, and this
-  // composable is constructed fresh per component instance (there is
-  // currently exactly one call site, pages/index.vue), so there is no path
-  // that creates a second one of these for the same feed.
+  // The guarantee is structural, not "only one caller happens to exist
+  // today": `followedPollTimer` is a variable local to THIS invocation of
+  // useScannerFeed() (a fresh closure per call), and Vue's onMounted fires
+  // at most once per component INSTANCE. So even a second component that
+  // called useScannerFeed() (components/ScannerFeed.vue does exist in this
+  // tree, though nothing currently renders it — see pages/index.vue, the
+  // only page) would get its own independent closure and its own single
+  // onMounted firing once, not a second interval racing this one. What
+  // would actually double a timer — calling useScannerFeed() a second time
+  // for the SAME already-mounted instance, or this file's onMounted running
+  // twice for one instance — is not something Vue's lifecycle permits.
   let followedPollTimer: ReturnType<typeof setInterval> | null = null
   // ONE element, created on the first arm and reused for every clip.
   //
