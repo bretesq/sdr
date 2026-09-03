@@ -36,13 +36,57 @@
 
       <!-- RECEIVER: the machinery, reported honestly -->
       <div ref="receiverBlock" class="stack__block">
-        <span class="stack__label">Receiver</span>
-        <div class="readout readout--dim" style="font-size: 15px">
-          {{ receiverLine }}
+        <!--
+          The footnote mark rides on the SECTION LABEL, which is where a printed
+          form puts one — and where it leaves the state row below free to hold
+          both the state and the expiry stamp on one line. Measured: with the
+          mark in that row too, the three items came to 301px in a 295px column
+          and the row wrapped to 45px.
+        -->
+        <div class="stack__labelrow">
+          <span class="stack__label">Receiver</span>
+          <button
+            class="fn"
+            type="button"
+            aria-label="Receiver note"
+            aria-controls="receiver-note"
+            :aria-expanded="receiverNoteOpen"
+            :title="receiverNote"
+            @click="toggleReceiverNote"
+          >*</button>
         </div>
-        <p class="idle__sub" style="text-align: left; margin-top: 6px">
+
+        <!--
+          ONE STATE ROW: what the receiver is doing and when it stops.
+
+          The paragraph that used to sit under it is the section footnote.
+
+          `receiverNote` was two printed lines under the readout in every one of
+          the four states — 35px of prose an operator reads once and then reads
+          past forever. It is now the footnote's content: on the mark's `title`
+          for a mouse, and printed in full when the mark is pressed, which is
+          the only carrier that also works on the phone sheet where there is no
+          hover. Nothing was shortened or dropped; it is the same string.
+
+          THE EXPIRY IS NOT IN THE FOOTNOTE. "It ends at 15:01" being invisible
+          is what caused four apparent outages (see captureExpiry()'s writeup in
+          utils/captureStatus.ts), and a fact you have to hover to discover is
+          invisible. The PROSE around it folds away with the rest of the note;
+          the CLOCK is stamped on this row in the strip vocabulary, where it
+          costs nothing because the row already exists.
+        -->
+        <div class="stack__state">
+          <span class="readout readout--dim stack__state-line">{{ receiverLine }}</span>
+          <span
+            v-if="expiryStamp"
+            class="mark"
+            :class="expiryOverdue ? 'mark--stalled' : 'mark--clock'"
+          >{{ expiryStamp }}</span>
+        </div>
+        <p v-show="receiverNoteOpen" id="receiver-note" class="idle__sub fn__body">
           {{ receiverNote }}
         </p>
+
         <!--
           LAYOUT: how many radios and voice streams are actually in play.
 
@@ -59,43 +103,39 @@
 
           Reference information, so it is `idle__sub` at reading size rather
           than a `readout` — the receiver STATE above is what an operator scans
-          for; this is what they check once and stop noticing. Three separate
-          `<p>`s rather than one, because the leg split is suppressed for a
-          single-leg capture (where it only repeats the totals) and every line
-          disappears together when there is no layout to report.
+          for; this is what they check once and stop noticing.
 
-          FOLDED, because "check it once and stop noticing" is precisely what a
-          fold is for: the three lines came to 114px of a 768px column — half of
-          what the standby list was left with. The crease still prints the
-          totals, so the fact an operator would glance for is not behind the
-          fold; only the leg split and the provenance caption are. `layoutLine`
-          gates the whole fold for the same reason it gated the first `<p>`: no
-          layout on disk, nothing to report, no crease.
+          BOTH COUNT LINES STAY PRINTED. They are data, not prose: the whole
+          reason this exists is that an operator reasoning about a missed call
+          needs the pool size at a glance, and a count they have to open
+          something to see is a count they will not check. What went into the
+          footnote is only `layoutNote` — the provenance sentence and "the
+          counts are not adjustable", which answer a question asked once. The
+          totals line lost its wrap to a second row by abbreviating the nouns
+          the leg line below it already abbreviates ("10 voice · 1 control",
+          matching "3 voice + 1 control"): consistency bought the 17px, not a
+          cut. The leg split is still suppressed for a single-leg capture, and
+          the pair still disappears together when there is no layout to report.
         -->
-        <template v-if="layoutLine">
+        <p v-if="layoutLine" class="idle__sub fn__line" style="text-align: left; margin-top: 8px">
+          Layout: {{ layoutLine }}
           <button
-            class="fold"
+            v-if="layoutNote"
+            class="fn"
             type="button"
-            :aria-expanded="layoutOpen"
-            aria-controls="stack-layout"
-            @click="toggleLayout"
-          >
-            <span class="stack__label fold__label">Layout</span>
-            <span v-if="!layoutOpen" class="fold__sum">{{ layoutLine }}</span>
-            <span class="fold__box" :class="{ 'fold__box--open': layoutOpen }" aria-hidden="true" />
-          </button>
-          <div v-show="layoutOpen" id="stack-layout" class="fold__body">
-            <p class="idle__sub" style="text-align: left">
-              Layout: {{ layoutLine }}
-            </p>
-            <p v-if="layoutLegLine" class="idle__sub" style="text-align: left">
-              {{ layoutLegLine }}
-            </p>
-            <p v-if="layoutNote" class="idle__sub" style="text-align: left">
-              {{ layoutNote }}
-            </p>
-          </div>
-        </template>
+            aria-label="Note on the receiver layout"
+            aria-controls="layout-note"
+            :aria-expanded="layoutNoteOpen"
+            :title="layoutNote"
+            @click="toggleLayoutNote"
+          >*</button>
+        </p>
+        <p v-if="layoutLegLine" class="idle__sub" style="text-align: left">
+          {{ layoutLegLine }}
+        </p>
+        <p v-show="layoutNoteOpen" id="layout-note" class="idle__sub fn__body">
+          {{ layoutNote }}
+        </p>
       </div>
 
       <!--
@@ -722,6 +762,38 @@ const expiry = computed(() => captureExpiry({
  * the past" — the boundary utils/captureStatus.test.ts's captureExpiry
  * suite covers numerically.
  */
+const expiryOverdue = computed(() => {
+  const { remainingMs } = expiry.value
+  return remainingMs !== null && remainingMs <= 0
+})
+
+/**
+ * The clock, stamped on the receiver's state row — "ENDS 15:01", or
+ * "PAST DUE" once it has run through.
+ *
+ * This is `expiryNote` reduced to the only part that must be PRINTED. The
+ * sentence around it ("unless stopped first — nothing renews it
+ * automatically") explains the fact and lives in the receiver footnote with
+ * the rest of the prose; the time itself does not, because a time an operator
+ * has to hover to discover is exactly as invisible as the one that produced
+ * four apparent outages. `.mark` and not a second `readout`: it is a fact
+ * pencilled beside the state, not a competing headline.
+ *
+ * Gated on 'onAirConsole' like `expiryNote`, and for the same reason — that
+ * is the only state with a console session whose requested duration this
+ * console recorded. No ticking clock, per the note on `expiry` above: an
+ * absolute wall time stays true however stale the render is, which is why it
+ * is the only form used.
+ */
+const expiryStamp = computed(() => {
+  if (status.value !== 'onAirConsole') return null
+  const { expiresAtMs, remainingMs } = expiry.value
+  if (expiresAtMs === null || remainingMs === null) return null
+  if (remainingMs <= 0) return 'past due'
+  const clock = new Date(expiresAtMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  return `ends ${clock}`
+})
+
 const expiryNote = computed(() => {
   const { expiresAtMs, remainingMs } = expiry.value
   if (expiresAtMs === null || remainingMs === null) return null
@@ -737,10 +809,20 @@ const expiryNote = computed(() => {
 // which a switch with no default cannot (and vue/return-in-computed-property
 // rejects a switch with no default anyway, since it cannot see the switch is
 // exhaustive over a closed union).
+/*
+ * Abbreviated to strip length. These were 'on air · console session' /
+ * 'on air · outside session' / 'stalled · console session open', and the
+ * longest of them measured 216px of a 295px column — which pushed the expiry
+ * stamp beside it onto a second row and cost 15px for the word "session" in a
+ * column that had none to spare. A flight strip abbreviates; the distinction
+ * these four draw (whose session, and whether anything is receiving) survives
+ * the shortening intact, and RECEIVER_NOTE spells every one of them out in
+ * full one keypress away.
+ */
 const RECEIVER_LINE: Record<ReceiverStatus, string> = {
-  onAirConsole: 'on air · console session',
-  onAirOutside: 'on air · outside session',
-  stalled: 'stalled · console session open',
+  onAirConsole: 'on air · console',
+  onAirOutside: 'on air · outside',
+  stalled: 'stalled · session open',
   idle: 'idle',
 }
 
@@ -776,14 +858,17 @@ const receiverNote = computed(() => {
  * ------------------------------------------------------------------------- */
 
 /**
- * "2 radios", "1 radio", "no voice receivers" — never "0 voice receivers".
- * A zero-receiver layout is a real config (make_multirx_cfg.py will happily
- * build devices with no channels bound), and a bare `0` beside two other
- * counts reads as a rendering bug rather than as a statement.
+ * "2 radios", "1 radio", "no voice" — never "0 voice". A zero-receiver layout
+ * is a real config (make_multirx_cfg.py will happily build devices with no
+ * channels bound), and a bare `0` beside two other counts reads as a rendering
+ * bug rather than as a statement.
+ *
+ * `plural` defaults to the noun plus an s and is passed explicitly for the
+ * nouns that are their own plural ("voice", "control").
  */
-function countOf(n: number, noun: string): string {
-  if (n === 0) return `no ${noun}s`
-  return `${n} ${noun}${n === 1 ? '' : 's'}`
+function countOf(n: number, noun: string, plural = `${noun}s`): string {
+  if (n === 0) return `no ${plural}`
+  return `${n} ${n === 1 ? noun : plural}`
 }
 
 /**
@@ -820,8 +905,14 @@ function legLabels(layout: ReceiverLayout): string[] {
 const layoutLine = computed(() => {
   const l = props.receiverLayout
   if (!l) return null
-  const bits = [countOf(l.radios, 'radio'), countOf(l.voiceTotal, 'voice receiver')]
-  if (l.controlTotal > 0) bits.push(countOf(l.controlTotal, 'control channel'))
+  // "10 voice · 1 control", not "10 voice receivers · 1 control channel": the
+  // second wrapped to a second line in a 320px column, and the leg line right
+  // beneath already writes the same two counts as "3 voice + 1 control". The
+  // distinction that matters — voice takes calls, control does not — is
+  // carried by the words that were kept. `'voice'`/`'control'` are their own
+  // plurals, hence the third argument.
+  const bits = [countOf(l.radios, 'radio'), countOf(l.voiceTotal, 'voice', 'voice')]
+  if (l.controlTotal > 0) bits.push(countOf(l.controlTotal, 'control', 'control'))
   return bits.join(' · ')
 })
 
@@ -887,18 +978,36 @@ const layoutNote = computed(() => {
 })
 
 /* ===========================================================================
- * THE CREASES — which folds are open, and making an open one visible
+ * THE CREASE AND THE FOOTNOTES — what is put away, and how it comes back
  *
- * Two of them, one vocabulary (bay.css's `.fold`): the Receiver block's layout
- * reference, and the Capture block's setup fields. Both start closed and
- * neither is persisted. Closed is not a state where a fact is hidden — each
- * crease prints its own summary, `layoutLine` and `captureSummary` — and a
- * remembered fold would mean an operator opening this console to a layout
- * nobody chose today.
+ * Two idioms, both printed-form (see bay.css's `.fold` and `.fn`), doing two
+ * different jobs, which is why there are two.
+ *
+ * A FOOTNOTE (`*`) puts away PROSE. The receiver note and the layout
+ * provenance are paragraphs an operator reads once and reads past forever, and
+ * they were 88px of a 768px column. The mark carries the text three ways so
+ * that no carrier is the only one: `title` for a mouse, `aria-label` +
+ * `aria-expanded` + `aria-controls` for a screen reader and the keyboard, and
+ * pressing it prints the paragraph in full — which is what the phone sheet
+ * gets, since `@media (max-width: 860px)` has no hover at all. Not one word
+ * was rewritten to fit; the strings are unchanged.
+ *
+ * A CREASE (`+`/`−`) puts away CONTROLS — the Capture block's fields, which
+ * are not prose and cannot be shortened into a footnote. Consolidating every
+ * word out of that block still leaves 225px of `<select>`, `<input>` and two
+ * checkboxes; the crease is what turns that into 141.
+ *
+ * Neither hides a fact. The crease prints `captureSummary` on its own edge,
+ * the receiver state row keeps the expiry clock, and the layout keeps both of
+ * its count lines. Neither state is persisted: a remembered fold would mean an
+ * operator opening this console to a shape nobody chose today.
  * ========================================================================= */
 
-/** Reference an operator reads once, when reasoning about a missed call. */
-const layoutOpen = ref(false)
+/** Prose about the receiver's state — RECEIVER_NOTE, plus any expiry note. */
+const receiverNoteOpen = ref(false)
+
+/** Prose about where the layout came from, and that it is not settable here. */
+const layoutNoteOpen = ref(false)
 
 /** Fields touched at the start of a capture and not again for hours. */
 const captureOpen = ref(false)
@@ -910,11 +1019,12 @@ const captureBlock = ref<HTMLElement | null>(null)
  * Opening a crease has to SHOW what it opened.
  *
  * The block region scrolls itself once its blocks no longer fit (bay.css's
- * `.stack__head`), and at 1366x768 an open crease is exactly what stops them
- * fitting — so without this the operator presses `+`, what unfolded lands
- * below that region's scroll edge and nothing visibly happens.
+ * `.stack__head`), and at 1366x768 an opened crease or footnote is exactly
+ * what stops them fitting — so without this the operator presses the mark,
+ * what it opened lands below that region's scroll edge, and nothing visibly
+ * happens.
  *
- * The whole BLOCK is revealed, not just the fold body: the Capture block's
+ * The whole BLOCK is revealed, not just the body: the Capture block's
  * Start button sits after the fields, so bringing only the body into view
  * would open the settings and push the button they are settings FOR out of
  * sight. `block: 'nearest'` moves the region by the minimum needed and does
@@ -927,9 +1037,14 @@ async function reveal(el: HTMLElement | null): Promise<void> {
   el?.scrollIntoView({ block: 'nearest' })
 }
 
-function toggleLayout(): void {
-  layoutOpen.value = !layoutOpen.value
-  if (layoutOpen.value) void reveal(receiverBlock.value)
+function toggleReceiverNote(): void {
+  receiverNoteOpen.value = !receiverNoteOpen.value
+  if (receiverNoteOpen.value) void reveal(receiverBlock.value)
+}
+
+function toggleLayoutNote(): void {
+  layoutNoteOpen.value = !layoutNoteOpen.value
+  if (layoutNoteOpen.value) void reveal(receiverBlock.value)
 }
 
 function toggleCapture(): void {

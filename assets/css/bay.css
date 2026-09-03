@@ -360,6 +360,59 @@ body {
   color: #8d947b;
 }
 
+/* A section label with its footnote mark alongside. The label keeps its own
+   cushion off the row rather than under itself, so the 20px mark does not
+   push the state row down. */
+.stack__labelrow {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 2px;
+}
+.stack__labelrow .stack__label { margin-bottom: 0; }
+
+/* --- the receiver's state row -----------------------------------------------
+   State, expiry stamp and footnote mark on one line, because they are one
+   thought: what the receiver is doing, when it stops, and where the rest of
+   the sentence went. Baseline-aligned so the 15px readout and the 11px stamp
+   sit on the same rule, the way two pencil annotations on a strip do.
+
+   It wraps rather than ellipsising: an expiry clock pushed off the end of a
+   line is the exact failure the stamp exists to prevent, so on a narrow column
+   it takes a second row instead. The readout is what shrinks first. */
+.stack__state {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+.stack__state-line {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The receiver's readout has always been 15px rather than `.readout`'s 26px:
+   it is a phrase ("on air · console session"), not the Active block's one big
+   number. A class here rather than the inline override it used to be, because
+   the state row's arithmetic depends on it — at 26px this line alone measures
+   the full 295px of the column and puts the expiry stamp on a second row, 45px
+   where 18 will do. Measured.
+
+   Chained onto `.readout` (not `.stack__state-line` alone) so its higher
+   specificity wins without an `!important` — the same reason
+   `.idle__sub.capture__warn` is written that way further down. `.readout` is
+   defined after this rule and would otherwise win on source order. */
+.readout.stack__state-line { font-size: 15px; }
+
+/* The expiry stamp. Reading brightness rather than a pencil colour: it is a
+   fact about the running session, not a flag — `.mark--stalled`'s amber takes
+   over only once the session has run past its requested duration, which IS
+   one. */
+.mark--clock { color: #b6bda3; }
+
 /* the frequency readout on a comm stack: big, mono, tabular */
 .readout {
   font-family: var(--f-data);
@@ -535,6 +588,67 @@ body {
    never hide the fact. That is the whole difference between this and having
    deleted the lines.
    =========================================================================== */
+
+/* ===========================================================================
+   The footnote — an asterisk and a note at the bottom of the form
+
+   The console's prose (the receiver's state note, the layout's provenance) is
+   read once and read past forever, but it may never become unreachable. So it
+   goes where a printed form has always put a sentence nobody needs twice: to a
+   footnote, behind an asterisk.
+
+   `*` and not an icon, deliberately. This is a flight-strip board; a glyph set
+   dropped in from a web toolkit would read as somebody else's furniture. An
+   asterisk is the mark this world already uses for exactly this meaning, and
+   it needs no font beyond the one the board is set in.
+
+   THE MARK IS A BUTTON, NOT A `title` ALONE. A tooltip is a mouse affordance,
+   and `pages/index.vue`'s `@media (max-width: 860px)` turns this column into a
+   full-screen sheet where there is no hover at all. Pressing the mark prints
+   the note in full underneath, which works on a phone, on a keyboard, and
+   under a screen reader; `title` is then just a shortcut for the mouse that
+   already has one. Sized to 20px so it is a real target for a thumb.
+   =========================================================================== */
+
+.fn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  /* The board's own label grey, not --ink-3: that tone was tuned against light
+     strip stock and all but disappears here — the same re-tuning `.standby
+     .mark--note` and `.idle__sub.capture__warn` already carry their own notes
+     about. */
+  color: #8d947b;
+  font-family: var(--f-label);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: -0.35em;
+  cursor: help;
+  transition: color 120ms linear;
+}
+.fn:hover { color: #dfe4cd; }
+.fn:focus-visible { outline: 2px solid var(--grease); outline-offset: -2px; }
+.fn[aria-expanded="true"] { color: var(--grease); }
+
+/* The line the mark is annotating: the mark is 20px tall inside 12px text, so
+   the line needs the room or it crowds whatever follows it. */
+.fn__line { line-height: 20px; }
+
+/* The note itself, once printed. Indented under its mark the way a footnote
+   sits under its rule, and in the same reading grey it had when it was a
+   permanent paragraph — it is the identical string. */
+.fn__body {
+  margin-top: 2px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(84, 90, 69, 0.55);
+  text-align: left;
+}
 
 .fold {
   display: flex;
