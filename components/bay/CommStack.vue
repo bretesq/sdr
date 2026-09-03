@@ -47,8 +47,78 @@
       <span class="stack__label">Capture</span>
 
       <p class="idle__sub" style="text-align: left; margin-bottom: 8px">
-        Police / Sheriff Dispatch (preset pd), two radios — the only profile
-        this console can hand to the capture container.
+        Two radios, multi-receiver — the only capture shape this console can hand
+        to the capture container. The preset picks which talkgroups it follows.
+      </p>
+
+      <label class="capture__row capture__row--wide">
+        <span>Preset</span>
+        <span class="capture__row-field">
+          <select
+            v-model="preset"
+            class="field capture__preset"
+            :disabled="!canStart || busy"
+            aria-label="Talkgroup preset"
+          >
+            <option v-for="p in CAPTURE_PRESETS" :key="p" :value="p">
+              {{ p }} — {{ CAPTURE_PRESET_LABELS[p] }}
+            </option>
+          </select>
+        </span>
+      </label>
+      <!--
+        What the selected preset actually follows: the TAG NAMES
+        make_whitelist.py filters the roster by, which is the precise version
+        of the option's human label. Always shown, for the same reason
+        `durationHuman` is always shown beside the duration field — a value
+        whose consequences are one indirection away should state them on
+        screen rather than requiring the operator to remember what "interop"
+        expands to.
+      -->
+      <p class="idle__sub" style="text-align: left; margin-top: -2px">
+        Follows: {{ CAPTURE_PRESET_TAGS[preset] }}
+      </p>
+
+      <!--
+        Two things the operator must not be misled about. They are INDEPENDENT
+        conditions, so they are two independent `v-if`s: chained, whichever
+        rendered first would suppress the other in states where both are true.
+
+        1. The picker applies to the NEXT Start, never to a running capture.
+           The primary defence is structural, not textual: like every other
+           control in this block it is `:disabled` whenever Start is
+           unavailable, so it cannot be changed under a running session and
+           appear to have done something. This line says so in words — and it
+           is gated on `tracked`, NOT on `!canStart`. canStartCapture() is
+           `!tracked && !radioBusy`, so `!canStart` is also true when the
+           radio is busy with a capture this console never started
+           ('onAirOutside'), where there is no console session to "retune" and
+           this sentence would be describing something that does not exist.
+
+        2. A wider preset raises concurrent-call load. The 800 MHz leg's
+           voice-receiver count was raised 5 -> 7 in 042cc3a on concurrency
+           measured under `pd` ALONE (peak 5 of 5, ceiling touched 17 times in
+           7,136 calls); every other preset here follows strictly more
+           talkgroups than that measurement covered, so the headroom behind
+           those counts is unverified for them. Deliberately qualitative — the
+           honest number would be a fresh measurement, and inventing a ratio
+           from the current roster would rot the moment the roster changes.
+           Shown whenever a wide preset is SELECTED, regardless of whether
+           Start happens to be available this instant: it is a fact about the
+           selection, not about the button.
+      -->
+      <p v-if="tracked" class="idle__sub" style="text-align: left">
+        Applies to the next Start — changing it does not retune the running capture.
+      </p>
+      <p
+        v-if="preset !== DEFAULT_CAPTURE_PRESET"
+        class="idle__sub capture__warn"
+        style="text-align: left"
+      >
+        Wider than {{ DEFAULT_CAPTURE_PRESET }}. The voice-receiver counts were tuned
+        on concurrency measured under {{ DEFAULT_CAPTURE_PRESET }} alone — more
+        talkgroups means more overlapping calls, and calls past the receiver pool
+        are missed, not queued.
       </p>
 
       <label class="capture__row">
@@ -143,7 +213,9 @@ import type { ReceiverStatus } from '~/utils/captureStatus'
 import {
   buildCaptureStartBody, isValidCaptureDuration, apiError,
   DEFAULT_CAPTURE_DURATION_SEC, MIN_CAPTURE_DURATION_SEC, MAX_CAPTURE_DURATION_SEC,
+  CAPTURE_PRESETS, CAPTURE_PRESET_LABELS, CAPTURE_PRESET_TAGS, DEFAULT_CAPTURE_PRESET,
 } from '~/utils/listenControl'
+import type { CapturePreset } from '~/utils/listenControl'
 
 /**
  * The comm stack: active above, standby below, exactly as a radio stack reads.
@@ -340,6 +412,19 @@ const canStop = computed(() => canStopCapture({ tracked: props.tracked }))
  * this shape needs to be reasoned about.
  */
 const duration = ref<number | string | null>(DEFAULT_CAPTURE_DURATION_SEC)
+
+/**
+ * Which talkgroups the NEXT capture follows.
+ *
+ * Defaults to `pd`, what every capture ran when this was not selectable —
+ * so a fresh page offers the familiar profile and a wider one is always a
+ * deliberate act. It is a `<select>` rather than free text because the value
+ * is checked against an allowlist three times before it becomes argv (here,
+ * `buildControlRequest()`, and `capture_control.py`'s `PRESET_ARGV` lookup);
+ * offering a control that could produce a value any of those refuse would be
+ * the same mistake this whole block was written to avoid.
+ */
+const preset = ref<CapturePreset>(DEFAULT_CAPTURE_PRESET)
 const ess = ref(false)
 const includeEncrypted = ref(false)
 const busy = ref(false)
@@ -417,6 +502,7 @@ async function startCapture(): Promise<void> {
         duration: duration.value,
         ess: ess.value,
         includeEncrypted: includeEncrypted.value,
+        preset: preset.value,
       }),
     })
     if (!res.success) captureError.value = res.error ?? 'Failed to start'

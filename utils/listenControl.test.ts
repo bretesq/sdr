@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest'
 import {
   isValidCaptureDuration, buildCaptureStartBody, apiError,
   MIN_CAPTURE_DURATION_SEC, MAX_CAPTURE_DURATION_SEC, DEFAULT_CAPTURE_DURATION_SEC,
+  CAPTURE_PRESETS, CAPTURE_PRESET_LABELS, CAPTURE_PRESET_TAGS,
+  DEFAULT_CAPTURE_PRESET, isCapturePreset,
 } from './listenControl'
 
 describe('isValidCaptureDuration', () => {
@@ -52,10 +54,73 @@ describe('buildCaptureStartBody', () => {
     })
   })
 
-  it('mode and preset are fixed regardless of the operator\'s inputs', () => {
+  it('mode is fixed regardless of the operator\'s inputs — it is the only delegatable one', () => {
     const body = buildCaptureStartBody({ duration: 60, ess: false, includeEncrypted: true })
     expect(body.mode).toBe('multi')
-    expect(body.preset).toBe('pd')
+  })
+
+  it('carries the operator\'s chosen preset — this is the field that was pinned to "pd"', () => {
+    // The bug this replaced: the console could only ever run `pd`, ~44
+    // talkgroups, which is exactly what the bay's Standby list could show.
+    for (const preset of CAPTURE_PRESETS) {
+      expect(buildCaptureStartBody({
+        duration: 3600, ess: false, includeEncrypted: false, preset,
+      })).toEqual({
+        mode: 'multi', preset, duration: 3600, ess: false, includeEncrypted: false,
+      })
+    }
+  })
+
+  it('defaults to pd when no preset is given, so an untouched caller is unchanged', () => {
+    expect(buildCaptureStartBody({ duration: 60, ess: false, includeEncrypted: true }).preset)
+      .toBe(DEFAULT_CAPTURE_PRESET)
+    expect(DEFAULT_CAPTURE_PRESET).toBe('pd')
+  })
+})
+
+describe('CAPTURE_PRESETS', () => {
+  it('is the nine presets make_whitelist.py and capture_control.py both know', () => {
+    // Spelled out rather than derived from the constant: a test that reads
+    // its expectation off the thing under test cannot notice a preset being
+    // dropped. The far-side copies are cross-checked independently —
+    // scripts/tests/test_capture_control.py parses make_whitelist.py's own
+    // PRESETS dict, and server/utils/processes.test.ts checks this list
+    // against the delegation gate.
+    expect([...CAPTURE_PRESETS]).toEqual([
+      'pd', 'pd-all', 'fire', 'fire-all', 'ems', 'interop', 'schools', 'publicworks', 'all',
+    ])
+  })
+
+  it('labels every preset it offers, and offers every preset it labels', () => {
+    // Both records, because both are rendered: the human label is the option
+    // text and the tag list is the "Follows:" line under the picker. A preset
+    // missing from either would render as a blank, and an entry in either with
+    // no matching preset would be unreachable.
+    expect(Object.keys(CAPTURE_PRESET_LABELS).sort()).toEqual([...CAPTURE_PRESETS].sort())
+    expect(Object.keys(CAPTURE_PRESET_TAGS).sort()).toEqual([...CAPTURE_PRESETS].sort())
+  })
+
+  it('gives every preset a non-empty label and tag list', () => {
+    // server/api/config/presets.get.ts maps straight over these, so a blank
+    // would ship as a blank option in any client built against that endpoint
+    // too, not just the bay's picker.
+    for (const preset of CAPTURE_PRESETS) {
+      expect(CAPTURE_PRESET_LABELS[preset].length).toBeGreaterThan(0)
+      expect(CAPTURE_PRESET_TAGS[preset].length).toBeGreaterThan(0)
+    }
+  })
+
+  it('accepts exactly the nine and nothing that merely looks like one', () => {
+    for (const preset of CAPTURE_PRESETS) expect(isCapturePreset(preset)).toBe(true)
+    for (const bad of ['PD', 'pd ', ' pd', 'police', '', 'pd,fire', '--pd']) {
+      expect(isCapturePreset(bad)).toBe(false)
+    }
+  })
+
+  it('rejects non-strings without throwing — it guards a JSON-shaped boundary', () => {
+    for (const bad of [undefined, null, 7, true, ['pd'], { preset: 'pd' }]) {
+      expect(isCapturePreset(bad)).toBe(false)
+    }
   })
 })
 

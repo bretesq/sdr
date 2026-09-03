@@ -38,9 +38,14 @@ THE SECURITY BOUNDARY. POST /start decides what argv runs on a machine with
 SDR hardware, and anything that can reach the web app can reach this
 endpoint. build_args() is the only function that turns a request into a
 command line, and it does so by picking fixed, literal tokens (`--ess`,
-`--include-encrypted`, `--pd`, `--n-voice-700`, `--n-voice-800`) off a
-validated, structured request -- never by forwarding a caller-supplied
-string. Everything else in this file exists to
+`--include-encrypted`, `--n-voice-700`, `--n-voice-800`, and the preset
+tokens in PRESET_ARGV) off a validated, structured request -- never by
+forwarding a caller-supplied string. `preset` is the one field whose value
+is itself a name rather than a number or a boolean, and it is handled by
+LOOKUP, not passthrough: the caller's string is used only as a key into
+PRESET_ARGV, and the argv comes out of that table's fixed literal values.
+See PRESET_ARGV's own comment for why the indirection is load-bearing rather
+than ceremonial. Everything else in this file exists to
 get a validated request to build_args() and a subprocess.Popen() argument
 list from it, with shell=True never used anywhere.
 
@@ -103,12 +108,22 @@ MAX_DURATION_SEC = 24 * 60 * 60
 #
 # nVoice700/nVoice800 are also optional -- omitted, lwin_listen_multi.sh (via
 # scripts/make_multirx_cfg.py's LEG_700/LEG_800 defaults) picks its own
-# measurement-derived default for each leg. They are receiver-count TUNING
-# of the one fixed operational profile this endpoint exposes, not a way to
-# change which legs run or which preset is used -- that is why they get to
-# pass through here while `legs` and `preset` still do not.
+# measurement-derived default for each leg. They are receiver-count TUNING of
+# the operational profile, not a way to change which legs run -- that is why
+# they get to pass through here while `legs` still does not.
+#
+# `preset` joined this set when the console gained a preset picker. It is the
+# one field here whose value is a NAME, so it is also the one field that
+# could have re-opened the injection path this module exists to close -- see
+# PRESET_ARGV, which is why it did not: the name selects a row, the row
+# supplies the tokens. Omitted, it defaults to DEFAULT_PRESET ("pd"), so
+# every caller written before this field existed keeps getting the identical
+# capture it always got.
 ALLOWED_FIELDS = frozenset(
-    {"mode", "ess", "includeEncrypted", "durationSec", "sessionId", "nVoice700", "nVoice800"}
+    {
+        "mode", "ess", "includeEncrypted", "durationSec", "sessionId",
+        "nVoice700", "nVoice800", "preset",
+    }
 )
 
 # Sane bounds on sessionId, mirroring durationSec's MIN/MAX pair above. It is
@@ -153,6 +168,59 @@ MAX_SESSION_ID = 1_000_000
 MIN_VOICE = 1
 MAX_VOICE = 8
 
+# The talkgroup presets this endpoint will run, mapped to the EXACT argv this
+# module emits for each one.
+#
+# THIS TABLE IS THE SECURITY BOUNDARY FOR `preset`, and its shape is the whole
+# point. A caller-supplied string is used for ONE thing only -- as a key into
+# this dict -- and the tokens that reach the command line come out of the
+# VALUES, which are fixed literals this module owns and a caller cannot
+# influence. `PRESET_ARGV[preset]` is never `preset`. Do NOT "simplify" this
+# to `("--preset", preset)` after the membership test: that would be
+# equivalent only for as long as the keys and the launcher's accepted names
+# stay identical, and it would quietly re-introduce the very thing
+# build_args()'s docstring promises never happens -- a caller-supplied string
+# becoming an argv token. The indirection is not redundant, it is the
+# invariant.
+#
+# Two spellings appear in the values because that is what
+# scripts/lwin_listen_multi.sh's own argument loop accepts: it has six
+# per-preset shortcut cases (`--pd)  GEN+=(--preset pd) ;;` and friends) and a
+# generic `--preset "$2"` case for everything else. `schools`, `publicworks`
+# and `all` have no shortcut, so they go through the generic form -- where the
+# second token is still a literal spelled out HERE, not the caller's string.
+#
+# `pd` deliberately keeps its `--pd` shortcut rather than being normalized to
+# `("--preset", "pd")`. It is the default, it is what every existing session
+# ran with, and it is the invocation this project's own documentation and
+# server/utils/processes.ts's refusal message both quote verbatim
+# (`./scripts/lwin_listen_multi.sh --ess --include-encrypted --pd 10800`).
+# Changing the emitted tokens for the unchanged default would make the argv
+# recorded against old and new sessions differ for no behavioural reason.
+#
+# Keys mirror scripts/make_whitelist.py's PRESETS dict (the thing that
+# actually turns a preset name into a whitelist) and
+# server/api/listen/start.post.ts's own PRESETS set. All three must agree;
+# scripts/tests/test_capture_control.py asserts the first pair by parsing
+# make_whitelist.py, so this table cannot silently drift from the script that
+# has to understand it.
+PRESET_ARGV: dict[str, tuple[str, ...]] = {
+    "pd":          ("--pd",),
+    "pd-all":      ("--pd-all",),
+    "fire":        ("--fire",),
+    "fire-all":    ("--fire-all",),
+    "ems":         ("--ems",),
+    "interop":     ("--interop",),
+    "schools":     ("--preset", "schools"),
+    "publicworks": ("--preset", "publicworks"),
+    "all":         ("--preset", "all"),
+}
+
+# What a request that names no preset runs. `pd` -- the police/sheriff
+# dispatch profile every session before this field existed ran, so an
+# unchanged caller gets an unchanged capture.
+DEFAULT_PRESET = "pd"
+
 
 class ValidationError(ValueError):
     """A /start request does not fit the fixed, validated request shape.
@@ -174,10 +242,21 @@ def build_args(req: object) -> tuple[list[str], int | None]:
 
     No element of the returned argv is ever a caller-supplied string. Every
     token is either a fixed literal this function owns (--ess,
-    --include-encrypted, --pd, --n-voice-700, --n-voice-800) or str(n) of an
-    int that has already been range-checked. `mode` is checked against a
-    fixed allowlist and never itself appears in the output -- it only selects
-    (elsewhere, in main()) which script gets run.
+    --include-encrypted, --n-voice-700, --n-voice-800, and every token in
+    PRESET_ARGV's values) or str(n) of an int that has already been
+    range-checked. `mode` is checked against a fixed allowlist and never
+    itself appears in the output -- it only selects (elsewhere, in main())
+    which script gets run.
+
+    `preset` obeys that same rule despite being a name: it is checked against
+    PRESET_ARGV's keys and then DISCARDED, with the tokens taken from that
+    table's value instead. So a request asking for "schools" emits the two
+    literals ("--preset", "schools") that this module spelled out at import
+    time, not the two characters-in-a-row the caller happened to send. A
+    preset outside the table is refused outright, exactly as an out-of-range
+    durationSec or nVoice700 is -- never coerced to the default, because a
+    caller who asked for a capture this server cannot run should learn that,
+    not silently get a different one.
 
     sessionId never becomes an argv token at all -- it becomes SDR_SESSION_ID
     in the launched process's environment instead (CaptureState.start(),
@@ -222,7 +301,7 @@ def build_args(req: object) -> tuple[list[str], int | None]:
     # sourced from scripts/make_multirx_cfg.py's LEG_700/LEG_800). Each is an
     # independent flag-plus-value pair consumed by that script's own arg loop
     # (`--n-voice-700) NV700="$2"; shift`), so where either lands relative to
-    # --pd/duration below does not matter -- only THAT flag stays last
+    # the preset/duration tokens below does not matter -- only THAT flag stays last
     # matters, because the bare number after it is the one token with no
     # flag of its own.
     for field, flag in (("nVoice700", "--n-voice-700"), ("nVoice800", "--n-voice-800")):
@@ -238,6 +317,14 @@ def build_args(req: object) -> tuple[list[str], int | None]:
             args.append(flag)
             args.append(str(n_voice))
 
+    # isinstance() before the membership test, for the same reason `mode` gets
+    # it above: `x in a_dict` hashes x, and a caller can send an unhashable
+    # JSON value (a list, an object) for this field. Without the type check
+    # first that is an uncaught TypeError -- a crash, not a rejection.
+    preset = req.get("preset", DEFAULT_PRESET)
+    if not isinstance(preset, str) or preset not in PRESET_ARGV:
+        raise ValidationError(f"preset must be one of {sorted(PRESET_ARGV)}")
+
     duration = req.get("durationSec")
     if duration is not None:
         # bool is a subclass of int in Python, so isinstance(True, int) is
@@ -250,26 +337,36 @@ def build_args(req: object) -> tuple[list[str], int | None]:
             raise ValidationError(
                 f"durationSec must be between {MIN_DURATION_SEC} and {MAX_DURATION_SEC}"
             )
-        # This endpoint exposes no field for choosing a talkgroup preset --
-        # it exists to run exactly one operational profile, the standard PD
-        # (police/sheriff dispatch) capture that lwin_active_whitelist.txt
-        # already encodes and that server/utils/processes.ts's own refusal
-        # message documents as the canonical manual fallback:
-        #   ./scripts/lwin_listen_multi.sh --ess --include-encrypted --pd 10800
-        # So --pd is hardcoded here, not derived from the request.
+        # The preset tokens and the duration are INDEPENDENT tokens consumed
+        # by independent branches of lwin_listen_multi.sh's own argument
+        # loop: `--pd` matches its own case (GEN+=(--preset pd)), `--preset
+        # schools` matches the generic case (which does its own `shift` to
+        # swallow the name); the bare number after either matches nothing
+        # else and falls through to the `*)` catch-all, which assigns it to
+        # SECS. The number is NOT "the value of the preset flag" -- do not
+        # "simplify" this to `--pd=10800`, and do not reorder the number away
+        # from being last, or the script's `-*) exit 1` case will treat a
+        # misplaced flag as unknown and refuse to run, or a repositioned
+        # number will be swallowed as an argument to the wrong flag (the
+        # generic `--preset` case's `"$2"` will eat it outright) instead of
+        # landing in SECS.
         #
-        # `--pd` and the duration are two INDEPENDENT tokens consumed by two
-        # independent branches of lwin_listen_multi.sh's own argument loop:
-        # `--pd` matches its own case (GEN+=(--preset pd)); the bare number
-        # after it matches nothing else and falls through to the `*)` catch-
-        # all, which assigns it to SECS. They are not "a flag and its value"
-        # -- do not "simplify" this to `--pd=10800` or reorder the number
-        # away from being last, or the script's `-*) exit 1` case will treat
-        # a misplaced flag as unknown and refuse to run, or a repositioned
-        # number will be swallowed as an argument to the wrong flag instead
-        # of landing in SECS.
-        args.append("--pd")
+        # The preset tokens are emitted HERE, inside the duration block,
+        # rather than unconditionally. That is not tidiness: this block is the
+        # only place a bare number lands in argv, and a preset with no
+        # duration would start an UNBOUNDED capture on a wider whitelist --
+        # a strictly larger operation than anything this endpoint could do
+        # before. A request that names a preset without a duration is refused
+        # below instead, so the field can never be silently ignored either.
+        args.extend(PRESET_ARGV[preset])
         args.append(str(duration))
+    elif "preset" in req:
+        # Refuse rather than drop. Emitting the preset here would create the
+        # unbounded-wide-capture case the comment above rules out; ignoring it
+        # would run a `pd`-shaped capture for a caller who plainly asked for
+        # something else, and they would have no way to tell from the
+        # response. The only honest answer is to say what is missing.
+        raise ValidationError("preset requires durationSec (there is no unbounded preset capture)")
 
     session_id = req.get("sessionId")
     if session_id is not None:

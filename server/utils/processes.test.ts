@@ -25,6 +25,13 @@ import {
   captureCapabilityGap, isCaptureCapable, delegatedSessionLiveness, stopDelegatedCapture,
   isRadioBusy, stopListening,
 } from './processes'
+// The console-facing preset vocabulary, imported here rather than duplicated
+// so the delegation tests assert against the same nine names the picker
+// renders. Relative, not `~/utils/…`: vitest.config.ts defines no Nuxt
+// aliases (the same reason processes.ts itself imports it this way).
+import {
+  CAPTURE_PRESETS, CAPTURE_PRESET_TAGS, DEFAULT_CAPTURE_PRESET,
+} from '../../utils/listenControl'
 
 const mockSpawn = vi.fn()
 const mockExecFileSync = vi.fn()
@@ -308,11 +315,15 @@ describe('capture capability guard on startListening()', () => {
     expect(init.method).toBe('POST')
     // Only the fields the control server's build_args() actually accepts —
     // never a pre-built command line, and never the extra web-side fields
-    // (preset here) this shape has no room for. sessionId IS included
-    // (unlike preset) — it identifies our own session row, not an operator
-    // choice, and the control API validates it independently regardless.
+    // (talkgroups, tag, match, legs …) this shape has no room for. `preset`
+    // IS one of them now: it used to be dropped here even when it was 'pd'
+    // (the control server hardcoded --pd and had no preset field at all), so
+    // this assertion failing with preset missing means the forwarding
+    // regressed. sessionId is included for a different reason — it identifies
+    // our own session row rather than an operator choice, and the control API
+    // validates it independently regardless.
     expect(JSON.parse(init.body as string)).toEqual({
-      mode: 'multi', ess: true, includeEncrypted: true, durationSec: 10800, sessionId: 7,
+      mode: 'multi', preset: 'pd', ess: true, includeEncrypted: true, durationSec: 10800, sessionId: 7,
     })
   })
 
@@ -336,7 +347,7 @@ describe('capture capability guard on startListening()', () => {
     // exactly this pass-through, so this test fails if that refusal comes
     // back.
     expect(JSON.parse(init.body as string)).toEqual({
-      mode: 'multi', durationSec: 10800, sessionId: 7, nVoice700: 3, nVoice800: 7,
+      mode: 'multi', preset: 'pd', durationSec: 10800, sessionId: 7, nVoice700: 3, nVoice800: 7,
     })
   })
 
@@ -352,6 +363,77 @@ describe('capture capability guard on startListening()', () => {
     const body = JSON.parse(init.body as string)
     expect(body).not.toHaveProperty('nVoice700')
     expect(body).not.toHaveProperty('nVoice800')
+  })
+
+  /**
+   * The presets are the point of this whole change: `followedTalkgroups()`
+   * lists the RUNNING capture's whitelist, the capture always ran `pd`, and
+   * `pd` is ~44 talkgroups — which is why the bay could only ever show that
+   * many. These tests pin both halves of the fix that were broken at once:
+   * this gate refused every preset but `pd`, and the field was then dropped
+   * from the body anyway, so even `pd` was never actually forwarded.
+   *
+   * Each case goes through forceNotCapable() + mockFetch like every other
+   * test in this block, so nothing here can reach a real radio.
+   */
+  it('forwards every one of the nine presets to the control API', async () => {
+    for (const preset of CAPTURE_PRESETS) {
+      mockFetch.mockClear()
+      forceNotCapable()
+      mockFetch.mockResolvedValue(fakeControlResponse(200, true, { started: true, pid: 4242 }))
+
+      await startListening({ mode: 'multi', preset, duration: 600 }, 9)
+
+      const [, init] = mockFetch.mock.calls[0] as [string, RequestInit]
+      expect(JSON.parse(init.body as string)).toEqual({
+        mode: 'multi', preset, durationSec: 600, sessionId: 9,
+      })
+    }
+  })
+
+  it('refuses a preset outside the allowlist before any network call', async () => {
+    forceNotCapable()
+    // Not a typo case: `--all-areas` is a real lwin_listen_multi.sh flag, so
+    // a gate that forwarded unvalidated strings would hand the control server
+    // something that looks like an option rather than a preset name.
+    for (const bad of ['police', 'PD', 'pd; rm -rf /', '--all-areas', '']) {
+      await expect(startListening({ mode: 'multi', preset: bad, duration: 600 }))
+        .rejects.toThrow(/cannot be delegated/i)
+    }
+    expect(mockFetch).not.toHaveBeenCalled()
+    expect(mockSpawn).not.toHaveBeenCalled()
+  })
+
+  it('names the nine valid presets in the refusal, so the caller can fix the request', async () => {
+    forceNotCapable()
+    await expect(startListening({ mode: 'multi', preset: 'police', duration: 600 }))
+      .rejects.toThrow(/pd-all/)
+    await expect(startListening({ mode: 'multi', preset: 'police', duration: 600 }))
+      .rejects.toThrow(/publicworks/)
+  })
+
+  it('omits preset entirely when the caller names none, rather than inventing one', async () => {
+    // The control server then applies its own DEFAULT_PRESET ("pd"). Writing
+    // a default in here instead would be this layer inventing an operator
+    // choice — see buildControlRequest()'s docstring on why substitution is
+    // worse than either forwarding or refusing.
+    forceNotCapable()
+    mockFetch.mockResolvedValue(fakeControlResponse(200, true, { started: true, pid: 4242 }))
+
+    await startListening({ mode: 'multi', talkgroups: undefined, duration: 600 })
+
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit]
+    expect(JSON.parse(init.body as string)).not.toHaveProperty('preset')
+  })
+
+  it('agrees with the console picker about which presets exist', () => {
+    // utils/listenControl.ts owns the canonical TS list and this module
+    // imports it, so this asserts the CONSOLE-FACING copy (the labels the
+    // picker actually renders) has not drifted from it — a preset with no
+    // label would render as a blank option, one with a label but no entry in
+    // CAPTURE_PRESETS would be unreachable.
+    expect(Object.keys(CAPTURE_PRESET_TAGS).sort()).toEqual([...CAPTURE_PRESETS].sort())
+    expect(CAPTURE_PRESETS).toContain(DEFAULT_CAPTURE_PRESET)
   })
 
   it('refuses a request the control API cannot express, before any network call', async () => {

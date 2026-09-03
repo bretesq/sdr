@@ -8,29 +8,122 @@
  * `ListenControl.vue` used to offer — talkgroup/tag/match selection, area,
  * partial-encryption, Whisper, per-band receiver counts, the census toggle,
  * and every capture mode except the two-radio multi-receiver one. What
- * survives is exactly what this module models: a fixed preset, a bounded
+ * survives is exactly what this module models: a talkgroup preset, a bounded
  * duration, and two independent booleans. Rendering a control for anything
  * outside that would let the operator configure a request that is refused
  * the instant it reaches the server — worse than not offering it at all,
  * per the brief this file was written against.
  *
- * `mode` and `preset` are not fields an operator picks here at all:
- *   - `mode` MUST be `'multi'` — `buildControlRequest()` refuses every other
- *     value outright ("the capture container only runs multi-receiver
- *     captures"). There is no other delegatable mode to choose between.
- *   - `preset` MUST be `'pd'` — the only value `buildControlRequest()` lets
- *     through, and also the only way `POST /api/listen/start`'s own
- *     "pick a preset, or enter talkgroup IDs, a tag, or a match regex" check
- *     (server/api/listen/start.post.ts) can be satisfied at all, since
- *     talkgroups/tag/match are each refused separately by the same
- *     function. Sending it is required, but it is not a choice — pinning it
- *     here rather than rendering a one-item dropdown is honest about that.
- *     (`preset` is in fact never forwarded past that gate: capture_control.py's
- *     `ALLOWED_FIELDS` has no `preset` key at all — it hardcodes `--pd` itself
- *     unconditionally, per that file's own build_args() comment. The value
- *     sent here only has to satisfy the two upstream checks that decide
- *     whether the request is delegatable in the first place.)
+ * `mode` is still not a field an operator picks here: it MUST be `'multi'`,
+ * since `buildControlRequest()` refuses every other value outright ("the
+ * capture container only runs multi-receiver captures"). There is no other
+ * delegatable mode to choose between, so it is pinned rather than rendered
+ * as a one-item dropdown.
+ *
+ * `preset` USED TO BE pinned the same way, and no longer is. Until the
+ * preset picker landed it was `'pd'` and nothing else: `buildControlRequest()`
+ * refused every other value, and `capture_control.py`'s `ALLOWED_FIELDS` had
+ * no `preset` key at all — it hardcoded `--pd` itself, so even the one
+ * permitted value was never actually forwarded. Both of those are fixed now
+ * (`PRESET_ARGV` in that file maps each allowlisted name to the fixed argv it
+ * emits), and this is a real operator choice: `pd` alone is ~44 of the
+ * roster's talkgroups, which is why the bay could only ever show that many.
+ * It is still the only selection dimension offered — talkgroups, tag and
+ * match remain refused by `buildControlRequest()`, so a preset is also the
+ * only way `POST /api/listen/start`'s "pick a preset, or enter talkgroup IDs,
+ * a tag, or a match regex" check can be satisfied from this console at all.
  */
+
+/**
+ * The talkgroup presets a console-started capture can run.
+ *
+ * The canonical TypeScript copy: `server/utils/processes.ts` imports this
+ * list for `buildControlRequest()`'s gate and `server/api/listen/start.post.ts`
+ * imports it for its own, so the browser control, the delegation gate and the
+ * HTTP endpoint cannot disagree about what is selectable. The far side of the
+ * wire has its own copy it must own (`scripts/capture_control.py`'s
+ * `PRESET_ARGV` — argv construction is that file's job and its security
+ * boundary, and it validates independently of whatever this console sends);
+ * that copy is pinned to `scripts/make_whitelist.py`'s `PRESETS` by a test
+ * there, and to this one by a test in `server/utils/processes.test.ts`.
+ *
+ * Ordered broadest-service-first rather than alphabetically, because that is
+ * how the picker reads them out: each service's dispatch-only preset
+ * immediately followed by its wider variant.
+ */
+export const CAPTURE_PRESETS = [
+  'pd', 'pd-all', 'fire', 'fire-all', 'ems', 'interop', 'schools', 'publicworks', 'all',
+] as const
+
+export type CapturePreset = typeof CAPTURE_PRESETS[number]
+
+/**
+ * What every capture ran before the picker existed, and what a request that
+ * names no preset still runs (`capture_control.py`'s `DEFAULT_PRESET`).
+ * Police/sheriff dispatch.
+ */
+export const DEFAULT_CAPTURE_PRESET: CapturePreset = 'pd'
+
+/**
+ * Narrow an arbitrary string to a preset this console can actually send.
+ *
+ * `ListenOptions.preset` is typed `string` — it models the FULL local-spawn
+ * surface, where `lwin_listen_multi.sh` also accepts tag/match/tg selection —
+ * so the narrowing has to happen at the delegation gate rather than in the
+ * type. This is that check, shared so the gate and the picker apply the same
+ * one.
+ */
+export function isCapturePreset(value: unknown): value is CapturePreset {
+  return typeof value === 'string' && (CAPTURE_PRESETS as readonly string[]).includes(value)
+}
+
+/**
+ * The operator-facing name of each preset.
+ *
+ * Taken verbatim from `server/api/config/presets.get.ts`, which has served
+ * exactly these nine labels since the pre-redesign `ListenControl.vue` used
+ * them — this is the project's existing vocabulary for these presets, not a
+ * new one invented here. That endpoint now builds its response from this
+ * record instead of holding its own copy, so the console picker and the API
+ * cannot describe the same preset differently.
+ */
+export const CAPTURE_PRESET_LABELS: Record<CapturePreset, string> = {
+  'pd': 'Police / Sheriff Dispatch',
+  'pd-all': 'Police — Dispatch + Talk + Tac',
+  'fire': 'Fire Dispatch',
+  'fire-all': 'Fire — Dispatch + Tac + Talk',
+  'ems': 'EMS + Hospital',
+  'interop': 'Interop / Emergency Ops',
+  'schools': 'Schools',
+  'publicworks': 'Public Works',
+  'all': 'All Baton Rouge Area',
+}
+
+/**
+ * What each preset actually selects — the precise version of the label above.
+ *
+ * These are the TAG NAMES from `scripts/make_whitelist.py`'s `PRESETS` dict,
+ * verbatim — the literal thing that script filters the roster by. They are
+ * deliberately NOT talkgroup counts: a count depends on the reference roster,
+ * the Baton-Rouge-area category filter, the reviewed encryption overrides AND
+ * the operator's own include-encrypted switch, so any number written here
+ * would be a snapshot that silently rots as the roster changes. Naming the
+ * tags tells the operator what a preset covers without inventing a figure
+ * this console cannot honestly compute. (The live count for the RUNNING
+ * session is already on screen, from the session whitelist — the Standby
+ * block's "N followed".)
+ */
+export const CAPTURE_PRESET_TAGS: Record<CapturePreset, string> = {
+  'pd': 'Law Dispatch',
+  'pd-all': 'Law Dispatch + Law Talk + Law Tac',
+  'fire': 'Fire Dispatch',
+  'fire-all': 'Fire Dispatch + Fire-Tac + Fire-Talk',
+  'ems': 'EMS Dispatch + EMS-Tac + EMS-Talk + Hospital',
+  'interop': 'Interop + Emergency Ops + Multi-Tac + Multi-Dispatch',
+  'schools': 'Schools',
+  'publicworks': 'Public Works + Utilities + Transportation',
+  'all': 'every Baton Rouge-area talkgroup, untagged ones included',
+}
 
 /** capture_control.py's own MAX_DURATION_SEC — pinning two exclusive HackRFs
  *  for longer than this on what is almost certainly a typo is refused there
@@ -78,15 +171,22 @@ export function isValidCaptureDuration(seconds: number | string | null): boolean
 /** The exact, and only, request body this console ever sends to `POST /api/listen/start`. */
 export interface CaptureStartBody {
   mode: 'multi'
-  preset: 'pd'
+  preset: CapturePreset
   duration: number
   ess: boolean
   includeEncrypted: boolean
 }
 
 /**
- * Build that body from the operator's two actual choices (duration, and the
- * two independent switches) plus the two fixed fields documented above.
+ * Build that body from the operator's actual choices (preset, duration, and
+ * the two independent switches) plus the one fixed field documented above.
+ *
+ * `preset` is optional here and defaults to `DEFAULT_CAPTURE_PRESET`. That is
+ * not laziness about the caller: it means a caller that has not been taught
+ * about presets yet still emits exactly the body this console sent before the
+ * picker existed, so "no preset chosen" can never silently become "some other
+ * preset" — the one substitution that would start a capture the operator did
+ * not ask for.
  *
  * A single function that always emits this exact shape is what keeps a
  * future edit to this component from accidentally smuggling an extra field
@@ -100,10 +200,11 @@ export function buildCaptureStartBody(opts: {
   duration: number
   ess: boolean
   includeEncrypted: boolean
+  preset?: CapturePreset
 }): CaptureStartBody {
   return {
     mode: 'multi',
-    preset: 'pd',
+    preset: opts.preset ?? DEFAULT_CAPTURE_PRESET,
     duration: opts.duration,
     ess: opts.ess,
     includeEncrypted: opts.includeEncrypted,

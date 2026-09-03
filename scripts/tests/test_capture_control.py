@@ -10,13 +10,23 @@ line", not "does validation work" in the abstract.
 from __future__ import annotations
 
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 from scripts.capture_control import AlreadyRunning, CaptureState, ValidationError, build_args
 from unittest import mock
+import ast
 import http.client
+import re
 import scripts.capture_control as cc
 import signal
 import threading
 import unittest
+
+# The repo's scripts/ directory, resolved from THIS file rather than from the
+# working directory, so the cross-file checks in PresetTest read the same
+# make_whitelist.py and lwin_listen_multi.sh regardless of where the suite is
+# run from (`python3 -m unittest discover -s scripts/tests` from the repo root
+# is only one of the ways this runs).
+SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 
 
 class BuildArgsTest(unittest.TestCase):
@@ -74,8 +84,14 @@ class BuildArgsTest(unittest.TestCase):
             build_args({"mode": {"$ne": None}})
 
     def test_rejects_unknown_fields(self):
+        # `preset` used to be this test's first example of an unknown field.
+        # It is an ACCEPTED field now (see PresetTest below), so the example
+        # was swapped for two that are still genuinely outside ALLOWED_FIELDS
+        # -- one plausible-looking (the launcher really does have a --tag
+        # selector; this endpoint deliberately does not expose it) and one
+        # obviously hostile.
         with self.assertRaises(ValidationError):
-            build_args({"mode": "multi", "preset": "pd"})
+            build_args({"mode": "multi", "tag": "Law Dispatch"})
         with self.assertRaises(ValidationError):
             build_args({"mode": "multi", "extra_flag": "--foo"})
 
@@ -218,13 +234,171 @@ class BuildArgsTest(unittest.TestCase):
 
     def test_no_string_ever_reaches_the_argument_list_unvalidated(self):
         # Every element build_args can possibly emit is drawn from a fixed
-        # set of literals it owns (--ess, --include-encrypted, --pd) or is
-        # str(int) of a range-checked integer. Assert that directly: nothing
-        # in the request's own string values can appear verbatim in the
-        # output.
+        # set of literals it owns (--ess, --include-encrypted, and
+        # PRESET_ARGV's values) or is str(int) of a range-checked integer.
+        # Assert that directly: nothing in the request's own string values can
+        # appear verbatim in the output.
         malicious = "$(rm -rf /)"
         with self.assertRaises(ValidationError):
             build_args({"mode": malicious})
+        with self.assertRaises(ValidationError):
+            build_args({"mode": "multi", "preset": malicious, "durationSec": 600})
+
+
+class PresetTest(unittest.TestCase):
+    """`preset` is the only accepted field whose value is a NAME.
+
+    Every other field this endpoint takes is a boolean, an integer, or a mode
+    that never reaches argv at all, so `preset` is the single place where a
+    caller-supplied string sits closest to a command line on a machine with
+    SDR hardware. These tests exist to pin the property that keeps that safe:
+    the string is a LOOKUP KEY into capture_control.PRESET_ARGV and the emitted
+    tokens come from that table's fixed values, so a name outside the table
+    produces a refusal rather than a token.
+    """
+
+    # The nine presets, spelled out here rather than read from PRESET_ARGV, so
+    # this test fails if a preset is silently dropped from the table as well as
+    # if one is silently added. Deriving the expectation from the thing under
+    # test would make both changes invisible.
+    EXPECTED_ARGV = {
+        "pd":          ["--pd"],
+        "pd-all":      ["--pd-all"],
+        "fire":        ["--fire"],
+        "fire-all":    ["--fire-all"],
+        "ems":         ["--ems"],
+        "interop":     ["--interop"],
+        "schools":     ["--preset", "schools"],
+        "publicworks": ["--preset", "publicworks"],
+        "all":         ["--preset", "all"],
+    }
+
+    def test_every_preset_maps_to_its_expected_argv(self):
+        for preset, expected in self.EXPECTED_ARGV.items():
+            with self.subTest(preset=preset):
+                args, _ = build_args({
+                    "mode": "multi", "preset": preset, "durationSec": 600,
+                })
+                # The preset tokens, then the bare duration LAST -- see
+                # build_args()'s comment on why the number's position is
+                # load-bearing for lwin_listen_multi.sh's argument loop.
+                self.assertEqual(args, expected + ["600"])
+
+    def test_the_table_covers_exactly_the_nine_presets(self):
+        self.assertEqual(sorted(cc.PRESET_ARGV), sorted(self.EXPECTED_ARGV))
+
+    def test_defaults_to_pd_when_no_preset_is_given(self):
+        # The whole point of the default: a caller written before this field
+        # existed must keep getting the identical capture it always got.
+        self.assertEqual(cc.DEFAULT_PRESET, "pd")
+        args, _ = build_args({"mode": "multi", "durationSec": 10800})
+        self.assertEqual(args, ["--pd", "10800"])
+
+    def test_rejects_a_preset_outside_the_allowlist(self):
+        for bad in ("PD", "pd ", "police", "", "pd-all-all"):
+            with self.subTest(preset=bad), self.assertRaises(ValidationError):
+                build_args({"mode": "multi", "preset": bad, "durationSec": 600})
+
+    def test_rejects_an_injection_attempt_instead_of_forwarding_it(self):
+        # The failure this whole design prevents: a shell metacharacter, an
+        # extra flag, or an argument smuggled in as the "preset" reaching argv.
+        for bad in (
+            "pd; rm -rf /",
+            "pd --tg 1,2,3",
+            "$(id)",
+            "--all-areas",
+            "../../etc/passwd",
+        ):
+            with self.subTest(preset=bad), self.assertRaises(ValidationError):
+                build_args({"mode": "multi", "preset": bad, "durationSec": 600})
+
+    def test_rejects_a_non_string_preset_without_crashing(self):
+        # Same unhashable-value trap `mode` has: `x in a_dict` hashes x, so a
+        # list or dict here would be a TypeError (a crash) rather than a
+        # ValidationError (a rejection) without the isinstance check first.
+        for bad in (["pd"], {"$ne": None}, 7, True, 4.2):
+            with self.subTest(preset=bad), self.assertRaises(ValidationError):
+                build_args({"mode": "multi", "preset": bad, "durationSec": 600})
+
+    def test_preset_without_a_duration_is_refused_not_ignored(self):
+        # Emitting it would start an UNBOUNDED capture on a wider whitelist --
+        # strictly more than this endpoint could ever do before. Dropping it
+        # would run `pd` for a caller who asked for something else, invisibly.
+        with self.assertRaises(ValidationError):
+            build_args({"mode": "multi", "preset": "fire-all"})
+
+    def test_preset_composes_with_the_other_flags_and_stays_before_the_duration(self):
+        args, _ = build_args({
+            "mode": "multi", "ess": True, "includeEncrypted": True,
+            "nVoice700": 3, "nVoice800": 7,
+            "preset": "schools", "durationSec": 10800,
+        })
+        self.assertEqual(args, [
+            "--ess", "--include-encrypted",
+            "--n-voice-700", "3", "--n-voice-800", "7",
+            "--preset", "schools", "10800",
+        ])
+
+    def test_emitted_tokens_are_never_the_callers_object(self):
+        # Belt-and-braces on the lookup itself: `PRESET_ARGV[preset]` must not
+        # be `("--preset", preset)`. Passing a str SUBCLASS that remembers it
+        # was the caller's shows the difference -- an implementation that
+        # forwarded the key would put this exact object in argv, while the
+        # lookup puts capture_control's own plain str there instead.
+        class CallerString(str):
+            pass
+
+        args, _ = build_args({
+            "mode": "multi", "preset": CallerString("schools"), "durationSec": 600,
+        })
+        self.assertEqual(args, ["--preset", "schools", "600"])
+        for token in args:
+            self.assertNotIsInstance(token, CallerString)
+
+    def test_preset_names_match_make_whitelist_pys_own_presets(self):
+        """PRESET_ARGV's keys must be names make_whitelist.py understands.
+
+        make_whitelist.py is what actually turns a preset name into a
+        whitelist, and it passes its own `--preset` through argparse's
+        `choices=`, so a name this table emits that that dict does not have is
+        not a subtle bug -- it is a capture that dies at whitelist-build time
+        with the radios already claimed. Parsed out of the source with `ast`
+        rather than imported because that script builds its ArgumentParser and
+        reads the reference DB at module scope: importing it here would run it.
+        """
+        source = (SCRIPTS_DIR / "make_whitelist.py").read_text()
+        presets_dict = None
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "PRESETS" for t in node.targets
+            ):
+                presets_dict = node.value
+                break
+        self.assertIsInstance(
+            presets_dict, ast.Dict,
+            "make_whitelist.py no longer has a module-level PRESETS dict literal; "
+            "this cross-check needs updating, not deleting",
+        )
+        names = {k.value for k in presets_dict.keys}
+        self.assertEqual(sorted(cc.PRESET_ARGV), sorted(names))
+
+    def test_every_emitted_flag_is_one_the_launcher_accepts(self):
+        """The flags in PRESET_ARGV must exist in lwin_listen_multi.sh's own
+        argument loop.
+
+        That script ends its `case` with `-*) exit 1`, so an unknown flag is a
+        capture that refuses to start rather than one that ignores an option.
+        Nothing else in this repo checks the two files against each other.
+        """
+        launcher = (SCRIPTS_DIR / "lwin_listen_multi.sh").read_text()
+        for preset, argv in cc.PRESET_ARGV.items():
+            flag = argv[0]
+            with self.subTest(preset=preset, flag=flag):
+                self.assertRegex(
+                    launcher,
+                    rf"(?m)^\s*{re.escape(flag)}\)",
+                    f"lwin_listen_multi.sh has no `{flag})` case",
+                )
 
 
 class _FakeProc:

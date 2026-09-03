@@ -1,12 +1,17 @@
 import { startListening } from '~/server/utils/processes'
 import { sessionStore } from '~/server/utils/session'
 import type { ListenOptions } from '~/server/utils/processes'
+import { CAPTURE_PRESETS } from '~/utils/listenControl'
 
-// Verified against make_whitelist.py's PRESETS dict.
-const PRESETS = new Set([
-  'pd', 'pd-all', 'fire', 'fire-all', 'ems',
-  'interop', 'schools', 'publicworks', 'all',
-])
+// The nine presets, from the one shared list — no longer a second copy
+// hand-verified against make_whitelist.py. It matters more than it used to:
+// this endpoint's check and the delegation gate's check used to disagree on
+// purpose (this one accepted all nine, buildControlRequest() accepted only
+// "pd"), so a preset could pass here and be refused one layer down. Now that
+// every preset is genuinely selectable, the two must agree exactly, and
+// sharing the list is the only way that stays true without a third place to
+// forget.
+const PRESETS = new Set<string>(CAPTURE_PRESETS)
 const TG_LIST = /^\d+(,\d+)*$/
 
 const MODES = new Set(['single', 'multi'])

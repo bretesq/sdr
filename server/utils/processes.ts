@@ -2,6 +2,13 @@ import { spawn, execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync, statSync, openSync, readSync, closeSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { scriptsDir, sdrRoot, listenLogPath } from './paths'
+// A RELATIVE path, not the `~/utils/…` alias every Nuxt component would use:
+// this module is unit-tested directly by vitest, whose config (vitest.config.ts)
+// defines no Nuxt aliases, so an aliased import here resolves under Nitro and
+// fails under the tests. `utils/listenControl.ts` is a pure, dependency-free
+// module, so importing it into the server bundle costs nothing.
+import { CAPTURE_PRESETS, isCapturePreset } from '../../utils/listenControl'
+import type { CapturePreset } from '../../utils/listenControl'
 
 /**
  * Mirrors scripts/lwin_listen.sh's flags 1:1. Deliberately NOT typed with
@@ -385,12 +392,23 @@ function controlErrorMessage(status: number, json: { error?: string } | null, ra
 
 /**
  * Turn ListenOptions into exactly the request scripts/capture_control.py's
- * build_args() can express: `{ mode: 'multi', ess?, includeEncrypted?,
- * durationSec, nVoice700?, nVoice800? }`. That server hardcodes `--pd` itself
- * (emitted only when durationSec is present) and rejects every field outside
- * that set (scripts/capture_control.py's ALLOWED_FIELDS) — it deliberately
- * exposes ONE operational profile, a bounded PD multi-receiver capture, not
- * the full surface lwin_listen_multi.sh supports when run locally.
+ * build_args() can express: `{ mode: 'multi', preset?, ess?,
+ * includeEncrypted?, durationSec, nVoice700?, nVoice800? }`. That server
+ * turns `preset` into argv by looking the name up in its own PRESET_ARGV
+ * table (never by forwarding the string), emits it only when durationSec is
+ * present, and rejects every field outside that set
+ * (scripts/capture_control.py's ALLOWED_FIELDS) — it exposes a bounded
+ * multi-receiver capture over one of nine talkgroup presets, not the full
+ * surface lwin_listen_multi.sh supports when run locally.
+ *
+ * `preset` was on the refused list until the console gained a picker: this
+ * function let only `'pd'` through, and the control server dropped even that
+ * on the floor and hardcoded `--pd`. Both halves are fixed, and the value is
+ * genuinely forwarded now — which is why the allowlist check below is not
+ * decorative. It is checked HERE against the same CAPTURE_PRESETS the picker
+ * renders, and INDEPENDENTLY again on the far side, because that is where
+ * argv is built and that file owns the boundary regardless of how
+ * trustworthy this caller is.
  *
  * `legs` stays fixed at the remote default (700,800) rather than becoming a
  * passthrough field: nVoice700/nVoice800 are receiver-count TUNING of that
@@ -400,8 +418,8 @@ function controlErrorMessage(status: number, json: { error?: string } | null, ra
  * `legs` itself does not.
  *
  * Anything ListenOptions can ask for that this shape cannot — single-receiver
- * mode, a different preset, talkgroup/tag/match selection, which legs run,
- * --stt, an unbounded run — is refused HERE, before any network call, rather
+ * mode, a preset outside the allowlist, talkgroup/tag/match selection, which
+ * legs run, --stt, an unbounded run — is refused HERE, before any network call, rather
  * than silently dropped or substituted. Coercing `mode` to "multi" or
  * dropping `legs` would start a capture shaped differently from the one the
  * operator asked for, with no way for them to tell from the response; the
@@ -422,6 +440,7 @@ function buildControlRequest(
   sessionId?: number,
 ): {
   mode: 'multi'
+  preset?: CapturePreset
   ess?: boolean
   includeEncrypted?: boolean
   durationSec: number
@@ -435,8 +454,19 @@ function buildControlRequest(
       `mode ${JSON.stringify(opts.mode ?? 'single')} (the capture container only runs multi-receiver captures)`,
     )
   }
-  if (opts.preset !== undefined && opts.preset !== 'pd') {
-    unsupported.push(`preset "${opts.preset}" (only the "pd" preset can be delegated)`)
+  // Narrowed here rather than re-checked at the assignment below, so the
+  // allowlist test and the value that actually gets forwarded are the same
+  // expression. Re-testing later would need a cast to convince TS that the
+  // string is one of the nine, and a cast is exactly the thing that survives
+  // an edit to the check above without complaining.
+  let preset: CapturePreset | undefined
+  if (opts.preset !== undefined) {
+    if (isCapturePreset(opts.preset)) {
+      preset = opts.preset
+    }
+    else {
+      unsupported.push(`preset "${opts.preset}" (must be one of: ${CAPTURE_PRESETS.join(', ')})`)
+    }
   }
   if (opts.talkgroups !== undefined) unsupported.push('talkgroups (no remote talkgroup selection)')
   if (opts.tag !== undefined) unsupported.push('tag (no remote tag selection)')
@@ -454,8 +484,8 @@ function buildControlRequest(
     throw new Error(
       'This request cannot be delegated to the capture container — unsupported: '
       + unsupported.join('; ')
-      + '. The control API only supports a bounded PD capture '
-      + '({ mode: "multi", ess, includeEncrypted, duration, nVoice700, nVoice800 }). '
+      + '. The control API only supports a bounded preset capture '
+      + '({ mode: "multi", preset, ess, includeEncrypted, duration, nVoice700, nVoice800 }). '
       + 'Run the full request directly on a host with HackRF access instead, for example: '
       + './scripts/lwin_listen_multi.sh --ess --include-encrypted --pd 10800',
     )
@@ -463,6 +493,7 @@ function buildControlRequest(
 
   const body: {
     mode: 'multi'
+    preset?: CapturePreset
     ess?: boolean
     includeEncrypted?: boolean
     durationSec: number
@@ -473,6 +504,13 @@ function buildControlRequest(
     mode: 'multi',
     durationSec: opts.duration as number,
   }
+  // Forwarded when the caller named one, omitted when they did not — never
+  // substituted with a default here. Omitted, the control server applies its
+  // own DEFAULT_PRESET ("pd"), which is the same capture this delegation path
+  // ran for every session before presets were selectable; writing "pd" in
+  // ourselves would instead be this function inventing an operator choice,
+  // which is exactly what its docstring says it must not do.
+  if (preset !== undefined) body.preset = preset
   if (opts.ess !== undefined) body.ess = opts.ess
   if (opts.includeEncrypted !== undefined) body.includeEncrypted = opts.includeEncrypted
   if (sessionId !== undefined) body.sessionId = sessionId

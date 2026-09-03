@@ -414,6 +414,35 @@ body {
   text-align: right;
 }
 
+/* The preset row carries a tag list ("ems — EMS Dispatch + EMS-Tac + …"),
+   not a 9ch number, so it takes the rest of the line instead of being sized
+   by its content. `min-width: 0` on both is the part that actually permits
+   the shrink: a flex item's default min-width is `auto`, i.e. its content
+   width, so without it the longest option name sets the row's width and
+   pushes the whole stack wider than the aside. Scoped to a modifier rather
+   than applied to .capture__row-field generally, so the duration row keeps
+   sitting right against its hint exactly as before. */
+.capture__row--wide .capture__row-field {
+  flex: 1;
+  min-width: 0;
+  justify-content: flex-end;
+}
+
+.capture__preset {
+  width: 100%;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+
+/* The closed control inherits .field's board colors, but the dropdown's
+   options are painted by the UA against ITS default surface — white text on
+   white in a dark-themed browser, unreadable, unless they are given the same
+   ground explicitly. */
+.capture__preset option {
+  background: var(--board-deep);
+  color: #dfe4cd;
+}
+
 .capture__hint-inline {
   font-family: var(--f-data);
   font-size: 11px;
