@@ -120,12 +120,20 @@ const consecutiveUnknown = new Map<number, number>()
  * How many consecutive 'unknown' answers (see this file's module comment,
  * "UNREACHABLE IS NOT THE SAME ANSWER AS STOPPED") a delegated session's
  * liveness check tolerates before this file gives up and treats it as
- * stopped anyway. `components/ListenControl.vue` polls `GET
- * /api/listen/status` every 5s for a session's whole life, so this bounds
- * the worst case to roughly `MAX_CONSECUTIVE_UNKNOWN * 5s` of SUSTAINED
- * unreachability — long enough to absorb one dropped connection or Docker
- * bridge hiccup, short enough that a genuinely, permanently dead control API
- * does not wedge a session as "running" forever.
+ * stopped anyway.
+ *
+ * This is a CALL-COUNT bound, not a time bound (final-review.md M3 —
+ * corrects this comment's own earlier claim of "~15s+"). Nothing resets the
+ * counter on elapsed wall-clock time; it only resets on a definitive 'alive'
+ * or 'stopped' answer (see isSessionAlive() below). `components/
+ * ListenControl.vue` polls `GET /api/listen/status` every 5s for a session
+ * someone is actively watching, so in THAT case three consecutive unknowns
+ * roughly is ~15s of sustained unreachability. But for an unattended
+ * session with nobody polling, those same three consecutive checks (the
+ * only three ever made) could span far longer than 15s of real time before
+ * this fires. Do not rely on "~15s" as an operational guarantee — the
+ * property this bound actually gives is "never closes on one blip, always
+ * closes eventually on sustained failure," not a specific duration.
  */
 const MAX_CONSECUTIVE_UNKNOWN = 3
 

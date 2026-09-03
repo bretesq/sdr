@@ -312,12 +312,35 @@ interface ControlStartResponse {
   error?: string
 }
 
-/** The JSON shape scripts/capture_control.py's GET /status returns. Never an error response — see that file's snapshot(). */
+/**
+ * The JSON shape scripts/capture_control.py's GET /status returns. Never an
+ * error response — see that file's snapshot().
+ *
+ * `running` already reflects op25 ITSELF, not merely its process group
+ * (final-review.md's finding 5: `lwin_listen_multi.sh:243` waits on recorder
+ * 0, not op25, so op25 can die while the launcher and all eight recorders
+ * keep the group alive with no radio behind it). snapshot() used to answer
+ * from group liveness alone and reported `running: true` for exactly that
+ * dead-radio state — confirmed as the mechanism behind this project's
+ * multi-hour unattended outages. Nothing on THIS side needs to special-case
+ * that anymore: a `false` here already flows through
+ * delegatedSessionLiveness() -> isSessionAlive() into the ordinary
+ * session-closed path, the same as any other "stopped" answer.
+ *
+ * `degraded`/`message` are present only in that dead-radio-but-group-alive
+ * case, for a caller talking to the control API directly (an operator, a
+ * monitoring script) — server/utils/session.ts's liveness policy does not
+ * need them, since `running: false` alone already says enough for THIS
+ * app's purposes. Detection only, per the brief that added this: nothing
+ * here or in capture_control.py auto-restarts anything.
+ */
 interface ControlStatusResponse {
   running?: boolean
   pid?: number | null
   startedAt?: string
   request?: unknown
+  degraded?: boolean
+  message?: string
 }
 
 /**
@@ -438,7 +461,7 @@ function buildControlRequest(
  * means something else entirely — usually a low-numbered, root-owned kernel
  * thread, since nothing else has run in a fresh capture container's
  * namespace yet. Session liveness/stop for a delegated session goes through
- * isDelegatedSessionAlive()/stopDelegatedCapture() instead, both of which
+ * delegatedSessionLiveness()/stopDelegatedCapture() instead, both of which
  * ask the control API itself rather than resolving this pid locally. See
  * task-3-review.md's Critical C1 for the full trace of what went wrong the
  * first time this pid was treated as host-signalable.
@@ -462,10 +485,22 @@ async function delegateStart(
     // down or still (re)building — name the two commands an operator would
     // actually run, the same way the old in-container refusal named
     // ./scripts/lwin_listen_multi.sh.
+    //
+    // CORRECTED (final-review.md I2): this used to recommend
+    // `./scripts/stack.sh restart capture`, which is exactly wrong to hand an
+    // operator here — this message only ever fires when delegation could NOT
+    // reach the control API, i.e. it does not know whether a capture is
+    // already live in that container. `restart` stops-then-starts, so
+    // recommending it risks taking down a healthy, unreachable-only-by-network
+    // capture the operator can't see from here. `docker compose up -d capture`
+    // is the safe verb instead: it starts the container if it is down, but
+    // (unlike `restart`) does not touch an already-running one with unchanged
+    // config — see docker-compose.yml's `command:` for the config this would
+    // and would not consider changed.
     throw new Error(
       `Cannot reach the capture container's control API at ${CAPTURE_URL} `
       + `(${err instanceof Error ? err.message : String(err)}). Check it with `
-      + './scripts/stack.sh status, or bring it up with ./scripts/stack.sh restart capture',
+      + './scripts/stack.sh status, or bring it up with docker compose up -d capture',
       { cause: err },
     )
   }
@@ -576,7 +611,7 @@ export async function stopDelegatedCapture(): Promise<void> {
  * mechanism server/utils/session.ts uses for it: 'local' sessions get a real,
  * host-signalable pid (isOurListenSession()/stopListening()); 'delegated'
  * sessions get a pid meaningful only inside the capture container's own PID
- * namespace, so they go through isDelegatedSessionAlive()/
+ * namespace, so they go through delegatedSessionLiveness()/
  * stopDelegatedCapture() (the control API) instead. Getting this wrong for a
  * delegated session resolves a foreign host pid instead — see
  * task-3-review.md's Critical C1.
@@ -751,19 +786,54 @@ export async function stopListening(pid: number, procStart: number | null = null
   // exits 0 as soon as a pattern MATCHES, regardless of whether the kill()
   // syscall on any matched pid actually succeeded — so a signal refused with
   // EPERM for every single pid still looks like success to the old
-  // `catch { /* matched nothing */ }` above pkillPattern() replaced. That is
-  // exactly what happens when this runs inside the `web` container against a
-  // capture started on the host: `pid: host` gives it read access to the
-  // host's /proc (pgrep, and therefore isRadioBusy(), works fine), but the
-  // container's AppArmor confinement (the `docker-default` profile) refuses
-  // to let it SIGNAL a process it did not spawn itself — every kill() comes
-  // back EPERM, pkill logs "killing pid NNNN failed: Permission denied" to
-  // stderr, and its exit code is still 0. Reporting success here, as before,
-  // means the console lies about having released a radio that is still on
-  // the air — precisely the "on air · outside session" state this whole
-  // feature exists to distinguish honestly. isRadioBusy() is the one signal
-  // that cannot be spoofed by a refused kill(): it reads the host's /proc
-  // directly, so it still reflects reality even when signalling does not.
+  // `catch { /* matched nothing */ }` above pkillPattern() replaced.
+  //
+  // THE ACTUAL BOUNDARY (measured, not reasoned from the AppArmor template —
+  // see final-review.md's I1, "the tenth instance"): it is HOST vs. CONTAINER,
+  // not "did this process spawn the target". `docker-default`'s template
+  // grants `signal (send,receive) peer=docker-default` — so this container
+  // CAN signal a process in ANY other `docker-default` container (in
+  // particular `capture`, the one place a delegated session's op25 actually
+  // runs), and only fails EPERM against the HOST, which is unconfined and so
+  // not a `docker-default` peer. `pid: host` giving read access to the host's
+  // /proc (pgrep, and therefore isRadioBusy(), works fine) does not imply
+  // signal access follows the same rule — reads and signals are governed by
+  // different mechanisms entirely (namespace visibility vs. AppArmor peer
+  // matching). A prior version of this comment claimed AppArmor blocks this
+  // container from signalling ANY process "it did not start itself" and the
+  // ledger recorded that as a correction of an earlier error; both were
+  // wrong; see final-review.md and progress.md's correction entry.
+  // CAUTION for anyone re-verifying this: `kill -0` is NOT mediated by
+  // AppArmor and will falsely read as "permitted" against a host pid that a
+  // real signal refuses — test with an actual signal (e.g. SIGCONT), never
+  // `kill -0`.
+  //
+  // Practical consequence for THIS function: it is reachable only for a
+  // 'local' (host-started) session (a delegated session is stopped via
+  // stopDelegatedCapture() instead — see that function). Every pattern here
+  // still targets host-visible process names, so in the ordinary case any
+  // pid this pkill actually reaches IS a host process and DOES fail EPERM,
+  // exactly as before — that part of the old reasoning happened to hold. But
+  // if a capture container is ALSO running concurrently (stack.sh's own
+  // "unexpected, check both" status line already treats that as reachable),
+  // the same unscoped `pkill -f` ALSO matches the capture container's op25
+  // and recorders by host-visible pid, and — unlike the host case — that
+  // signal is DELIVERED. So this is not dead code and not merely a permission
+  // check: it can silently kill a healthy, unrelated delegated capture as a
+  // side effect of releasing a stranded HOST radio. Whether to change that
+  // behavior (e.g. scope this pkill the same way lwin_listen_multi.sh's own
+  // cleanup trap now is — see that file's cleanup()) is a decision for
+  // whoever owns this fix, not implied by this comment; this comment only
+  // states what the AppArmor boundary actually is.
+  //
+  // Reporting success on an EPERM-refused kill(), as before this fix, means
+  // the console lies about having released a radio that is still on the air
+  // — precisely the "on air · outside session" state this whole feature
+  // exists to distinguish honestly. isRadioBusy() is the one signal that
+  // cannot be spoofed by a refused kill(): it reads the host's /proc
+  // directly, so it still reflects host reality even when signalling does
+  // not — but it says nothing about the capture container's own state, which
+  // this pkill can change without isRadioBusy() ever noticing.
   if (isRadioBusy()) {
     const detail = pkillErrors.length > 0 ? ` (${pkillErrors.join('; ')})` : ''
     // Built from the same patterns isRadioBusy()/the loop above just tried,
@@ -775,9 +845,11 @@ export async function stopListening(pid: number, procStart: number | null = null
       .join('; ')
     throw new Error(
       `Could not release the radio${detail}. This container can see the `
-      + "host's processes but its AppArmor confinement blocks it from "
-      + `signalling one it did not start itself. Release it on the host `
-      + `instead: ${recovery}`,
+      + "host's processes via /proc, but its AppArmor confinement (docker-default) "
+      + 'blocks it from signalling the HOST specifically — not "any process it '
+      + 'did not start" (it can signal a peer container fine; see '
+      + 'server/utils/processes.ts\'s comment above this throw for the measured '
+      + `boundary). Release it on the host instead: ${recovery}`,
     )
   }
 }

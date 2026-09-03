@@ -195,9 +195,16 @@ services:
     # 15s gives that ladder headroom to complete on its own terms.
     stop_grace_period: 15s
     user: "1000:1000"
-    # plugdev by NUMERIC gid. The HackRF device nodes are root:plugdev 0660, and
-    # this container's /etc/group has no plugdev entry to resolve the name
-    # against. 46 is this host's plugdev gid (getent group plugdev).
+    # plugdev by NUMERIC gid. The HackRF device nodes are root:plugdev 0660.
+    # CORRECTED (final-review.md M1): this container's /etc/group DOES carry
+    # a plugdev entry (`docker exec rtl-capture getent group plugdev` ->
+    # `plugdev:x:46:ubuntu`) — ubuntu:26.04 ships it. group_add is still
+    # REQUIRED anyway, for a different reason: Docker does not populate a
+    # container's supplementary groups from /etc/group for a numeric `user:`
+    # like this one — it only sets the primary uid:gid pair — so plugdev
+    # membership has to be added explicitly here regardless of whether the
+    # name resolves inside the container. 46 is this host's plugdev gid
+    # (getent group plugdev), the same numeric id the image's own entry uses.
     group_add: ["46"]
     # USB passthrough that survives a replug. The whole /dev/bus/usb tree is
     # mounted rather than individual nodes, and the cgroup rule matches usb's

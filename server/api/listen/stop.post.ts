@@ -25,9 +25,17 @@ export default defineEventHandler(async (event) => {
       // delegated session, tracking merely lost to a blip": that specific
       // case is exactly what MAX_CONSECUTIVE_UNKNOWN in session.ts exists to
       // prevent — get() now tolerates a bounded run of 'unknown' answers
-      // before ever closing a delegated row, so reaching here for a healthy
-      // delegated session would require a genuinely sustained (~15s+) control
-      // API outage, not one blip on one Stop click.
+      // before ever closing a delegated row. CORRECTED FRAMING (final-review.md
+      // M3): that tolerance is COUNT-based (3 consecutive 'unknown' polls),
+      // not time-based — nothing resets it on elapsed wall-clock time. With
+      // ListenControl.vue polling every 5s, three unknowns in a row IS
+      // roughly 15s of SUSTAINED unreachability for a session someone is
+      // actively watching — but for an unattended session with nobody
+      // polling, those same three consecutive answers could span far longer
+      // than 15s. The count still only ever moves toward closing on
+      // consecutive bad answers, never on one blip, which is the actual
+      // safety property this fence relies on — just don't read "~15s" as a
+      // real-time guarantee.
       //
       // This is deliberately the untargeted, pid-less stopListening(0), not
       // stopDelegatedCapture() — task-3-review.md's fix-round-2 finding was
@@ -40,11 +48,27 @@ export default defineEventHandler(async (event) => {
       // limitation, not an oversight — a session that falls all the way to
       // "untracked" is the pre-existing stranded-radio recovery path, and
       // stays on it.
+      //
+      // CORRECTED MODEL (final-review.md I1 — "the tenth instance"): this
+      // container's AppArmor confinement does NOT block signalling "any
+      // process it did not start itself", as a previous version of this
+      // comment and the ledger both claimed. The actual boundary is HOST vs.
+      // CONTAINER: `docker-default`'s peer rule lets this container signal
+      // ANOTHER `docker-default` container fine (in particular `capture`),
+      // and refuses only the (unconfined) host. So if a capture container is
+      // ALSO running concurrently when this untargeted path fires, it is NOT
+      // merely "honest reporting" — the pkill below can actually reach and
+      // kill that unrelated, healthy delegated capture, even while the host
+      // radio it was aimed at survives EPERM. See
+      // server/utils/processes.ts's comment above stopListening()'s throw
+      // for the full measured trace; whether to scope this path away from
+      // that blast radius is a decision for whoever owns this fix, not
+      // something this comment resolves.
       // no pid to signal; releases the radio — or throws honestly if it
-      // couldn't (see stopListening()'s isRadioBusy() check: the container
-      // signalling a host-started process can fail with EPERM while pkill's
-      // own exit code still reads as success, so this must not be assumed to
-      // have worked just because it did not throw before this fix).
+      // couldn't (see stopListening()'s isRadioBusy() check: pkill's own
+      // exit code reads as success even when every kill() it attempted was
+      // refused, so this must not be assumed to have worked just because it
+      // did not throw before this fix).
       try {
         await stopListening(0)
         return {
