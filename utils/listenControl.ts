@@ -55,12 +55,21 @@ export const DEFAULT_CAPTURE_DURATION_SEC = MAX_CAPTURE_DURATION_SEC
 /**
  * Is this a duration `POST /api/listen/start` and capture_control.py will
  * both accept, rather than a value that bounces back as a 400 after the
- * round trip? `null` covers an emptied number input (`v-model.number` on a
- * cleared field yields `null`, not `0` or `NaN`), which must read as
- * "not ready yet," not "invalid".
+ * round trip?
+ *
+ * `string | null` alongside `number` because of exactly how Vue's
+ * `v-model.number` behaves, not how it is often assumed to: it runs the raw
+ * DOM string through `looseToNumber` (`parseFloat`, falling back to the
+ * ORIGINAL string when that's `NaN`) — so an emptied `<input type="number">`
+ * puts the empty STRING `''` in the ref, never `null` or `0`. `null` is kept
+ * in the accepted type anyway as a defensive default for a ref no code path
+ * here actually assigns, and any other non-numeric string reaching this
+ * function (paste, autofill) is refused the same way `''` is: `typeof
+ * seconds !== 'number'` is the one check that covers all of it, without
+ * this function needing to know which string shape produced it.
  */
-export function isValidCaptureDuration(seconds: number | null): boolean {
-  if (seconds === null) return false
+export function isValidCaptureDuration(seconds: number | string | null): boolean {
+  if (typeof seconds !== 'number') return false
   return Number.isInteger(seconds)
     && seconds >= MIN_CAPTURE_DURATION_SEC
     && seconds <= MAX_CAPTURE_DURATION_SEC

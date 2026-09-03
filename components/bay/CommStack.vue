@@ -332,11 +332,14 @@ const canStop = computed(() => canStopCapture({ tracked: props.tracked }))
 /**
  * Seconds, not the ISO-ish shape a `<input type=date>` would use — this is
  * exactly the `durationSec` field capture_control.py validates, sent
- * unconverted. `number | null` because `v-model.number` on a number input
- * yields `null` (not `0` or `NaN`) once the operator clears the field;
- * `isValidCaptureDuration` treats that as "not ready", not "invalid".
+ * unconverted. `number | string | null` because `v-model.number` runs the
+ * raw DOM string through Vue's `looseToNumber` (parseFloat, falling back to
+ * the ORIGINAL string on `NaN`) — so clearing the field puts the empty
+ * STRING `''` here, not `null` or `0`. See `isValidCaptureDuration`'s own
+ * docstring in utils/listenControl.ts; that one function is the only place
+ * this shape needs to be reasoned about.
  */
-const duration = ref<number | null>(DEFAULT_CAPTURE_DURATION_SEC)
+const duration = ref<number | string | null>(DEFAULT_CAPTURE_DURATION_SEC)
 const ess = ref(false)
 const includeEncrypted = ref(false)
 const busy = ref(false)
@@ -353,7 +356,7 @@ const durationValid = computed(() => isValidCaptureDuration(duration.value))
  */
 const durationHuman = computed(() => {
   const s = duration.value
-  if (s === null || !Number.isFinite(s)) return ''
+  if (typeof s !== 'number' || !Number.isFinite(s)) return ''
   const h = s / 3600
   return `${Math.round(h * 100) / 100}h`
 })
@@ -376,13 +379,35 @@ const CAPTURE_HINT: Record<ReceiverStatus, string> = {
   idle: 'Runs for the duration above, or until Stop is pressed.',
 }
 
-const captureHint = computed(() => CAPTURE_HINT[status.value])
+/**
+ * One override on top of CAPTURE_HINT, for the same reason canStart/canStop
+ * are not looked up from `status` at all (see the block comment above): a
+ * session that just opened but hasn't granted yet also reads as `'idle'`
+ * here, and CAPTURE_HINT's idle line ("Runs for the duration above...")
+ * would be actively wrong right when the operator is watching for it
+ * hardest — Start is refused (canStart is false) while it claims Start is
+ * what happens next, and it says nothing about the Stop button sitting
+ * right there, lit. `canStop` is what actually tells this apart from
+ * genuine idle (idle has `tracked` false, so canStop is false there too),
+ * so branching on it instead of adding a fifth ReceiverStatus member is
+ * what keeps this a display-only distinction rather than a new state
+ * something else in the bay would also have to learn.
+ */
+const captureHint = computed(() => {
+  if (status.value === 'idle' && canStop.value) {
+    return 'Session just opened — op25 hasn’t granted yet. Stop is available if it doesn’t come up shortly.'
+  }
+  return CAPTURE_HINT[status.value]
+})
 
 async function startCapture(): Promise<void> {
   // Belt-and-braces: the button is already disabled for every one of these,
   // but a stray extra call (e.g. a fast double-click landing between one
   // Vue render and the next) must not re-enter a request already in flight.
-  if (!canStart.value || !durationValid.value || busy.value || duration.value === null) return
+  // The `typeof` check is what actually narrows `duration.value` to `number`
+  // below — `durationValid.value` says the same thing but TS can't follow
+  // that link through a separate computed.
+  if (!canStart.value || !durationValid.value || busy.value || typeof duration.value !== 'number') return
   busy.value = true
   captureError.value = ''
   try {

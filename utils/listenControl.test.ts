@@ -9,8 +9,17 @@ describe('isValidCaptureDuration', () => {
     expect(isValidCaptureDuration(DEFAULT_CAPTURE_DURATION_SEC)).toBe(true)
   })
 
-  it('rejects null — an emptied number input, not zero or NaN', () => {
+  it('rejects null (a defensive default, not something any code path here assigns)', () => {
     expect(isValidCaptureDuration(null)).toBe(false)
+  })
+
+  it('rejects an empty string — what v-model.number actually puts in the ref when the field is cleared', () => {
+    expect(isValidCaptureDuration('')).toBe(false)
+  })
+
+  it('rejects a non-numeric string outright, regardless of what it contains', () => {
+    expect(isValidCaptureDuration('86400')).toBe(false)
+    expect(isValidCaptureDuration('abc')).toBe(false)
   })
 
   it('rejects 0 and negative values (capture_control.py\'s MIN_DURATION_SEC=1)', () => {
