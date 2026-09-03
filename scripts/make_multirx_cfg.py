@@ -198,6 +198,36 @@ LEG_800 = {
 
 LEGS = {'700': LEG_700, '800': LEG_800}
 
+# ------------------------------------------------------------------ the port block
+# The UDP block this config is allowed to occupy, ASSERTED rather than merely
+# described. Until now 23460 and 23492 appeared only in prose -- in
+# scripts/capture_control.py's MIN_VOICE/MAX_VOICE comment and in
+# server/api/listen/start.post.ts's -- and validate() bounded port SPACING
+# (>= 2 apart) with no ceiling at all. Both ends of the budget were
+# comment-bound, and the budget is at exactly zero headroom:
+#
+#     channels = 1 control + n_voice_700 + n_voice_800
+#     last port = BASE_PORT + 2 * (channels - 1)
+#
+# At the MAX_VOICE of 8 that both front doors enforce, that is 17 channels and
+# a last port of 23460 + 2*16 = 23492. Exact. Nothing spare.
+#
+# And there is a live path to overflow already written into this file:
+# LEG_800's comment says its two dead control channels "remain inside the
+# window ... so a real failover would still be reachable if they ever come
+# up." Repopulating LEG_800['control'] makes 18 channels and a last port of
+# 23494 -- outside the block, with nothing anywhere failing. That is what the
+# span check in validate() now catches.
+#
+# The bound is on the SPAN rather than on the absolute value 23492 on purpose:
+# --base-port is a real flag (lwin_listen_multi.sh passes $BASE_PORT through
+# it), and an operator moving the whole block to a free range is legitimate.
+# What is never legitimate is the block growing wider than the window that was
+# sized for it.
+BASE_PORT = 23460
+LAST_PORT = 23492
+PORT_BLOCK_SPAN = LAST_PORT - BASE_PORT          # 32 -> 17 channels, 2 apart
+
 
 def widest_offset(leg: dict) -> float:
     """Largest |channel - centre| this leg must reach, in Hz."""
@@ -390,6 +420,20 @@ def validate(cfg: dict, legs: list[dict]) -> None:
             raise ValueError(
                 f'UDP ports {a} and {b} are less than 2 apart; op25 sends on '
                 f'port+slot_id and the recorder binds port and port+1')
+    # The ceiling half of the same budget -- see PORT_BLOCK_SPAN above. Checked
+    # here, where the ports are, rather than left to the two comments in
+    # capture_control.py and start.post.ts that were the only record of it.
+    span = ports[-1] - ports[0]
+    if span > PORT_BLOCK_SPAN:
+        raise ValueError(
+            f'this config spans UDP ports {ports[0]}-{ports[-1]} ({span} wide, '
+            f'{len(ports)} channels) but the block reserved for it is only '
+            f'{PORT_BLOCK_SPAN} wide ({BASE_PORT}-{LAST_PORT} at the default '
+            f'base port). Either widen the block in ALL THREE places that '
+            f'state it -- here, scripts/capture_control.py MAX_VOICE and '
+            f'server/api/listen/start.post.ts MAX_VOICE -- or use fewer '
+            f'channels. Silently running past it hands a recorder a port some '
+            f'other service may own.')
 
 
 def main() -> int:

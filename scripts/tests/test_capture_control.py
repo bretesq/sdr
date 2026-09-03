@@ -17,6 +17,7 @@ import ast
 import http.client
 import re
 import scripts.capture_control as cc
+import scripts.make_multirx_cfg as mrx
 import signal
 import threading
 import unittest
@@ -32,6 +33,35 @@ SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 # read docker-compose.yml and server/utils/processes.ts, neither of which is
 # under scripts/, so SCRIPTS_DIR.parent is the anchor they need.
 REPO_ROOT = SCRIPTS_DIR.parent
+
+
+def _compose_service_block(compose: str, service: str) -> str:
+    """The lines of docker-compose.yml belonging to ONE service.
+
+    Deliberately a text slice rather than a YAML parse: this repo carries no
+    yaml dependency for the test suite, and the property being checked is a
+    property of a two-space-indented block under `services:`, which the
+    compose file's own fixed formatting makes unambiguous.
+
+    Raises rather than returning '' when the service is absent. An empty slice
+    would make every assertion downstream vacuous, which is the exact failure
+    mode -- a check that quietly stops checking -- this helper was added to
+    remove.
+    """
+    lines = compose.splitlines()
+    start = next(
+        (i for i, line in enumerate(lines) if line == f"  {service}:"), None)
+    if start is None:
+        raise AssertionError(
+            f"docker-compose.yml has no `  {service}:` service. If the file "
+            f"was restructured, re-anchor this helper -- do not let the "
+            f"checks that use it read an empty slice.")
+    # Ends at the next service (same two-space indent), or at EOF. `capture`
+    # is currently last, so the EOF case is the live one and must work.
+    end = next((i for i in range(start + 1, len(lines))
+                if lines[i][:3].strip() and not lines[i].startswith("   ")),
+               len(lines))
+    return "\n".join(lines[start:end])
 
 
 class BuildArgsTest(unittest.TestCase):
@@ -404,6 +434,72 @@ class PresetTest(unittest.TestCase):
                     rf"(?m)^\s*{re.escape(flag)}\)",
                     f"lwin_listen_multi.sh has no `{flag})` case",
                 )
+
+
+class VoiceChannelBudgetTest(unittest.TestCase):
+    """MAX_VOICE is a THREE-file agreement, and two of the three were prose.
+
+    This module's MIN_VOICE/MAX_VOICE comment says its bound "mirror[s]
+    server/api/listen/start.post.ts's MAX_VOICE exactly (both must agree: this
+    is the same physical launcher, lwin_listen_multi.sh, reached by two
+    different front doors)", and both comments justify the value 8 by claiming
+    it keeps the UDP port block inside 23460-23492.
+
+    Neither claim was checked anywhere. `grep MAX_VOICE scripts/tests/` found
+    only uses of cc.MAX_VOICE -- unlike the two nesting-invariant tests in
+    StopLadderTimingTest, which genuinely parse the other file. So the console
+    could accept an nVoice the container refused (or worse, the reverse), and
+    raising either bound could push the port block past its window with
+    nothing failing. Both are asserted here, in the pattern
+    test_the_client_stop_timeout_nests_outside_the_ladder established.
+    """
+
+    def test_the_two_front_doors_agree_on_max_voice(self):
+        ts = (REPO_ROOT / "server" / "api" / "listen" / "start.post.ts").read_text()
+        # Anchored to a whole line and asserted to be unique, so this cannot
+        # start reading some other constant that happens to contain the name
+        # -- the exact defect the compose grace-period check below was fixed
+        # for.
+        matches = re.findall(r"^const MAX_VOICE = (\d+)$", ts, re.M)
+        self.assertEqual(
+            len(matches), 1,
+            "expected exactly one top-level `const MAX_VOICE = N` in "
+            "start.post.ts; if it moved or gained a sibling, re-anchor this "
+            "check rather than relaxing it",
+        )
+        self.assertEqual(
+            int(matches[0]), cc.MAX_VOICE,
+            f"start.post.ts caps nVoice at {matches[0]} and this module caps "
+            f"it at {cc.MAX_VOICE}. They reach the SAME launcher, so a "
+            f"disagreement means a request the console accepts is refused by "
+            f"the container (or the reverse), with the 400 quoting a bound "
+            f"the other half does not hold.",
+        )
+
+    def test_max_voice_keeps_the_udp_block_inside_its_window(self):
+        # The reason the bound is 8 and not 12, checked against the generator
+        # that actually lays the ports out rather than against the sentence in
+        # this module's comment. One control channel plus MAX_VOICE per leg,
+        # two ports apart:
+        channels = 1 + 2 * cc.MAX_VOICE
+        span = 2 * (channels - 1)
+        self.assertLessEqual(
+            span, mrx.PORT_BLOCK_SPAN,
+            f"MAX_VOICE={cc.MAX_VOICE} needs {channels} channels spanning "
+            f"{span} ports, but make_multirx_cfg.py reserves only "
+            f"{mrx.PORT_BLOCK_SPAN} ({mrx.BASE_PORT}-{mrx.LAST_PORT}). "
+            f"make_multirx_cfg.validate() would now refuse to build it -- "
+            f"raise the block there, and in BOTH MAX_VOICE comments, before "
+            f"raising this bound.",
+        )
+        # And it is at the ceiling, not comfortably under it. Stated so the
+        # zero headroom is a recorded fact rather than a surprise: the next
+        # person to add a channel of any kind has to widen the block first.
+        self.assertEqual(
+            span, mrx.PORT_BLOCK_SPAN,
+            "the port budget has always been EXACT at MAX_VOICE. If that is "
+            "no longer true the comments describing it need updating too.",
+        )
 
 
 class _FakeProc:
@@ -821,14 +917,29 @@ class StopLadderTimingTest(unittest.TestCase):
         # the ladder is raised without raising this, the bug is not fixed but
         # MOVED, and to a worse place: Docker's SIGKILL lands mid-ladder.
         compose = (REPO_ROOT / "docker-compose.yml").read_text()
-        matches = re.findall(r"^\s*stop_grace_period:\s*(\d+)s\s*$", compose, re.M)
-        # Asserted so this test cannot silently start reading some OTHER
-        # service's grace period if one is added later.
+        # SCOPED TO THE `capture` SERVICE, not to the file.
+        #
+        # This used to be a file-wide `re.findall` defended by "exactly one
+        # match" -- which is not the same property at all. Delete capture's
+        # stop_grace_period and add one to `whisper`, and the file-wide search
+        # still finds exactly one 90 and this test still passes, while
+        # `capture` silently falls back to Docker's 10s default and Docker
+        # SIGKILLs the cgroup 55 s into a 65 s ladder. The test's own comment
+        # anticipated that ("if another service gained one, scope this check to
+        # the capture service") and scoped nothing. This is that scoping.
+        capture_block = _compose_service_block(compose, "capture")
+        # `capture` is the LAST service in the file, so its slice runs to EOF.
+        # Asserted because an off-by-one there would yield an empty string and
+        # every check below it would pass vacuously.
+        self.assertGreater(len(capture_block.splitlines()), 10, capture_block)
+        matches = re.findall(
+            r"^\s*stop_grace_period:\s*(\d+)s\s*$", capture_block, re.M)
         self.assertEqual(
             len(matches), 1,
-            "expected exactly one stop_grace_period in docker-compose.yml "
-            "(capture's); if another service gained one, scope this check to "
-            "the capture service instead of relaxing it",
+            "expected exactly one stop_grace_period inside docker-compose.yml's "
+            "`capture:` service. Zero means capture is on Docker's 10s default "
+            "-- a SIGKILL 55s into a 65s ladder -- however many other services "
+            "declare one.",
         )
         grace = float(matches[0])
         self.assertGreater(
@@ -841,6 +952,33 @@ class StopLadderTimingTest(unittest.TestCase):
         # forwarding, and the handler reaching STATE.stop() all happen inside
         # the grace period before the ladder's own clock even starts.
         self.assertGreaterEqual(grace, cc.STOP_LADDER_BUDGET_SEC + 10.0)
+
+    def test_a_grace_period_on_another_service_does_not_satisfy_the_check(self):
+        # The defect the scoping above fixes, demonstrated. A file-wide
+        # `re.findall` guarded by "exactly one match" passes on this input --
+        # one match, value 90 -- while `capture` carries no grace period at
+        # all and gets Docker's 10s default. This is the assertion that stops
+        # the scoping from being quietly reverted to a file-wide search.
+        forged = (
+            "services:\n"
+            "  whisper:\n"
+            "    image: rtl-whisper-cuda\n"
+            "    stop_grace_period: 90s\n"
+            "  capture:\n"
+            "    image: rtl-capture\n"
+            "    user: \"1000:1000\"\n"
+        )
+        self.assertEqual(
+            re.findall(r"^\s*stop_grace_period:\s*(\d+)s\s*$", forged, re.M),
+            ["90"],
+            "sanity: the OLD file-wide search finds exactly one 90 here",
+        )
+        block = _compose_service_block(forged, "capture")
+        self.assertNotIn(
+            "stop_grace_period", block,
+            "the scoped slice must not see whisper's grace period; if it "
+            "does, capture can lose its own with nothing failing",
+        )
 
     def test_the_client_stop_timeout_nests_outside_the_ladder(self):
         # NESTING INVARIANT 2. server/utils/processes.ts's

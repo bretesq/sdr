@@ -340,6 +340,49 @@ class TestValidationCatchesRealMistakes(unittest.TestCase):
         with self.assertRaises(ValueError):
             self._cfg([leg])
 
+    def test_the_biggest_config_the_front_doors_allow_still_fits_the_block(self):
+        # THE BUDGET, DERIVED RATHER THAN ASSUMED. Both /start endpoints cap
+        # nVoice700 and nVoice800 at 8, and their comments claim that keeps
+        # the block inside 23460-23492. Nothing checked it. Here is the
+        # arithmetic those comments describe, run: 1 control + 8 + 8 = 17
+        # channels, two ports apart, last port exactly 23492.
+        legs = [dict(M.LEG_700, n_voice=8), dict(M.LEG_800, n_voice=8)]
+        cfg = self._cfg(legs)
+        ports = sorted(int(c['destination'].rsplit(':', 1)[1])
+                       for c in cfg['channels'])
+        self.assertEqual(len(ports), 17)
+        self.assertEqual(ports[0], M.BASE_PORT)
+        self.assertEqual(
+            ports[-1], M.LAST_PORT,
+            "the documented block has ZERO headroom at MAX_VOICE=8. If this "
+            "moved, the comments in scripts/capture_control.py and "
+            "server/api/listen/start.post.ts are now wrong too.",
+        )
+        M.validate(cfg, legs)      # must not raise
+
+    def test_one_channel_past_the_block_is_rejected(self):
+        # The overflow this file's own source invites. LEG_800's comment says
+        # its two dead control channels "remain inside the window ... so a
+        # real failover would still be reachable if they ever come up" --
+        # repopulating that list is a deliberate, documented future change,
+        # and at MAX_VOICE it makes 18 channels ending at 23494. Before the
+        # span check, that produced a config outside the documented block with
+        # nothing failing anywhere.
+        legs = [dict(M.LEG_700, n_voice=8),
+                dict(M.LEG_800, n_voice=8, control=[851_037_500])]
+        with self.assertRaises(ValueError) as e:
+            M.validate(self._cfg(legs), legs)
+        self.assertIn('block reserved for it', str(e.exception))
+
+    def test_the_block_is_bounded_by_span_so_a_moved_base_port_still_works(self):
+        # --base-port is a real flag lwin_listen_multi.sh passes through, so
+        # the bound cannot be the absolute literal 23492: relocating the whole
+        # block to a free range is legitimate, growing it is not.
+        legs = [dict(M.LEG_700, n_voice=8), dict(M.LEG_800, n_voice=8)]
+        cfg = M.build(legs, whitelist='/tmp/wl.txt', cc_whitelist='/tmp/cc.txt',
+                      tgid_tags='', base_port=30000)
+        M.validate(cfg, legs)      # must not raise
+
 
 class CryptKeys(unittest.TestCase):
     """Decryption keys belong on voice channels only.
