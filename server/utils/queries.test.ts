@@ -8,7 +8,57 @@ import {
   listRecordings, getRecording, listTalkgroups, listCategories, codeStats,
   followedTalkgroups, transcriptionHealth, whitelistTgids, talkgroupEncryptionTallies,
 } from './queries'
-import { dbPath, closeDb } from './db'
+import { dbPath, closeDb, getDb } from './db'
+
+/**
+ * Count the SQL statements a call actually EXECUTES.
+ *
+ * Two tests in this file are named for a property their bodies never checked:
+ * `it('rolls the whole corpus up in ONE query, not one per talkgroup')`
+ * asserted only that the returned map had a plausible size, and
+ * `it('joins talkgroup metadata rather than resolving it per row in JS')`
+ * asserted only that the joined columns were populated. A per-talkgroup or
+ * per-row refactor passes both unchanged — which makes them tests of the name,
+ * not of the code. The cost this file's comments care about is real: the bay
+ * polls /api/listen/followed every 20 s across 222 whitelisted talkgroups.
+ *
+ * `getDb()` is a module-level singleton shared by every test in this file, so
+ * the patch is installed on the live handle and MUST come off again — hence
+ * the `finally`. A leaked patch would count another test's queries and, worse,
+ * outlive this describe block.
+ *
+ * Execution is counted rather than preparation because that is what the claim
+ * is about: a loop preparing one statement and running it 222 times is exactly
+ * the shape being ruled out. A Proxy is used rather than assigning over
+ * `st.all` because `all`/`get`/`run` are overloaded (positional and named
+ * parameters), and a single-signature replacement is not assignable to them.
+ */
+function countQueries<T>(fn: () => T): { result: T, runs: number, sql: string[] } {
+  const db = getDb()
+  const realPrepare = db.prepare.bind(db)
+  const sql: string[] = []
+  let runs = 0
+  const EXECUTORS = new Set(['all', 'get', 'run', 'iterate'])
+
+  db.prepare = (source: string) => new Proxy(realPrepare(source), {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver)
+      if (typeof value !== 'function' || !EXECUTORS.has(String(prop))) return value
+      return (...args: unknown[]) => {
+        runs += 1
+        sql.push(source)
+        return Reflect.apply(value, target, args)
+      }
+    },
+  })
+
+  try {
+    return { result: fn(), runs, sql }
+  }
+  finally {
+    db.prepare = realPrepare
+  }
+}
 
 /**
  * These run against the REAL sdr.db, not a fixture.
@@ -137,10 +187,20 @@ describe('listRecordings', () => {
   })
 
   it('joins talkgroup metadata rather than resolving it per row in JS', () => {
-    const { rows } = listRecordings({ tgid: 17165, limit: 1 })
-    expect(rows[0].alpha).toBe('17-BRPD DSP1')
-    expect(rows[0].enc).toBe('partial')
-    expect(rows[0].desc).not.toBeNull()
+    const one = countQueries(() => listRecordings({ tgid: 17165, limit: 1 }))
+    expect(one.result.rows[0].alpha).toBe('17-BRPD DSP1')
+    expect(one.result.rows[0].enc).toBe('partial')
+    expect(one.result.rows[0].desc).not.toBeNull()
+
+    // THE PROPERTY IN THE NAME, which the three assertions above do not test:
+    // they pass just as well against an implementation that looks each row's
+    // talkgroup up with its own query. Asserted as INVARIANCE rather than as
+    // a magic number, because the count itself (a COUNT(*) plus the page) is
+    // an implementation detail while "does not grow with the page size" is
+    // exactly the claim.
+    const many = countQueries(() => listRecordings({ tgid: 17165, limit: 50 }))
+    expect(many.result.rows.length).toBeGreaterThan(one.result.rows.length)
+    expect(many.runs).toBe(one.runs)
   })
 
   it('filters by encryption using the real vocabulary', () => {
@@ -526,8 +586,17 @@ describe('talkgroupEncryptionTallies', () => {
   it('rolls the whole corpus up in ONE query, not one per talkgroup', () => {
     // Not a style preference: /api/listen/followed polls every 20s over 222
     // whitelisted talkgroups, and roster search can match thousands of 4,163.
-    const tallies = talkgroupEncryptionTallies()
+    const { result: tallies, runs, sql } = countQueries(
+      () => talkgroupEncryptionTallies(),
+    )
     expect(tallies.size).toBeGreaterThan(0)
+    // THE PROPERTY IN THE NAME. One statement executed, however many
+    // talkgroups came back — so the cost does not scale with the roster.
+    expect(runs).toBe(1)
+    expect(sql[0]).toContain('GROUP BY tgid')
+    // And the one query really did roll up many talkgroups, so `runs === 1`
+    // cannot be satisfied by a query that returns one row.
+    expect(tallies.size).toBeGreaterThan(50)
     // Every talkgroup that has ever been recorded, and no more.
     expect(tallies.size).toBeLessThan(listTalkgroups({ area: 'all' }).total)
   })
@@ -544,7 +613,14 @@ describe('talkgroupEncryptionTallies', () => {
     // Measured: 0xAA is in real use here, and the one-off algids are a handful
     // of bit errors rather than a second algorithm.
     expect(adp).toBeGreaterThan(100)
-    expect(unhandled).toBeLessThan(20)
+    // A RATIO, not the absolute `toBeLessThan(20)` this used to be. A capture
+    // is always running, so bit errors accumulate; an absolute ceiling on them
+    // was a test that would go red on corpus growth alone, with no code change
+    // anywhere — and the obvious "fix" for a red bound is to raise it, which
+    // would eventually relax the check past the point of noticing a genuine
+    // second algorithm. The SHAPE is what the claim rests on: the one-off
+    // algids are noise against ADP, not a rival.
+    expect(unhandled).toBeLessThan(adp * 0.1)
   })
 
   it('never badges a talkgroup off a corrupted ESS alone', () => {
@@ -552,8 +628,24 @@ describe('talkgroupEncryptionTallies', () => {
     // carrying a bit-error algid also carries real ADP, so excluding them
     // relabels nothing today and only stops the next flipped bit from
     // inventing a warning. Asserted rather than assumed.
-    for (const t of talkgroupEncryptionTallies().values()) {
-      if (t.unhandled > 0) expect(t.adp).toBeGreaterThan(0)
+    for (const [tgid, t] of talkgroupEncryptionTallies()) {
+      if (t.unhandled === 0) continue
+      // The failure message says WHAT WENT RED, because this one asserts a
+      // property of the DATA rather than of the code. If it fires, nothing in
+      // this repo is broken: a talkgroup is carrying non-ADP algids and no ADP
+      // at all, which is what a genuine second algorithm on this system would
+      // look like. The response is to go and classify it in
+      // utils/callEncryption.ts — NOT to relax this bound.
+      expect(
+        t.adp,
+        `talkgroup ${tgid} has ${t.unhandled} call(s) with a non-ADP algid and `
+        + `NO ADP calls. utils/talkgroupEncryption.ts excludes 'unhandled' from `
+        + `both sides of its ratio on the argument that every such talkgroup `
+        + `also carries real ADP, so those algids are bit errors. That argument `
+        + `no longer holds for this talkgroup. This is a fact about the corpus, `
+        + `not a code regression: look at the algids on tgid ${tgid} before `
+        + `touching either file.`,
+      ).toBeGreaterThan(0)
     }
   })
 

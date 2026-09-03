@@ -80,6 +80,35 @@ describe('talkgroupEncryption', () => {
     expect(v.state).toBe('partial')
   })
 
+  it('pins ENCRYPTED_RATIO exactly, not merely to a range', () => {
+    // MIN_CONFIDENT_KNOWN_CALLS is pinned to the value (9 -> partial, 10 ->
+    // encrypted, below). ENCRYPTED_RATIO was not: the two cases bracketing it
+    // were 11/15 = 0.733 and 21/24 = 0.875, so ANY threshold in (0.733, 0.875]
+    // passed — 0.75 and 0.85 included. The value is well argued in this
+    // module's header (0.8 keeps 17-SO Court 2 at 0.875 and excludes BRPD
+    // dispatch at 0.37); this is about the pin, not the value.
+    //
+    // Both cases sit at or beside 0.8 exactly, on a sample past the floor so
+    // the ratio is the only bound in play, and the counts are derived from
+    // ENCRYPTED_RATIO rather than written out — so moving the constant moves
+    // the boundary these two probe and the equality assertions below fail.
+    expect(ENCRYPTED_RATIO).toBe(0.8)
+    const n = 20
+    const atThreshold = Math.round(ENCRYPTED_RATIO * n)          // 16 of 20
+    const justUnder = atThreshold - 1                            // 15 of 20
+
+    const on = talkgroupEncryption(
+      tally({ adp: atThreshold, clear: n - atThreshold }))
+    expect(on.encRatio).toBe(ENCRYPTED_RATIO)
+    expect(on.state).toBe('encrypted')       // the bound is inclusive
+
+    const under = talkgroupEncryption(
+      tally({ adp: justUnder, clear: n - justUnder }))
+    expect(under.encRatio).toBeLessThan(ENCRYPTED_RATIO)
+    expect(under.knownCalls).toBeGreaterThanOrEqual(MIN_CONFIDENT_KNOWN_CALLS)
+    expect(under.state).toBe('partial')
+  })
+
   it('promotes the same ratio once the sample reaches the floor', () => {
     const thin = talkgroupEncryption(tally({ adp: 9, clear: 0 }))
     const enough = talkgroupEncryption(tally({ adp: 10, clear: 0 }))
