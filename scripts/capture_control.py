@@ -518,6 +518,18 @@ def log(message: str) -> None:
 
 # --- shutdown signal handling ------------------------------------------
 
+# Set the instant the first shutdown signal is handled. See
+# _handle_shutdown_signal()'s docstring for why this guard is needed HERE
+# specifically, unlike POST /stop's own accepted "two concurrent calls both
+# run the ladder, harmless" case: a second signal arriving mid-ladder would
+# stack a second ~10s wait on top of the first rather than merely repeating
+# it, and that combined wait can exceed this service's 15s
+# stop_grace_period -- letting Docker's own SIGKILL cut the graceful
+# shutdown short, which is the exact outcome the SIGTERM handler exists to
+# prevent.
+_SHUTTING_DOWN = threading.Event()
+
+
 def _stop_for_shutdown() -> None:
     """The actual body of the shutdown handler, split out from
     _handle_shutdown_signal() so it can be unit tested without exercising
@@ -556,16 +568,27 @@ def _handle_shutdown_signal(signum: int, frame) -> None:  # noqa: ANN001 (stdlib
     run -- there is nothing left to flush (log() already used
     flush=True) and nothing left to clean up.
 
-    No reentrancy guard: a second signal arriving while this is still
-    blocked inside STATE.stop()'s wait loop can invoke this function again
-    on the same thread (CPython checks for pending signals between bytecode
-    instructions, including after time.sleep() returns). That is fine
-    without one -- CaptureState.stop() concurrently running its own ladder
-    twice is the same "harmless, already possible via two POST /stop calls"
-    case this project has already decided not to guard against (see
-    STATE.stop()'s own docstring); adding a guard here would solve a
-    problem this codebase has explicitly chosen to accept elsewhere.
+    REENTRANCY GUARD, and why this case is NOT the same as POST /stop's
+    accepted "two concurrent calls both run the ladder, harmless" one: a
+    second signal arriving while this is still blocked inside
+    STATE.stop()'s wait loop can invoke this function again on the same
+    thread (CPython checks for pending signals between bytecode
+    instructions, including after time.sleep() returns). Left unguarded,
+    that STACKS a second ~10s wait on top of the first, rather than merely
+    repeating it -- POST /stop's two-concurrent-calls case re-signals an
+    already-signalled group and both callers wait roughly the SAME window,
+    which is genuinely harmless. Two shutdown signals nested like this can
+    approach ~20s combined, past the 15s stop_grace_period
+    docker-compose.yml sets for this service -- so Docker's own SIGKILL
+    would fire first and cut the graceful ladder short partway through the
+    second, nested wait, which is precisely the failure this handler exists
+    to prevent (see Critical #1 in task-2-review.md). So: the first signal
+    runs the ladder; every signal after it, until this process actually
+    exits, is a no-op.
     """
+    if _SHUTTING_DOWN.is_set():
+        return
+    _SHUTTING_DOWN.set()
     _stop_for_shutdown()
     os._exit(0)
 

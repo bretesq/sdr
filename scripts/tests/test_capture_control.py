@@ -252,6 +252,15 @@ class ShutdownSignalTest(unittest.TestCase):
     that skips lwin_listen_multi.sh's cleanup trap.
     """
 
+    def setUp(self):
+        # _SHUTTING_DOWN is a module-level singleton flag (it must be, so a
+        # real second OS signal can see the first invocation already set
+        # it) -- clear it before and after each test so one test's shutdown
+        # doesn't leave the next test's _handle_shutdown_signal() call a
+        # permanent, silent no-op.
+        cc._SHUTTING_DOWN.clear()
+        self.addCleanup(cc._SHUTTING_DOWN.clear)
+
     def test_install_shutdown_handlers_wires_sigterm_and_sigint(self):
         prev_term = signal.getsignal(signal.SIGTERM)
         prev_int = signal.getsignal(signal.SIGINT)
@@ -284,14 +293,39 @@ class ShutdownSignalTest(unittest.TestCase):
         self.assertIsNone(fresh.pgid)
 
     def test_handle_shutdown_signal_stops_then_exits(self):
-        # os._exit is mocked so this test process survives. Both calls
-        # happening, in a plain sequential function body with no branching
-        # between them, is what proves stop-before-exit -- exiting first
-        # would tear the process down mid-STATE.stop(), abandoning the
-        # cleanup ladder partway through.
+        # os._exit is mocked so this test process survives. A shared parent
+        # Mock with both calls attached to it is what makes this an actual
+        # ORDERING assertion rather than two independent "was it called"
+        # checks -- a regression that swapped the two lines (exit before
+        # stop, which would tear the process down mid-STATE.stop() and
+        # abandon the cleanup ladder partway through) would still pass
+        # "both called once" but would fail this.
+        manager = mock.Mock()
+        with mock.patch.object(cc, "_stop_for_shutdown") as stop_for_shutdown, \
+             mock.patch.object(cc.os, "_exit") as os_exit:
+            manager.attach_mock(stop_for_shutdown, "stop_for_shutdown")
+            manager.attach_mock(os_exit, "os_exit")
+            cc._handle_shutdown_signal(signal.SIGTERM, None)
+
+        self.assertEqual(
+            manager.mock_calls,
+            [mock.call.stop_for_shutdown(), mock.call.os_exit(0)],
+        )
+
+    def test_a_second_signal_during_shutdown_does_not_stack_a_second_wait(self):
+        # Restored after briefly being removed on the mistaken belief that
+        # POST /stop's "concurrent calls are harmless" ruling covered this
+        # too -- it does not. Two nested shutdown-signal invocations would
+        # stack a second ~10s wait on top of the first (unlike two /stop
+        # calls, which both wait out roughly the SAME window), risking
+        # Docker's 15s stop_grace_period cutting the second wait short with
+        # a SIGKILL -- see _handle_shutdown_signal's docstring. The second
+        # signal here must be a complete no-op: no second STATE.stop(), no
+        # second os._exit call.
         with mock.patch.object(cc, "_stop_for_shutdown") as stop_for_shutdown, \
              mock.patch.object(cc.os, "_exit") as os_exit:
             cc._handle_shutdown_signal(signal.SIGTERM, None)
+            cc._handle_shutdown_signal(signal.SIGINT, None)
         stop_for_shutdown.assert_called_once()
         os_exit.assert_called_once_with(0)
 
