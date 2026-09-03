@@ -159,3 +159,36 @@ services:
       - sh
       - -c
       - corepack pnpm dev --host 0.0.0.0 --port 3002
+
+  capture:
+    build:
+      context: ./docker/capture
+      dockerfile: Dockerfile
+    image: rtl-capture
+    container_name: rtl-capture
+    restart: unless-stopped
+    user: "1000:1000"
+    # plugdev by NUMERIC gid. The HackRF device nodes are root:plugdev 0660, and
+    # this container's /etc/group has no plugdev entry to resolve the name
+    # against. 46 is this host's plugdev gid (getent group plugdev).
+    group_add: ["46"]
+    # USB passthrough that survives a replug. The whole /dev/bus/usb tree is
+    # mounted rather than individual nodes, and the cgroup rule matches usb's
+    # major 189 with ANY minor, because the HackRFs re-enumerate to new minor
+    # numbers whenever they are unplugged -- which happened once already during
+    # this project. Enumerating nodes here would work only until the next replug.
+    device_cgroup_rules:
+      - 'c 189:* rmw'
+    volumes:
+      - *repo
+      - /dev/bus/usb:/dev/bus/usb
+      # The host's op25 build. Read-only, and the reason this image needs no
+      # gnuradio-dev or cmake: the compiled blocks already exist on the host and
+      # are ABI-compatible with this image's gnuradio.
+      - /usr/local/lib/x86_64-linux-gnu:/usr/local/lib/x86_64-linux-gnu:ro
+      - /usr/local/lib/python3.14/dist-packages:/usr/local/lib/python3.14/dist-packages:ro
+    working_dir: /home/besquivel/rtl
+    # Task 2 replaces this with the control server. Until then the container
+    # exists only to prove the hardware path, so it idles rather than exiting
+    # and fighting the restart policy.
+    command: ["sleep", "infinity"]
