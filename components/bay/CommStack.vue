@@ -1,205 +1,278 @@
 <template>
   <aside class="stack">
-    <!-- ACTIVE: what the bay is doing right now -->
-    <div class="stack__block">
-      <span class="stack__label">Active</span>
-      <div class="readout" :class="{ 'readout--dim': !armed }">
-        {{ armed ? selected.length : '—' }}<span class="readout__unit"> tg armed</span>
-      </div>
-      <button
-        class="arm"
-        :class="{ 'arm--on': armed }"
-        :disabled="!armed && selected.length === 0"
-        style="margin-top: 10px"
-        @click="$emit('toggle')"
-      >
-        <span class="arm__lamp" />
-        {{ armed ? 'Stop' : 'Arm bay' }}
-      </button>
-      <p v-if="!armed && selected.length === 0" class="idle__sub" style="text-align: left; margin-top: 8px">
-        Tick a talkgroup below to arm.
-      </p>
-    </div>
-
-    <!-- RECEIVER: the machinery, reported honestly -->
-    <div class="stack__block">
-      <span class="stack__label">Receiver</span>
-      <div class="readout readout--dim" style="font-size: 15px">
-        {{ receiverLine }}
-      </div>
-      <p class="idle__sub" style="text-align: left; margin-top: 6px">
-        {{ receiverNote }}
-      </p>
-      <!--
-        LAYOUT: how many radios and voice streams are actually in play.
-
-        The old console had this and the redesign dropped it: the since-deleted
-        ListenControl.vue carried a config summary plus `700 MHz voice
-        receivers` / `800 MHz voice receivers` controls (see its
-        `configSummary` at 02c2804), and the bay replaced all of it with
-        `{n} armed · {idle|on air|stalled}` — which says nothing about the
-        receiver pool a missed call would have been missed by. It sits in the
-        Receiver block rather than in Capture because it describes the
-        machinery, not a control: the counts are not settable from this
-        console (see `layoutNote`), so putting them beside the Capture fields
-        would invite exactly the wrong reading.
-
-        Reference information, so it is `idle__sub` at reading size rather
-        than a `readout` — the receiver STATE above is what an operator scans
-        for; this is what they check once and stop noticing. Three separate
-        `<p>`s rather than one, because the leg split is suppressed for a
-        single-leg capture (where it only repeats the totals) and every line
-        disappears together when there is no layout to report.
-      -->
-      <p v-if="layoutLine" class="idle__sub" style="text-align: left; margin-top: 8px">
-        Layout: {{ layoutLine }}
-      </p>
-      <p v-if="layoutLegLine" class="idle__sub" style="text-align: left">
-        {{ layoutLegLine }}
-      </p>
-      <p v-if="layoutNote" class="idle__sub" style="text-align: left">
-        {{ layoutNote }}
-      </p>
-    </div>
-
     <!--
-      CAPTURE: starts and stops the RADIO. Separate from the Active block
-      above on purpose — Arm/Stop up there only gates which clips this
-      browser tab plays; it has never touched op25. This is the control the
-      redesign dropped entirely — after the bay replaced it, no page rendered
-      the old ListenControl.vue, which sat unreferenced until it was deleted —
-      so an operator had no way to start or stop a capture from the console at
-      all. See utils/listenControl.ts's module
-      docstring for exactly why the surface below is this small: it is every
-      field server/utils/processes.ts's buildControlRequest() will actually
-      delegate to the capture container, and nothing it refuses.
+      THE BLOCK REGION — everything above the standby list, in one scroller.
+
+      Its own element rather than four loose children of `.stack` because the
+      standby list is the primary control on this console and must keep a
+      usable height at every viewport it runs on. See bay.css's `.stack__head`
+      for the flex arithmetic; the short version is that this region yields
+      first and scrolls itself, so the list below it can never be squeezed to
+      nothing by the blocks above. The Standby header and the list itself sit
+      OUTSIDE it, pinned: a roster search whose field has scrolled off is a
+      search the operator has to go find.
     -->
-    <div class="stack__block">
-      <span class="stack__label">Capture</span>
+    <div class="stack__head">
+      <!-- ACTIVE: what the bay is doing right now -->
+      <div class="stack__block">
+        <span class="stack__label">Active</span>
+        <div class="readout" :class="{ 'readout--dim': !armed }">
+          {{ armed ? selected.length : '—' }}<span class="readout__unit"> tg armed</span>
+        </div>
+        <button
+          class="arm"
+          :class="{ 'arm--on': armed }"
+          :disabled="!armed && selected.length === 0"
+          style="margin-top: 10px"
+          @click="$emit('toggle')"
+        >
+          <span class="arm__lamp" />
+          {{ armed ? 'Stop' : 'Arm bay' }}
+        </button>
+        <p v-if="!armed && selected.length === 0" class="idle__sub" style="text-align: left; margin-top: 8px">
+          Tick a talkgroup below to arm.
+        </p>
+      </div>
 
-      <p class="idle__sub" style="text-align: left; margin-bottom: 8px">
-        Two radios, multi-receiver — the only capture shape this console can hand
-        to the capture container. The preset picks which talkgroups it follows.
-      </p>
+      <!-- RECEIVER: the machinery, reported honestly -->
+      <div ref="receiverBlock" class="stack__block">
+        <span class="stack__label">Receiver</span>
+        <div class="readout readout--dim" style="font-size: 15px">
+          {{ receiverLine }}
+        </div>
+        <p class="idle__sub" style="text-align: left; margin-top: 6px">
+          {{ receiverNote }}
+        </p>
+        <!--
+          LAYOUT: how many radios and voice streams are actually in play.
 
-      <label class="capture__row capture__row--wide">
-        <span>Preset</span>
-        <span class="capture__row-field">
-          <select
-            v-model="preset"
-            class="field capture__preset"
-            :disabled="!canStart || busy"
-            aria-label="Talkgroup preset"
+          The old console had this and the redesign dropped it: the since-deleted
+          ListenControl.vue carried a config summary plus `700 MHz voice
+          receivers` / `800 MHz voice receivers` controls (see its
+          `configSummary` at 02c2804), and the bay replaced all of it with
+          `{n} armed · {idle|on air|stalled}` — which says nothing about the
+          receiver pool a missed call would have been missed by. It sits in the
+          Receiver block rather than in Capture because it describes the
+          machinery, not a control: the counts are not settable from this
+          console (see `layoutNote`), so putting them beside the Capture fields
+          would invite exactly the wrong reading.
+
+          Reference information, so it is `idle__sub` at reading size rather
+          than a `readout` — the receiver STATE above is what an operator scans
+          for; this is what they check once and stop noticing. Three separate
+          `<p>`s rather than one, because the leg split is suppressed for a
+          single-leg capture (where it only repeats the totals) and every line
+          disappears together when there is no layout to report.
+
+          FOLDED, because "check it once and stop noticing" is precisely what a
+          fold is for: the three lines came to 114px of a 768px column — half of
+          what the standby list was left with. The crease still prints the
+          totals, so the fact an operator would glance for is not behind the
+          fold; only the leg split and the provenance caption are. `layoutLine`
+          gates the whole fold for the same reason it gated the first `<p>`: no
+          layout on disk, nothing to report, no crease.
+        -->
+        <template v-if="layoutLine">
+          <button
+            class="fold"
+            type="button"
+            :aria-expanded="layoutOpen"
+            aria-controls="stack-layout"
+            @click="toggleLayout"
           >
-            <option v-for="p in CAPTURE_PRESETS" :key="p" :value="p">
-              {{ p }} — {{ CAPTURE_PRESET_LABELS[p] }}
-            </option>
-          </select>
-        </span>
-      </label>
-      <!--
-        What the selected preset actually follows: the TAG NAMES
-        make_whitelist.py filters the roster by, which is the precise version
-        of the option's human label. Always shown, for the same reason
-        `durationHuman` is always shown beside the duration field — a value
-        whose consequences are one indirection away should state them on
-        screen rather than requiring the operator to remember what "interop"
-        expands to.
-      -->
-      <p class="idle__sub" style="text-align: left; margin-top: -2px">
-        Follows: {{ CAPTURE_PRESET_TAGS[preset] }}
-      </p>
+            <span class="stack__label fold__label">Layout</span>
+            <span v-if="!layoutOpen" class="fold__sum">{{ layoutLine }}</span>
+            <span class="fold__box" :class="{ 'fold__box--open': layoutOpen }" aria-hidden="true" />
+          </button>
+          <div v-show="layoutOpen" id="stack-layout" class="fold__body">
+            <p class="idle__sub" style="text-align: left">
+              Layout: {{ layoutLine }}
+            </p>
+            <p v-if="layoutLegLine" class="idle__sub" style="text-align: left">
+              {{ layoutLegLine }}
+            </p>
+            <p v-if="layoutNote" class="idle__sub" style="text-align: left">
+              {{ layoutNote }}
+            </p>
+          </div>
+        </template>
+      </div>
 
       <!--
-        Two things the operator must not be misled about. They are INDEPENDENT
-        conditions, so they are two independent `v-if`s: chained, whichever
-        rendered first would suppress the other in states where both are true.
-
-        1. The picker applies to the NEXT Start, never to a running capture.
-           The primary defence is structural, not textual: like every other
-           control in this block it is `:disabled` whenever Start is
-           unavailable, so it cannot be changed under a running session and
-           appear to have done something. This line says so in words — and it
-           is gated on `tracked`, NOT on `!canStart`. canStartCapture() is
-           `!tracked && !radioBusy`, so `!canStart` is also true when the
-           radio is busy with a capture this console never started
-           ('onAirOutside'), where there is no console session to "retune" and
-           this sentence would be describing something that does not exist.
-
-        2. A wider preset raises concurrent-call load. The 800 MHz leg's
-           voice-receiver count was raised 5 -> 7 in 042cc3a on concurrency
-           measured under `pd` ALONE (peak 5 of 5, ceiling touched 17 times in
-           7,136 calls); every other preset here follows strictly more
-           talkgroups than that measurement covered, so the headroom behind
-           those counts is unverified for them. Deliberately qualitative — the
-           honest number would be a fresh measurement, and inventing a ratio
-           from the current roster would rot the moment the roster changes.
-           Shown whenever a wide preset is SELECTED, regardless of whether
-           Start happens to be available this instant: it is a fact about the
-           selection, not about the button.
+        CAPTURE: starts and stops the RADIO. Separate from the Active block
+        above on purpose — Arm/Stop up there only gates which clips this
+        browser tab plays; it has never touched op25. This is the control the
+        redesign dropped entirely — after the bay replaced it, no page rendered
+        the old ListenControl.vue, which sat unreferenced until it was deleted —
+        so an operator had no way to start or stop a capture from the console at
+        all. See utils/listenControl.ts's module
+        docstring for exactly why the surface below is this small: it is every
+        field server/utils/processes.ts's buildControlRequest() will actually
+        delegate to the capture container, and nothing it refuses.
       -->
-      <p v-if="tracked" class="idle__sub" style="text-align: left">
-        Applies to the next Start — changing it does not retune the running capture.
-      </p>
-      <p
-        v-if="preset !== DEFAULT_CAPTURE_PRESET"
-        class="idle__sub capture__warn"
-        style="text-align: left"
-      >
-        Wider than {{ DEFAULT_CAPTURE_PRESET }}. The voice-receiver counts were tuned
-        on concurrency measured under {{ DEFAULT_CAPTURE_PRESET }} alone — more
-        talkgroups means more overlapping calls, and calls past the receiver pool
-        are missed, not queued.
-      </p>
+      <div ref="captureBlock" class="stack__block">
+        <span class="stack__label">Capture</span>
 
-      <label class="capture__row">
-        <span>Duration</span>
-        <span class="capture__row-field">
-          <input
-            v-model.number="duration"
-            class="field capture__duration"
-            type="number"
-            :min="MIN_CAPTURE_DURATION_SEC"
-            :max="MAX_CAPTURE_DURATION_SEC"
-            :disabled="!canStart || busy"
-            aria-label="Capture duration in seconds"
-          >
-          <span class="capture__hint-inline">{{ durationHuman }}</span>
-        </span>
-      </label>
-      <p v-if="!durationValid" class="idle__sub capture__warn" style="text-align: left">
-        Must be a whole number of seconds from {{ MIN_CAPTURE_DURATION_SEC }} to
-        {{ MAX_CAPTURE_DURATION_SEC }} (24h) — capture_control.py's own bound. Required:
-        the delegated request has no "run until stopped".
-      </p>
+        <!--
+          THE SETUP FIELDS FOLD; START/STOP AND EVERY WARNING DO NOT.
 
-      <label class="capture__toggle">
-        <input v-model="ess" type="checkbox" :disabled="!canStart || busy">
-        Capture encryption headers (ESS, ~10&times; log volume)
-      </label>
+          This block was 386px of a 768px column — more than the standby list,
+          the Capture block's own presets, and the Receiver block put together,
+          for a control that is touched when a capture is started and not again
+          for hours. Folded, it is the four lines an operator actually needs at
+          rest: what Start would send, the button, what the button will do, and
+          anything that went wrong.
 
-      <label class="capture__toggle">
-        <input v-model="includeEncrypted" type="checkbox" :disabled="!canStart || busy">
-        Include fully-encrypted talkgroups (records silence)
-      </label>
+          What stays OUT of the fold is the part that matters. Stop must never
+          be behind a fold on a public-safety console, so the `.arm` button is a
+          sibling of the fold, not a child of it. The two `capture__warn` lines
+          are siblings too: `!durationValid` DISABLES Start, and a disabled
+          button whose reason is folded away is a dead control with no
+          explanation; the wider-preset warning is, by its own note below, "a
+          fact about the selection, not about the button", and a fact does not
+          stop being true because its field is folded. Both render nothing in
+          the ordinary state, so they cost the collapsed block no height.
 
-      <button
-        class="arm"
-        :class="{ 'arm--on': canStop }"
-        :disabled="busy || (!canStart && !canStop) || (canStart && !durationValid)"
-        style="margin-top: 10px"
-        @click="canStop ? stopCapture() : startCapture()"
-      >
-        <span class="arm__lamp" />
-        {{ captureButtonLabel }}
-      </button>
+          `v-show`, not `v-if`: a half-typed duration must survive a fold.
+        -->
+        <button
+          class="fold"
+          type="button"
+          :aria-expanded="captureOpen"
+          aria-controls="capture-fields"
+          @click="toggleCapture"
+        >
+          <span class="stack__label fold__label">Settings</span>
+          <span v-if="!captureOpen" class="fold__sum">{{ captureSummary }}</span>
+          <span class="fold__box" :class="{ 'fold__box--open': captureOpen }" aria-hidden="true" />
+        </button>
 
-      <p class="idle__sub" style="text-align: left; margin-top: 6px">
-        {{ captureHint }}
-      </p>
-      <p v-if="captureError" class="idle__sub capture__warn" style="text-align: left; margin-top: 6px">
-        {{ captureError }}
-      </p>
+        <div v-show="captureOpen" id="capture-fields" class="fold__body">
+          <p class="idle__sub" style="text-align: left; margin-bottom: 8px">
+            Two radios, multi-receiver — the only capture shape this console can hand
+            to the capture container. The preset picks which talkgroups it follows.
+          </p>
+
+        <label class="capture__row capture__row--wide">
+          <span>Preset</span>
+          <span class="capture__row-field">
+            <select
+              v-model="preset"
+              class="field capture__preset"
+              :disabled="!canStart || busy"
+              aria-label="Talkgroup preset"
+            >
+              <option v-for="p in CAPTURE_PRESETS" :key="p" :value="p">
+                {{ p }} — {{ CAPTURE_PRESET_LABELS[p] }}
+              </option>
+            </select>
+          </span>
+        </label>
+        <!--
+          What the selected preset actually follows: the TAG NAMES
+          make_whitelist.py filters the roster by, which is the precise version
+          of the option's human label. Always shown, for the same reason
+          `durationHuman` is always shown beside the duration field — a value
+          whose consequences are one indirection away should state them on
+          screen rather than requiring the operator to remember what "interop"
+          expands to.
+        -->
+        <p class="idle__sub" style="text-align: left; margin-top: -2px">
+          Follows: {{ CAPTURE_PRESET_TAGS[preset] }}
+        </p>
+
+        <!--
+          Two things the operator must not be misled about. They are INDEPENDENT
+          conditions, so they are two independent `v-if`s: chained, whichever
+          rendered first would suppress the other in states where both are true.
+
+          1. The picker applies to the NEXT Start, never to a running capture.
+             The primary defence is structural, not textual: like every other
+             control in this block it is `:disabled` whenever Start is
+             unavailable, so it cannot be changed under a running session and
+             appear to have done something. This line says so in words — and it
+             is gated on `tracked`, NOT on `!canStart`. canStartCapture() is
+             `!tracked && !radioBusy`, so `!canStart` is also true when the
+             radio is busy with a capture this console never started
+             ('onAirOutside'), where there is no console session to "retune" and
+             this sentence would be describing something that does not exist.
+
+          2. A wider preset raises concurrent-call load. The 800 MHz leg's
+             voice-receiver count was raised 5 -> 7 in 042cc3a on concurrency
+             measured under `pd` ALONE (peak 5 of 5, ceiling touched 17 times in
+             7,136 calls); every other preset here follows strictly more
+             talkgroups than that measurement covered, so the headroom behind
+             those counts is unverified for them. Deliberately qualitative — the
+             honest number would be a fresh measurement, and inventing a ratio
+             from the current roster would rot the moment the roster changes.
+             Shown whenever a wide preset is SELECTED, regardless of whether
+             Start happens to be available this instant: it is a fact about the
+             selection, not about the button.
+        -->
+        <p v-if="tracked" class="idle__sub" style="text-align: left">
+          Applies to the next Start — changing it does not retune the running capture.
+        </p>
+
+        <label class="capture__row">
+          <span>Duration</span>
+          <span class="capture__row-field">
+            <input
+              v-model.number="duration"
+              class="field capture__duration"
+              type="number"
+              :min="MIN_CAPTURE_DURATION_SEC"
+              :max="MAX_CAPTURE_DURATION_SEC"
+              :disabled="!canStart || busy"
+              aria-label="Capture duration in seconds"
+            >
+            <span class="capture__hint-inline">{{ durationHuman }}</span>
+          </span>
+        </label>
+        <label class="capture__toggle">
+          <input v-model="ess" type="checkbox" :disabled="!canStart || busy">
+          Capture encryption headers (ESS, ~10&times; log volume)
+        </label>
+
+        <label class="capture__toggle">
+          <input v-model="includeEncrypted" type="checkbox" :disabled="!canStart || busy">
+          Include fully-encrypted talkgroups (records silence)
+        </label>
+        </div>
+
+        <p
+          v-if="preset !== DEFAULT_CAPTURE_PRESET"
+          class="idle__sub capture__warn"
+          style="text-align: left; margin-top: 8px"
+        >
+          Wider than {{ DEFAULT_CAPTURE_PRESET }}. The voice-receiver counts were tuned
+          on concurrency measured under {{ DEFAULT_CAPTURE_PRESET }} alone — more
+          talkgroups means more overlapping calls, and calls past the receiver pool
+          are missed, not queued.
+        </p>
+        <p v-if="!durationValid" class="idle__sub capture__warn" style="text-align: left; margin-top: 8px">
+          Must be a whole number of seconds from {{ MIN_CAPTURE_DURATION_SEC }} to
+          {{ MAX_CAPTURE_DURATION_SEC }} (24h) — capture_control.py's own bound. Required:
+          the delegated request has no "run until stopped".
+        </p>
+
+        <button
+          class="arm"
+          :class="{ 'arm--on': canStop }"
+          :disabled="busy || (!canStart && !canStop) || (canStart && !durationValid)"
+          style="margin-top: 10px"
+          @click="canStop ? stopCapture() : startCapture()"
+        >
+          <span class="arm__lamp" />
+          {{ captureButtonLabel }}
+        </button>
+
+        <p class="idle__sub" style="text-align: left; margin-top: 6px">
+          {{ captureHint }}
+        </p>
+        <p v-if="captureError" class="idle__sub capture__warn" style="text-align: left; margin-top: 6px">
+          {{ captureError }}
+        </p>
+      </div>
     </div>
 
     <!-- STANDBY: the talkgroups this session can actually produce -->
@@ -288,7 +361,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onUnmounted } from 'vue'
+import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
 import { receiverStatus, captureExpiry, canStartCapture, canStopCapture } from '~/utils/captureStatus'
 import { talkgroupMark } from '~/utils/talkgroupEncryption'
 import type { TalkgroupEncryptionVerdict, TalkgroupMark } from '~/utils/talkgroupEncryption'
@@ -814,6 +887,57 @@ const layoutNote = computed(() => {
 })
 
 /* ===========================================================================
+ * THE CREASES — which folds are open, and making an open one visible
+ *
+ * Two of them, one vocabulary (bay.css's `.fold`): the Receiver block's layout
+ * reference, and the Capture block's setup fields. Both start closed and
+ * neither is persisted. Closed is not a state where a fact is hidden — each
+ * crease prints its own summary, `layoutLine` and `captureSummary` — and a
+ * remembered fold would mean an operator opening this console to a layout
+ * nobody chose today.
+ * ========================================================================= */
+
+/** Reference an operator reads once, when reasoning about a missed call. */
+const layoutOpen = ref(false)
+
+/** Fields touched at the start of a capture and not again for hours. */
+const captureOpen = ref(false)
+
+const receiverBlock = ref<HTMLElement | null>(null)
+const captureBlock = ref<HTMLElement | null>(null)
+
+/**
+ * Opening a crease has to SHOW what it opened.
+ *
+ * The block region scrolls itself once its blocks no longer fit (bay.css's
+ * `.stack__head`), and at 1366x768 an open crease is exactly what stops them
+ * fitting — so without this the operator presses `+`, what unfolded lands
+ * below that region's scroll edge and nothing visibly happens.
+ *
+ * The whole BLOCK is revealed, not just the fold body: the Capture block's
+ * Start button sits after the fields, so bringing only the body into view
+ * would open the settings and push the button they are settings FOR out of
+ * sight. `block: 'nearest'` moves the region by the minimum needed and does
+ * nothing at all when the block already fits, so the same click at 1600x900,
+ * where there is room, is not jolted for the benefit of the laptop. Next tick,
+ * because `v-show` has not laid the body out yet on the tick the click lands.
+ */
+async function reveal(el: HTMLElement | null): Promise<void> {
+  await nextTick()
+  el?.scrollIntoView({ block: 'nearest' })
+}
+
+function toggleLayout(): void {
+  layoutOpen.value = !layoutOpen.value
+  if (layoutOpen.value) void reveal(receiverBlock.value)
+}
+
+function toggleCapture(): void {
+  captureOpen.value = !captureOpen.value
+  if (captureOpen.value) void reveal(captureBlock.value)
+}
+
+/* ===========================================================================
  * CAPTURE CONTROL — starts and stops the radio, not the audio feed
  *
  * `canStart`/`canStop` are NOT read off `status` above: `receiverStatus()`
@@ -874,6 +998,28 @@ const durationHuman = computed(() => {
   if (typeof s !== 'number' || !Number.isFinite(s)) return ''
   const h = s / 3600
   return `${Math.round(h * 100) / 100}h`
+})
+
+/**
+ * What Start would send, printed on the crease — `pd · 24h`, plus a flag for
+ * each option that is ON.
+ *
+ * The point of a folded flight strip is that it still reads: an operator must
+ * never have to unfold this to find out what the button beneath it does. The
+ * duration is the HUMAN figure (`durationHuman`) rather than the raw seconds
+ * for the reason that computed exists at all, and it is dropped rather than
+ * faked when the field does not hold a number — that state has the
+ * `!durationValid` line beneath the crease saying so in full, and a summary
+ * reading `pd · NaNh` would be a second, worse account of the same fact.
+ * Only the ON options are listed, so the ordinary case is two terms and not a
+ * row of negations to read past.
+ */
+const captureSummary = computed(() => {
+  const bits: string[] = [preset.value]
+  if (durationHuman.value) bits.push(durationHuman.value)
+  if (ess.value) bits.push('ESS')
+  if (includeEncrypted.value) bits.push('+encrypted')
+  return bits.join(' · ')
 })
 
 const captureButtonLabel = computed(() => {
