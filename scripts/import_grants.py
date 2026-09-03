@@ -26,9 +26,11 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import io
 import os
 import re
 import sys
+import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from sdr_db import connect  # noqa: E402
@@ -87,13 +89,125 @@ def parse_ts(s: str) -> float:
     return dt.datetime.strptime(s, '%m/%d/%y %H:%M:%S.%f').timestamp()
 
 
+class TaggedStream(io.TextIOBase):
+    """A text stream that stamps every LINE it forwards with an import's tag.
+
+    WHY EVERY LINE AND NOT JUST A HEADER
+    ------------------------------------
+    scripts/lwin_listen_multi.sh appends this program's output to ONE shared
+    file, results/grant_import.log, from a detached background process -- and
+    the comment there says plainly that an import can still be running when the
+    next capture starts. Two imports therefore interleave in that file, and
+    before tagging, every entry's header was the identical string (the `$LOG`
+    path is a constant, not a session identity). Session A's `imported N`
+    summary landing under session B's header made a reader applying the
+    documented rule -- "a header with no `imported` line is a failed import" --
+    conclude that B succeeded when B had in fact failed and A had succeeded.
+    That is a confident wrong answer manufactured by the detection mechanism
+    itself, which is worse than no detection.
+
+    A tag on the header alone would not have fixed it: grouping needs a token
+    on the lines being grouped. So this wraps stdout AND stderr, which also
+    gets the tag onto a traceback -- the interpreter's excepthook looks
+    `sys.stderr` up at call time, so replacing it here covers an unhandled
+    exception as well as our own prints.
+
+    WHY IT FLUSHES ON EVERY NEWLINE
+    -------------------------------
+    Not hygiene -- it is the whole diagnostic. Python block-buffers stdout when
+    it is a file, so a `docker compose stop capture` mid-import (which tears
+    down the PID namespace and SIGKILLs this process; `setsid` protects against
+    a group SIGKILL, not against the namespace going away) would discard every
+    buffered line and leave a header with nothing whatsoever underneath it.
+    Flushing per line means whatever this program managed to say before it was
+    killed is on disk. It also fixes ordering: the launcher redirects with
+    `2>&1`, so an unflushed block-buffered stdout would otherwise surface AFTER
+    an unbuffered stderr traceback that happened later.
+    """
+
+    def __init__(self, wrapped: io.TextIOBase, tag: str) -> None:
+        super().__init__()
+        self._wrapped = wrapped
+        self._prefix = f'[{tag}] '
+        # A write need not end on a newline (`print(..., end='')`, and the
+        # traceback machinery writes in fragments), so the prefix is owed at
+        # the START of a line rather than emitted once per write() call.
+        self._owes_prefix = True
+
+    def write(self, s: str) -> int:
+        for i, part in enumerate(s.split('\n')):
+            if i:
+                self._wrapped.write('\n')
+                self._wrapped.flush()
+                self._owes_prefix = True
+            if not part:
+                continue
+            if self._owes_prefix:
+                self._wrapped.write(self._prefix)
+                self._owes_prefix = False
+            self._wrapped.write(part)
+        return len(s)
+
+    def flush(self) -> None:
+        self._wrapped.flush()
+
+    def writable(self) -> bool:
+        return True
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('log', nargs='?', default=os.path.join(R, 'results', 'lwin_cdr.log'))
     ap.add_argument('--dry-run', action='store_true', help='report only; write nothing')
+    ap.add_argument(
+        '--tag', default='',
+        help='stamp every output line with this token and finish with an '
+             '"=== END <tag> exit N" line. lwin_listen_multi.sh passes the '
+             'same token it wrote in the header, so concurrent imports '
+             'appending to results/grant_import.log stay separable.')
     a = ap.parse_args()
 
+    if not a.tag:
+        return run(a)
+
+    # Saved and restored rather than simply replaced: this is a CLI entry
+    # point where leaking the wrapper would not matter, but it is also called
+    # in-process by scripts/tests/test_import_grants.py, and a leaked wrapper
+    # would stamp every later test's output with a stale tag.
+    real_stdout, real_stderr = sys.stdout, sys.stderr
+    sys.stdout = TaggedStream(real_stdout, a.tag)
+    sys.stderr = TaggedStream(real_stderr, a.tag)
+    status = 1
+    try:
+        status = run(a)
+    except Exception:
+        # Caught rather than allowed to propagate purely for ORDERING: an
+        # escaping exception is printed by the excepthook after this function
+        # has already returned, which would put the traceback BELOW the END
+        # line that is supposed to close the entry.
+        traceback.print_exc()
+        status = 1
+    finally:
+        # THE TERMINATOR, and the reason a killed import is now diagnosable.
+        #
+        # An entry is read by its tag: `BEGIN <tag>` in the launcher's header,
+        # `[<tag>]` on every line of this program's output, and this line last.
+        #   * END exit 0 with an `imported` line -> succeeded.
+        #   * END exit N, N != 0 -> failed, and the reason is on the tagged
+        #     lines immediately above it.
+        #   * NO END line at all -> the process was killed before it could
+        #     report. That is a different diagnosis with a different cause
+        #     (container teardown, OOM), and it used to be indistinguishable
+        #     from a plain failure because both were "a header with nothing
+        #     after it".
+        print(f'=== END {a.tag} exit {status}')
+        sys.stdout.flush()
+        sys.stdout, sys.stderr = real_stdout, real_stderr
+    return status
+
+
+def run(a: argparse.Namespace) -> int:
     try:
         raw = ANSI.sub('', open(a.log, errors='ignore').read())
     except OSError as e:

@@ -258,16 +258,61 @@ cleanup() {
     # backgrounded run attributable to a session at all; without it the
     # summary would arrive on the container's stdout after the launcher had
     # already exited, interleaved with the next thing to speak and belonging
-    # to nothing. A failure must not read as success, so it lands in the same
-    # place a success does -- an entry with a header and no "imported" line is
-    # a failed import, and the reason is right underneath it.
+    # to nothing.
     #
-    # No pid is reported: `setsid` execs its program directly when the caller
-    # is not already a process-group leader and forks when it is, so `$!`
-    # cannot be relied on to be python's own pid. `pgrep -f import_grants.py`
-    # answers "is it still running" without this script having to guess.
-    printf '=== %s  %s\n' "$(date -Is)" "$LOG" >> "$IMPORT_LOG"
-    setsid python3 "$R/scripts/import_grants.py" "$LOG" >> "$IMPORT_LOG" 2>&1 &
+    # HOW TO READ results/grant_import.log, AND WHY THE TAG IS REQUIRED
+    # -----------------------------------------------------------------
+    # The rule used to be "an entry with a header and no `imported` line is a
+    # failed import, and the reason is right underneath it." Both halves were
+    # false, and both for reasons this very comment block states elsewhere:
+    #
+    #   * "The import can still be running when the NEXT capture starts", so
+    #     two imports append to this one file at once -- and every header was
+    #     the identical string, because `$LOG` is a constant path, not a
+    #     session identity. Session A finishing after session B wrote its
+    #     header filed A's `imported N` under B's header. A reader applying
+    #     the rule concluded B succeeded when B had failed.
+    #   * `setsid` protects the import from a GROUP SIGKILL. It does not
+    #     protect it from the PID namespace going away, which is what
+    #     `docker compose stop capture` does (capture_control.py's shutdown
+    #     handler os._exit()s, tini goes with it, the namespace and everything
+    #     in it is torn down). That left a header, no summary, and NO REASON
+    #     -- an unexplained gap rather than a diagnosable failure.
+    #
+    # So each import now mints a token unique to itself: the wall-clock time
+    # it was launched plus this launcher's pid. It goes in the header after
+    # BEGIN, and `--tag` makes import_grants.py stamp it on EVERY line it
+    # writes, including a final "=== END <tag> exit N". Reading the file is
+    # then: pick a BEGIN line, grep its token, and
+    #
+    #   END exit 0 + an `imported` line   -> succeeded
+    #   END exit N (N != 0)               -> failed; the reason is on the
+    #                                        tagged lines above the END
+    #   no END line at all                -> killed before it could report,
+    #                                        which is the container-teardown
+    #                                        case above and NOT the same
+    #                                        diagnosis as a failure
+    #
+    # That rule stays true when two imports interleave, because the token is
+    # on the lines and not merely on the header. The token is MINTED here
+    # rather than derived from anything on disk on purpose: nothing that
+    # happens after this printf can invalidate it. The rotated-log basename
+    # this session's evidence will end up under is a genuinely useful pointer
+    # -- it is what the NEXT session's rotation will name this log -- but it
+    # is computed from the log's mtime, so it is recorded as a clearly
+    # labelled hint that can go stale, never as the key the rule keys on.
+    #
+    # No pid is reported for the import itself: `setsid` execs its program
+    # directly when the caller is not already a process-group leader and forks
+    # when it is, so `$!` cannot be relied on to be python's own pid. `pgrep
+    # -f import_grants.py` answers "is it still running" without this script
+    # having to guess.
+    IMPORT_TAG="$(date -Is)#$$"
+    printf '=== %s  BEGIN %s  %s  (evidence will rotate to: %s)\n' \
+      "$(date -Is)" "$IMPORT_TAG" "$LOG" \
+      "$(basename "$LOG").$(date -r "$LOG" +%Y%m%d-%H%M%S 2>/dev/null || echo unknown)" \
+      >> "$IMPORT_LOG"
+    setsid python3 "$R/scripts/import_grants.py" --tag "$IMPORT_TAG" "$LOG" >> "$IMPORT_LOG" 2>&1 &
     echo "  grant import running in the background -> $IMPORT_LOG"
   fi
   n=$(ls -1 "$R"/recordings/TG*.wav 2>/dev/null | wc -l)

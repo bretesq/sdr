@@ -32,6 +32,7 @@ import contextlib
 import io
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -372,6 +373,53 @@ class CleanupBackgroundingTest(unittest.TestCase):
             "one an in-flight grant import is still reading.",
         )
 
+    def test_every_import_entry_carries_a_token_unique_to_that_import(self):
+        # THE FIX FOR "a header with no `imported` line is a failed import".
+        # Every header used to be the identical string -- `$LOG` is a constant
+        # path, not a session identity -- and cleanup()'s own comment says the
+        # import "can still be running when the NEXT capture starts". So two
+        # imports append to one file and session A's summary lands under
+        # session B's header, making a reader conclude B succeeded when B
+        # failed. Grouping needs a token ON THE LINES, so the launcher must
+        # mint one and hand it to the import.
+        m = re.findall(r"^\s*IMPORT_TAG=(.+)$", self.sh_code, re.M)
+        self.assertEqual(
+            len(m), 1,
+            "cleanup() must mint exactly one per-import token (IMPORT_TAG); "
+            "without it results/grant_import.log cannot attribute an entry to "
+            "a session at all",
+        )
+        self.assertIn(
+            "$$", m[0],
+            "the token must include something unique to this launcher run. "
+            f"Got {m[0]}, which two concurrent imports could share.",
+        )
+
+        # The header printf spans several physical lines. Backslash
+        # continuations are folded first so the assertions below see the whole
+        # STATEMENT -- matching one physical line would find the format string
+        # and miss the arguments, which is where the token actually is.
+        joined = re.sub(r"\\\n\s*", " ", self.sh_code)
+        header = re.search(r'^\s*printf .*BEGIN.*$', joined, re.M)
+        self.assertIsNotNone(
+            header, "the header line must carry BEGIN plus the token, so a "
+                    "reader has something to grep for")
+        self.assertIn(
+            '"$IMPORT_TAG"', header.group(0),
+            "the header must carry the SAME token the import stamps its lines "
+            f"with, or the two cannot be correlated. Got: {header.group(0)}",
+        )
+
+        run = re.search(r"^\s*setsid python3 [^\n]*import_grants\.py[^\n]*$",
+                        self.sh_code, re.M)
+        self.assertIsNotNone(run)
+        self.assertIn(
+            '--tag "$IMPORT_TAG"', run.group(0),
+            "the import must be told the token the header announced. Without "
+            "--tag its output is untagged and interleaves inseparably with a "
+            f"concurrent import's. Got: {run.group(0)}",
+        )
+
     def test_the_import_log_path_is_defined_once_and_under_results(self):
         # cleanup() references $IMPORT_LOG; if the assignment were ever dropped
         # the redirect would silently write to a file named "" and the output
@@ -379,6 +427,91 @@ class CleanupBackgroundingTest(unittest.TestCase):
         m = re.findall(r"^IMPORT_LOG=(\S+)$", self.sh_code, re.M)
         self.assertEqual(len(m), 1, "IMPORT_LOG must be assigned exactly once")
         self.assertEqual(m[0], "$R/results/grant_import.log")
+
+
+class TaggedOutputTest(unittest.TestCase):
+    """The import's half of the attribution contract.
+
+    Run as a real SUBPROCESS with stderr merged into stdout, because that is
+    exactly the shape cleanup() uses (`>> "$IMPORT_LOG" 2>&1`) and the two
+    properties under test are properties of that shape: a block-buffered
+    stdout racing an unbuffered stderr, and output surviving up to the moment
+    the process stops. Calling main() in-process would prove neither.
+
+    No database is touched: --dry-run reaches every census line and returns
+    before connect() is called.
+    """
+
+    TAG = "2026-09-03T12:00:00-05:00#4242"
+
+    def _run(self, *args: str) -> tuple[int, list[str]]:
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPTS_DIR / "import_grants.py"), *args],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            timeout=60,
+        )
+        return proc.returncode, proc.stdout.splitlines()
+
+    def test_every_line_carries_the_tag_so_concurrent_imports_stay_separable(self):
+        # The launcher appends two imports' output to ONE file. If only the
+        # header were tagged, session A's summary under session B's header
+        # would still read as B's -- which is the confident wrong answer this
+        # whole mechanism exists to stop producing.
+        with tempfile.NamedTemporaryFile("w", suffix=".log", delete=False) as fh:
+            fh.write(_log((0.0, 17060, "1234"), (1.0, 17060, "None")))
+            log_path = fh.name
+        self.addCleanup(os.unlink, log_path)
+
+        rc, lines = self._run("--tag", self.TAG, "--dry-run", log_path)
+        self.assertEqual(rc, 0, "\n".join(lines))
+        self.assertGreater(len(lines), 3, "expected the census output")
+        for line in lines:
+            self.assertTrue(
+                line.startswith(f"[{self.TAG}] "),
+                f"every line must carry the tag, or it cannot be attributed "
+                f"to an import when two interleave. Got: {line!r}",
+            )
+
+    def test_a_clean_run_is_closed_by_an_END_line_carrying_its_status(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".log", delete=False) as fh:
+            fh.write(_log((0.0, 17060, "1234")))
+            log_path = fh.name
+        self.addCleanup(os.unlink, log_path)
+
+        rc, lines = self._run("--tag", self.TAG, "--dry-run", log_path)
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            lines[-1], f"[{self.TAG}] === END {self.TAG} exit 0",
+            "an entry must be CLOSED. Absence of the END line is what now "
+            "distinguishes 'killed before it could report' (container "
+            "teardown) from 'ran and failed', which used to look identical",
+        )
+
+    def test_a_failure_reports_its_reason_and_a_non_zero_END(self):
+        rc, lines = self._run("--tag", self.TAG, "/no/such/op25.log")
+        self.assertEqual(rc, 1)
+        # The reason, tagged, so it is attributable to THIS import even when
+        # another import's summary lands between the header and this line.
+        self.assertTrue(
+            any(line.startswith(f"[{self.TAG}] cannot read /no/such/op25.log")
+                for line in lines),
+            f"the failure reason must be tagged too. Got: {lines}",
+        )
+        self.assertEqual(lines[-1], f"[{self.TAG}] === END {self.TAG} exit 1")
+
+    def test_an_untagged_run_is_unchanged(self):
+        # --tag is opt-in. `python3 scripts/import_grants.py results/x.log` is
+        # documented in this module's own docstring and run by hand; it must
+        # not start emitting bracket prefixes and END lines at a human.
+        with tempfile.NamedTemporaryFile("w", suffix=".log", delete=False) as fh:
+            fh.write(_log((0.0, 17060, "1234")))
+            log_path = fh.name
+        self.addCleanup(os.unlink, log_path)
+
+        rc, lines = self._run("--dry-run", log_path)
+        self.assertEqual(rc, 0)
+        self.assertTrue(lines[0].startswith("log "), lines[0])
+        self.assertFalse(any("=== END" in line for line in lines), lines)
 
 
 if __name__ == "__main__":
