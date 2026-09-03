@@ -221,6 +221,25 @@ END;
 -- /proc/<pid>/stat field 22: a pid alone is not an identity, because the kernel
 -- recycles pid numbers and a stale record could otherwise make Stop signal an
 -- unrelated process group.
+--
+-- This table is written ONLY by server/utils/session.ts (getWritableDb()),
+-- never by any Python script -- so, unlike `calls`/`talkgroups` above, its
+-- schema evolution lives entirely in server/utils/db.ts rather than in
+-- _migrate() below: a live sdr.db created before the `backend` column below
+-- existed gets it via db.ts's own idempotent ALTER TABLE, the day the web
+-- server's getWritableDb() next opens it, not via anything in this file. The
+-- declaration here only matters for a BRAND NEW database (CREATE TABLE IF NOT
+-- EXISTS is a no-op against an existing one) -- kept in sync purely so a
+-- fresh install/test fixture gets the column immediately, without waiting on
+-- db.ts's lazy migration to run first.
+--
+-- `backend` distinguishes a session server/utils/processes.ts spawned itself
+-- (its pid is a real, host-signalable pid: 'local') from one it delegated to
+-- the capture container's control API (its pid is only meaningful inside
+-- THAT container's own PID namespace: 'delegated'). Getting this wrong is
+-- not cosmetic: server/utils/session.ts's sessionStore.get() uses it to pick
+-- which liveness check to run at all, and the wrong one for a delegated
+-- session resolves a foreign host pid instead of asking the control API.
 
 CREATE TABLE IF NOT EXISTS sessions (
   id         INTEGER PRIMARY KEY,
@@ -228,7 +247,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   proc_start INTEGER,
   config     TEXT,                  -- JSON of the ListenOptions used
   started_at REAL NOT NULL,
-  ended_at   REAL
+  ended_at   REAL,
+  backend    TEXT NOT NULL DEFAULT 'local' CHECK (backend IN ('local', 'delegated'))
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 

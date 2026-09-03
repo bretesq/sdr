@@ -98,7 +98,41 @@ export function getWritableDb(): DatabaseSync {
 
   writable = new DatabaseSync(path)
   writable.exec('PRAGMA busy_timeout = 5000')
+  migrateSessionsTable(writable)
   return writable
+}
+
+/**
+ * Idempotently add `sessions.backend`, for a live `sdr.db` that predates it.
+ *
+ * `sessions` is written ONLY from here (Python never touches it -- see
+ * scripts/sdr_db.py's comment on the same table), so unlike `calls`/
+ * `talkgroups`, its schema evolution has to live in THIS file rather than in
+ * sdr_db.py's own `_migrate()`: nothing else ever opens this table writable,
+ * and a live database created before this column existed would otherwise
+ * have `server/utils/session.ts`'s `UPDATE sessions SET ... backend = ?`
+ * fail with "no such column" the first time a delegated session tried to
+ * record one. `PRAGMA table_info` + a guarded `ALTER TABLE ADD COLUMN`
+ * mirrors the exact idiom scripts/sdr_db.py's own `_migrate()` already uses
+ * for `calls`/`talkgroups`, kept cheap by running only once per process
+ * (getWritableDb()'s `writable` singleton means this body runs at most once
+ * per server lifetime, not per request).
+ *
+ * `cols.length === 0` means the table itself does not exist yet (a fresh,
+ * never-imported database) -- skipped rather than attempting `ALTER TABLE`
+ * against a table that isn't there; the INSERT/UPDATE statements that
+ * actually use this table will fail with SQLite's own clear error in that
+ * case, exactly as they already would have before this migration existed.
+ */
+function migrateSessionsTable(handle: DatabaseSync): void {
+  const cols = handle.prepare('PRAGMA table_info(sessions)').all() as { name: string }[]
+  if (cols.length === 0) return
+  if (!cols.some(c => c.name === 'backend')) {
+    handle.exec(
+      "ALTER TABLE sessions ADD COLUMN backend TEXT NOT NULL DEFAULT 'local' "
+      + "CHECK (backend IN ('local', 'delegated'))",
+    )
+  }
 }
 
 /** Drop the handle so the next call reopens. Used after an import. */

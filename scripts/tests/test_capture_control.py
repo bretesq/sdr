@@ -29,7 +29,7 @@ class BuildArgsTest(unittest.TestCase):
             build_args({"mode": "multi", "durationSec": "10800; id"})
 
     def test_builds_the_documented_invocation(self):
-        args = build_args({
+        args, session_id = build_args({
             "mode": "multi",
             "ess": True,
             "includeEncrypted": True,
@@ -39,9 +39,12 @@ class BuildArgsTest(unittest.TestCase):
             args,
             ["--ess", "--include-encrypted", "--pd", "10800"],
         )
+        self.assertIsNone(session_id)
 
     def test_omits_flags_that_were_not_requested(self):
-        self.assertEqual(build_args({"mode": "multi"}), [])
+        args, session_id = build_args({"mode": "multi"})
+        self.assertEqual(args, [])
+        self.assertIsNone(session_id)
 
     # The four cases above are the brief's documented contract, verbatim.
     # Everything below hardens the same boundary against inputs the brief
@@ -104,10 +107,39 @@ class BuildArgsTest(unittest.TestCase):
             build_args({"mode": "multi", "durationSec": 10 ** 9})
 
     def test_only_ess_omits_pd_and_duration(self):
-        self.assertEqual(
-            build_args({"mode": "multi", "ess": True}),
-            ["--ess"],
-        )
+        args, _ = build_args({"mode": "multi", "ess": True})
+        self.assertEqual(args, ["--ess"])
+
+    # --- sessionId ---------------------------------------------------------
+    # Never becomes an argv token (see build_args()'s own docstring); these
+    # tests cover its validation, which goes through this same function.
+
+    def test_rejects_non_integer_session_id(self):
+        with self.assertRaises(ValidationError):
+            build_args({"mode": "multi", "sessionId": "42"})
+        with self.assertRaises(ValidationError):
+            build_args({"mode": "multi", "sessionId": 4.2})
+
+    def test_rejects_boolean_session_id(self):
+        # isinstance(True, int) is True in Python -- without an explicit bool
+        # exclusion, {"sessionId": true} would sail through as session_id=1.
+        with self.assertRaises(ValidationError):
+            build_args({"mode": "multi", "sessionId": True})
+
+    def test_rejects_non_positive_session_id(self):
+        with self.assertRaises(ValidationError):
+            build_args({"mode": "multi", "sessionId": 0})
+        with self.assertRaises(ValidationError):
+            build_args({"mode": "multi", "sessionId": -5})
+
+    def test_accepts_a_valid_session_id(self):
+        args, session_id = build_args({"mode": "multi", "sessionId": 42})
+        self.assertEqual(session_id, 42)
+        self.assertEqual(args, [])  # sessionId never contributes an argv token
+
+    def test_session_id_defaults_to_none_when_omitted(self):
+        _, session_id = build_args({"mode": "multi"})
+        self.assertIsNone(session_id)
 
     def test_no_string_ever_reaches_the_argument_list_unvalidated(self):
         # Every element build_args can possibly emit is drawn from a fixed
@@ -217,6 +249,38 @@ class CaptureStateTest(unittest.TestCase):
     def test_stop_is_a_no_op_when_nothing_is_running(self):
         result = CaptureState().stop()
         self.assertEqual(result, {"stopped": False, "message": "no capture running"})
+
+    def test_start_passes_session_id_through_the_child_environment(self):
+        # The only path this can reach a real subprocess.Popen call at all --
+        # AlreadyRunning/stopping tests above refuse before ever getting
+        # here, deliberately, since a well-formed request would start a real
+        # capture. Popen itself is mocked, so nothing is actually spawned.
+        state = CaptureState()
+        fake_proc = _FakeProc(pid=999, returncode=None)
+        with mock.patch.object(cc.subprocess, "Popen", return_value=fake_proc) as popen, \
+             mock.patch.object(cc.os, "killpg", return_value=None), \
+             mock.patch.object(cc.time, "sleep"):
+            result = state.start({"mode": "multi", "durationSec": 600, "sessionId": 42})
+
+        self.assertEqual(result["pid"], 999)
+        _, kwargs = popen.call_args
+        self.assertEqual(kwargs.get("env", {}).get("SDR_SESSION_ID"), "42")
+
+    def test_start_omits_session_id_from_env_when_not_given(self):
+        # env=None tells subprocess.Popen to inherit this process's own
+        # environment unchanged -- the same behaviour as before sessionId
+        # existed. A regression that always builds an env dict (even an
+        # empty-looking one) would silently stop inheriting PATH/LD_LIBRARY_
+        # PATH/etc, which op25 and hackrf_info both need.
+        state = CaptureState()
+        fake_proc = _FakeProc(pid=1000, returncode=None)
+        with mock.patch.object(cc.subprocess, "Popen", return_value=fake_proc) as popen, \
+             mock.patch.object(cc.os, "killpg", return_value=None), \
+             mock.patch.object(cc.time, "sleep"):
+            state.start({"mode": "multi", "durationSec": 600})
+
+        _, kwargs = popen.call_args
+        self.assertIsNone(kwargs.get("env"))
 
     def test_stop_signals_the_group_even_after_the_launcher_itself_is_gone(self):
         # stop() must reach op25/recorders via os.killpg(pgid, ...) using the

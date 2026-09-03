@@ -312,6 +312,40 @@ interface ControlStartResponse {
   error?: string
 }
 
+/** The JSON shape scripts/capture_control.py's GET /status returns. Never an error response — see that file's snapshot(). */
+interface ControlStatusResponse {
+  running?: boolean
+  pid?: number | null
+  startedAt?: string
+  request?: unknown
+}
+
+/**
+ * Read a control-API JSON response body, falling back to raw text when it
+ * isn't valid JSON (M1 in task-3-review.md: a proxy/gateway error or a
+ * response truncated under load could hand back an HTML or plain-text body
+ * instead of the control server's own JSON contract). Used by every function
+ * in this file that talks to the control API, so a parse failure surfaces
+ * something more useful than a bare "HTTP <status>" everywhere, not just in
+ * whichever one happened to hit it first.
+ */
+async function readControlResponse<T>(res: Response): Promise<{ json: T | null, rawText: string | null }> {
+  const text = await res.text().catch(() => null)
+  if (text === null) return { json: null, rawText: null }
+  try {
+    return { json: JSON.parse(text) as T, rawText: text }
+  } catch {
+    return { json: null, rawText: text }
+  }
+}
+
+/** The control-API error text, falling back to a truncated raw body when the response wasn't JSON at all. */
+function controlErrorMessage(status: number, json: { error?: string } | null, rawText: string | null): string {
+  if (json?.error) return json.error
+  if (rawText) return `capture control API returned HTTP ${status}: ${rawText.slice(0, 200)}`
+  return `capture control API returned HTTP ${status}`
+}
+
 /**
  * Turn ListenOptions into exactly the request scripts/capture_control.py's
  * build_args() can express: `{ mode: 'multi', ess?, includeEncrypted?,
@@ -329,10 +363,20 @@ interface ControlStartResponse {
  * operator asked for, with no way for them to tell from the response; the
  * only safe response to a request this API cannot honor faithfully is to
  * refuse it loudly.
+ *
+ * `sessionId` is threaded through separately from `opts` (it is not, and
+ * should not become, a ListenOptions field — it identifies OUR OWN
+ * server/utils/session.ts row, not anything the operator chose) and is never
+ * itself validated here: it is always this server's own `sessionStore.open()`
+ * result, an internal autoincrement id, not operator-supplied input. The
+ * control server validates it again anyway (scripts/capture_control.py's
+ * build_args()) as every field there does, regardless of how trustworthy its
+ * usual caller is.
  */
 function buildControlRequest(
   opts: ListenOptions,
-): { mode: 'multi'; ess?: boolean; includeEncrypted?: boolean; durationSec: number } {
+  sessionId?: number,
+): { mode: 'multi'; ess?: boolean; includeEncrypted?: boolean; durationSec: number; sessionId?: number } {
   const unsupported: string[] = []
   if (opts.mode !== 'multi') {
     unsupported.push(
@@ -367,12 +411,13 @@ function buildControlRequest(
     )
   }
 
-  const body: { mode: 'multi'; ess?: boolean; includeEncrypted?: boolean; durationSec: number } = {
+  const body: { mode: 'multi'; ess?: boolean; includeEncrypted?: boolean; durationSec: number; sessionId?: number } = {
     mode: 'multi',
     durationSec: opts.duration as number,
   }
   if (opts.ess !== undefined) body.ess = opts.ess
   if (opts.includeEncrypted !== undefined) body.includeEncrypted = opts.includeEncrypted
+  if (sessionId !== undefined) body.sessionId = sessionId
   return body
 }
 
@@ -386,17 +431,23 @@ function buildControlRequest(
  * assembling one here instead would defeat the whole point of having a
  * separate control server do exactly that.
  *
- * NOTE: unlike the local-spawn path below, this cannot pass `sessionId`
- * through — scripts/capture_control.py's request shape has no field for it
- * (see ALLOWED_FIELDS there), so op25/udp_audio_record.py run inside the
- * capture container with no SDR_SESSION_ID in their environment and every
- * call they record lands with a NULL session_id. This is a real gap between
- * Task 2's contract and session-linked recordings; flagged in this task's
- * report rather than silently worked around, since closing it means changing
- * scripts/capture_control.py's request shape, which is Task 2's file.
+ * The returned `pid` is a number in the CAPTURE CONTAINER's own PID
+ * namespace — display-only. It must NEVER be passed to process.kill(),
+ * processStartTime(), or isOurListenSession(): those read/signal against
+ * THIS process's namespace (the host's, via `pid: host`), where that number
+ * means something else entirely — usually a low-numbered, root-owned kernel
+ * thread, since nothing else has run in a fresh capture container's
+ * namespace yet. Session liveness/stop for a delegated session goes through
+ * isDelegatedSessionAlive()/stopDelegatedCapture() instead, both of which
+ * ask the control API itself rather than resolving this pid locally. See
+ * task-3-review.md's Critical C1 for the full trace of what went wrong the
+ * first time this pid was treated as host-signalable.
  */
-async function delegateStart(opts: ListenOptions): Promise<{ pid: number; config: ListenOptions }> {
-  const body = buildControlRequest(opts) // throws before any network call for a request this API cannot honor
+async function delegateStart(
+  opts: ListenOptions,
+  sessionId?: number,
+): Promise<{ pid: number; config: ListenOptions; backend: 'delegated' }> {
+  const body = buildControlRequest(opts, sessionId) // throws before any network call for a request this API cannot honor
 
   let res: Response
   try {
@@ -419,25 +470,108 @@ async function delegateStart(opts: ListenOptions): Promise<{ pid: number; config
     )
   }
 
-  const payload = await res.json().catch(() => null) as ControlStartResponse | null
+  const { json: payload, rawText } = await readControlResponse<ControlStartResponse>(res)
 
   if (!res.ok) {
     // Surfaced verbatim, the same way server/api/listen/start.post.ts's catch
     // already returns a thrown Error's message to the operator — 400
     // (validation), 409 (already running) and 502 (launcher died) all carry a
     // human-readable `error` field per the control server's contract.
-    throw new Error(payload?.error ?? `capture control API returned HTTP ${res.status}`)
+    throw new Error(controlErrorMessage(res.status, payload, rawText))
   }
   if (typeof payload?.pid !== 'number') {
     throw new Error('capture control API reported success but returned no pid')
   }
-  return { pid: payload.pid, config: opts }
+  return { pid: payload.pid, config: opts, backend: 'delegated' }
 }
+
+/**
+ * Is the delegated session identified by `pid` (the capture container's own
+ * PID-namespace number — see delegateStart()'s comment on why it is
+ * display-only) still the one the control API reports running?
+ *
+ * The delegated equivalent of isOurListenSession(), for the identical reason
+ * that function exists: a pid alone is not an identity check you can trust
+ * blindly, and here specifically, resolving `pid` against THIS process's
+ * /proc (the host's, via `pid: host`) would check an unrelated process in a
+ * different namespace entirely — never the real one. Only the control API's
+ * own GET /status, which holds the real pgid in its own process's memory,
+ * can answer this correctly.
+ *
+ * `payload.pid === pid` matters, not just `payload.running`: `running: true`
+ * for a DIFFERENT pid means some OTHER capture is live (started after ours
+ * ended, e.g. from a shell against the same control API), not ours — and
+ * treating that as "our session is still alive" would keep a closed
+ * session's row open indefinitely.
+ */
+export async function isDelegatedSessionAlive(pid: number): Promise<boolean> {
+  try {
+    const res = await fetch(`${CAPTURE_URL}/status`, { signal: AbortSignal.timeout(5000) })
+    if (!res.ok) return false
+    const { json: payload } = await readControlResponse<ControlStatusResponse>(res)
+    return payload?.running === true && payload.pid === pid
+  } catch {
+    // An unreachable control API is not proof the capture stopped, but it's
+    // not proof it's still running either — and "stopped" is the safe
+    // direction to be wrong in here: a stale "still running" would wedge
+    // sessionStore with a session an operator can never clear from the UI,
+    // while a false "stopped" merely re-attaches on the next successful poll,
+    // or is exactly what a real Stop wants anyway (the control API's own
+    // POST /stop is idempotent against "nothing running").
+    return false
+  }
+}
+
+/**
+ * Stop the delegated capture via the control API's own POST /stop, instead
+ * of stopListening()'s local pid/pkill ladder — which has no meaningful pid
+ * to signal in THIS namespace for a delegated session (see delegateStart()'s
+ * comment), and would otherwise fall straight through to its untargeted final
+ * `pkill -f` step. The control server holds the real pgid and runs the
+ * identical SIGINT-then-SIGKILL ladder itself
+ * (scripts/capture_control.py's CaptureState.stop()) — targeted beats lucky.
+ *
+ * 15s timeout: the control server's own ladder is bounded at 8s (SIGINT) + 2s
+ * (SIGKILL fallback) = 10s worst case; this leaves margin above that rather
+ * than racing it.
+ */
+export async function stopDelegatedCapture(): Promise<void> {
+  let res: Response
+  try {
+    res = await fetch(`${CAPTURE_URL}/stop`, { method: 'POST', signal: AbortSignal.timeout(15_000) })
+  } catch (err) {
+    throw new Error(
+      `Cannot reach the capture container's control API at ${CAPTURE_URL} to stop it `
+      + `(${err instanceof Error ? err.message : String(err)}). The capture may still be running — `
+      + 'check with ./scripts/stack.sh status.',
+      { cause: err },
+    )
+  }
+  if (!res.ok) {
+    const { json: payload, rawText } = await readControlResponse<{ error?: string }>(res)
+    throw new Error(controlErrorMessage(res.status, payload, rawText))
+  }
+  // {stopped: bool, pid?, forced?, message?} — POST /stop is idempotent
+  // (200 either way; "nothing was running" is success, not an error), so
+  // nothing further needs branching on here.
+}
+
+/**
+ * Which of the two ways a session was started. Determines which liveness/stop
+ * mechanism server/utils/session.ts uses for it: 'local' sessions get a real,
+ * host-signalable pid (isOurListenSession()/stopListening()); 'delegated'
+ * sessions get a pid meaningful only inside the capture container's own PID
+ * namespace, so they go through isDelegatedSessionAlive()/
+ * stopDelegatedCapture() (the control API) instead. Getting this wrong for a
+ * delegated session resolves a foreign host pid instead — see
+ * task-3-review.md's Critical C1.
+ */
+export type SessionBackend = 'local' | 'delegated'
 
 export async function startListening(
   opts: ListenOptions,
   sessionId?: number,
-): Promise<{ pid: number; config: ListenOptions }> {
+): Promise<{ pid: number; config: ListenOptions; backend: SessionBackend }> {
   // Capability, not location. See captureCapabilityGap() above for why this
   // replaced the old inContainer() check. When this process genuinely can
   // reach the HackRFs itself (a bare-metal/dev host, not either container),
@@ -462,13 +596,13 @@ export async function startListening(
       child.unref()
 
       if (!child.pid) throw new Error(`failed to spawn ${scriptFor(opts.mode)}`)
-      return { pid: child.pid, config: opts }
+      return { pid: child.pid, config: opts, backend: 'local' }
     } finally {
       closeSync(fd)                 // the child holds its own dup; not closing leaks an fd per session
     }
   }
 
-  return delegateStart(opts)
+  return delegateStart(opts, sessionId)
 }
 
 /**

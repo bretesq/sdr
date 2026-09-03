@@ -93,7 +93,21 @@ MAX_DURATION_SEC = 24 * 60 * 60
 # rather than silently ignored, per the brief: a caller-supplied field this
 # server doesn't recognize is far more likely to be a mistake (or a probe)
 # than something safe to drop on the floor.
-ALLOWED_FIELDS = frozenset({"mode", "ess", "includeEncrypted", "durationSec"})
+#
+# sessionId is optional: server/utils/processes.ts's local-spawn path always
+# has one (server/utils/session.ts opens the row before spawning), but this
+# endpoint must still work for a caller that omits it -- the capture simply
+# runs with no SDR_SESSION_ID, and every call it records gets session_id
+# NULL, exactly like a session started from a bare shell already does.
+ALLOWED_FIELDS = frozenset({"mode", "ess", "includeEncrypted", "durationSec", "sessionId"})
+
+# Sane bounds on sessionId, mirroring durationSec's MIN/MAX pair above. It is
+# an autoincrement SQLite rowid (server/utils/session.ts's sessionStore.open()
+# via `last_insert_rowid()`), so it is always a small positive integer in
+# practice -- but this endpoint validates every field to the same standard
+# regardless of how trustworthy its usual caller is, per build_args()'s own
+# stated job as this feature's security boundary.
+MIN_SESSION_ID = 1
 
 
 class ValidationError(ValueError):
@@ -110,15 +124,24 @@ class ValidationError(ValueError):
     """
 
 
-def build_args(req: object) -> list[str]:
-    """Turn a validated, structured request into lwin_listen_multi.sh argv.
+def build_args(req: object) -> tuple[list[str], int | None]:
+    """Turn a validated, structured request into (lwin_listen_multi.sh argv,
+    validated sessionId).
 
-    No element of the returned list is ever a caller-supplied string. Every
+    No element of the returned argv is ever a caller-supplied string. Every
     token is either a fixed literal this function owns (--ess,
     --include-encrypted, --pd) or str(n) of an int that has already been
     range-checked. `mode` is checked against a fixed allowlist and never
     itself appears in the output -- it only selects (elsewhere, in main())
     which script gets run.
+
+    sessionId never becomes an argv token at all -- it becomes SDR_SESSION_ID
+    in the launched process's environment instead (CaptureState.start(),
+    mirroring server/utils/processes.ts's local-spawn path). It is validated
+    HERE regardless, alongside every other field, so this function remains
+    the single place responsible for the whole request: a second, easy-to-
+    forget validation path elsewhere is exactly the kind of gap that turns
+    into an unvalidated value reaching a child process's environment.
     """
     if not isinstance(req, dict):
         raise ValidationError("request body must be a JSON object")
@@ -183,7 +206,17 @@ def build_args(req: object) -> list[str]:
         args.append("--pd")
         args.append(str(duration))
 
-    return args
+    session_id = req.get("sessionId")
+    if session_id is not None:
+        # Same bool-before-int trap as durationSec above: isinstance(True, int)
+        # is True in Python, so {"sessionId": true} would otherwise sail
+        # through as session_id=1.
+        if isinstance(session_id, bool) or not isinstance(session_id, int):
+            raise ValidationError("sessionId must be an integer")
+        if session_id < MIN_SESSION_ID:
+            raise ValidationError(f"sessionId must be >= {MIN_SESSION_ID}")
+
+    return args, session_id
 
 
 def script_for(mode: str) -> str:
@@ -342,9 +375,19 @@ class CaptureState:
         request (build_args()'s job) or AlreadyRunning if one is already in
         flight (this method's own job -- two captures cannot share the
         HackRFs)."""
-        args = build_args(req)  # raises ValidationError; nothing spawned yet
+        args, session_id = build_args(req)  # raises ValidationError; nothing spawned yet
         mode = req["mode"]  # build_args() already proved this key exists and is valid
         script = script_for(mode)
+
+        # None means "inherit this process's own environment unchanged" --
+        # subprocess.Popen's own default when env= is omitted entirely, so a
+        # request with no sessionId behaves exactly as before this field
+        # existed. Only build a copy (and only when one is actually needed)
+        # when sessionId was given, mirroring server/utils/processes.ts:458's
+        # identical env-augmentation on the local-spawn path.
+        env = None
+        if session_id is not None:
+            env = {**os.environ, "SDR_SESSION_ID": str(session_id)}
 
         with self.lock:
             self._reap_if_exited_locked()
@@ -368,11 +411,17 @@ class CaptureState:
             # inheriting means it lands directly in this container's own
             # stdout, which is exactly where `docker compose logs capture`
             # already looks.
+            #
+            # env is inherited by bash and then by udp_audio_record.py (same
+            # relay server/utils/processes.ts's own comment describes for the
+            # local-spawn path), which reads SDR_SESSION_ID to stamp
+            # session_id on each call it records.
             proc = subprocess.Popen(
                 ["bash", script, *args],
                 cwd=SDR_ROOT,
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
+                env=env,
             )
             self.process = proc
             self.pgid = proc.pid  # the launcher is its own process-group leader (start_new_session=True)
@@ -609,9 +658,10 @@ def install_shutdown_handlers() -> None:
 # --- HTTP layer ---------------------------------------------------------
 
 
-# The whole valid request body is four short fields -- {"mode": "multi",
-# "ess": true, "includeEncrypted": true, "durationSec": 86400} is well under
-# 100 bytes. 4 KiB is generous headroom for that and rejects anything that
+# The whole valid request body is five short fields -- {"mode": "multi",
+# "ess": true, "includeEncrypted": true, "durationSec": 86400,
+# "sessionId": 123456} is well under 100 bytes. 4 KiB is generous headroom
+# for that and rejects anything that
 # isn't a small, legitimate /start body outright, before it is ever read into
 # memory. Per the brief's own threat model ("anything that can reach the web
 # app can reach this endpoint"), an unbounded read here would let a caller

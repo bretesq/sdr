@@ -18,7 +18,7 @@ import { whitelistPath } from '~/server/utils/paths'
  * the whitelist file and sdr.db rather than on sessionStore. Reporting only
  * `tracked` would make a working feed look dead.
  */
-export default defineEventHandler(() => {
+export default defineEventHandler(async () => {
   let whitelistMtime: number | null
   try {
     whitelistMtime = statSync(whitelistPath()).mtimeMs / 1000
@@ -32,7 +32,7 @@ export default defineEventHandler(() => {
       talkgroups: followedTalkgroups(),
       heldKeyIds: heldKeyIds(),
       radioBusy: isRadioBusy(),
-      tracked: sessionStore.get() !== null,
+      tracked: (await sessionStore.get()) !== null,
       whitelistMtime,
     },
   }

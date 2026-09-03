@@ -180,20 +180,27 @@ export default defineEventHandler(async (event) => {
   // process group is invisible to /api/listen/stop forever and needs a
   // terminal to kill. A double-clicked Start button is enough to trigger it.
   //
-  // check -> spawn -> set is NO LONGER atomic on its own. startListening() is
-  // now async: when this process cannot reach the HackRFs itself, it awaits a
-  // network round trip to the capture container's control API
-  // (server/utils/processes.ts's captureCapabilityGap()/delegateStart()) —
-  // a real yield point a double-click can race through, unlike the old
-  // fully-synchronous spawn. The backstop for that race now lives one layer
-  // down instead: scripts/capture_control.py's POST /start refuses with 409
-  // the instant a capture is already tracked, and the HackRFs themselves
-  // cannot be opened twice — so the worst a raced double-click can do is have
-  // the second request's control-API call come back 409, surfaced here like
-  // any other thrown Error. The sessionStore.isRunning() check below still
-  // matters as the fast, no-network-round-trip common case; it is just no
-  // longer the ONLY thing preventing two spawns.
-  if (sessionStore.isRunning()) {
+  // check -> spawn -> set is NO LONGER atomic on its own, in EITHER of two
+  // ways now. startListening() is async: when this process cannot reach the
+  // HackRFs itself, it awaits a network round trip to the capture
+  // container's control API (server/utils/processes.ts's
+  // captureCapabilityGap()/delegateStart()) — a real yield point a
+  // double-click can race through, unlike the old fully-synchronous spawn.
+  // And sessionStore.isRunning() itself is now ALSO a network round trip
+  // whenever a delegated session is already tracked (it calls get(), which
+  // asks the control API's GET /status for a delegated session's liveness —
+  // see session.ts's isSessionAlive()), so this guard is no longer the fast,
+  // local-only check it used to be either. The actual backstop against two
+  // captures both starting lives one layer down instead:
+  // scripts/capture_control.py's POST /start refuses with 409 the instant a
+  // capture is already tracked, and the HackRFs themselves cannot be opened
+  // twice — so the worst a raced double-click can do is have the second
+  // request's control-API call come back 409, surfaced here like any other
+  // thrown Error. sessionStore.isRunning() below still matters as the common
+  // case that avoids ever reaching startListening() twice, but it is not a
+  // synchronous, race-proof guard the way it was before either path in this
+  // feature involved a network call.
+  if (await sessionStore.isRunning()) {
     setResponseStatus(event, 409)
     return { success: false, error: 'A listening session is already running' }
   }
@@ -201,15 +208,11 @@ export default defineEventHandler(async (event) => {
   // The session row is opened BEFORE the spawn so its id can be passed in the
   // environment; the recorder reads SDR_SESSION_ID and stamps it on each call.
   // Opening it afterwards would race the recorder's first flush.
-  //
-  // NOTE: session_id linkage only happens on the local-spawn path. When
-  // startListening() delegates to the capture container instead, sessionId
-  // has nowhere to go — see delegateStart()'s NOTE in processes.ts.
   const sessionId = sessionStore.open(body)
   try {
-    const { pid, config } = await startListening(body, sessionId)
-    sessionStore.attach(sessionId, pid)
-    const session = sessionStore.get()
+    const { pid, config, backend } = await startListening(body, sessionId)
+    sessionStore.attach(sessionId, pid, backend)
+    const session = await sessionStore.get()
     return {
       success: true,
       data: { pid, config, startTime: session?.startTime ?? Date.now() / 1000 },

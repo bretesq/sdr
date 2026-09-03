@@ -22,7 +22,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
  */
 import {
   buildListenArgs, countCalls, scriptFor, LAUNCHERS, inContainer, startListening,
-  captureCapabilityGap, isCaptureCapable,
+  captureCapabilityGap, isCaptureCapable, isDelegatedSessionAlive, stopDelegatedCapture,
 } from './processes'
 
 const mockSpawn = vi.fn()
@@ -66,6 +66,16 @@ vi.stubGlobal('fetch', mockFetch)
 afterEach(() => {
   vi.clearAllMocks()
 })
+
+/**
+ * A fake fetch Response for the control API, real enough for
+ * readControlResponse() (processes.ts): it reads `.text()` first and
+ * JSON.parses it, rather than calling `.json()` directly, so a non-JSON body
+ * can be exercised too (see the "falls back to a truncated raw body" test).
+ */
+function fakeControlResponse(status: number, ok: boolean, body: unknown): { ok: boolean, status: number, text: () => Promise<string> } {
+  return { ok, status, text: async () => JSON.stringify(body) }
+}
 
 describe('buildListenArgs', () => {
   it('maps a preset to --preset', () => {
@@ -275,16 +285,14 @@ describe('capture capability guard on startListening()', () => {
 
   it('delegates to the capture control API instead of spawning when this process is not capable', async () => {
     forceNotCapable()
-    mockFetch.mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ started: true, pid: 4242, args: ['--ess', '--include-encrypted', '--pd', '10800'] }),
-    })
+    mockFetch.mockResolvedValue(fakeControlResponse(200, true, {
+      started: true, pid: 4242, args: ['--ess', '--include-encrypted', '--pd', '10800'],
+    }))
 
     const opts = { mode: 'multi' as const, preset: 'pd', ess: true, includeEncrypted: true, duration: 10800 }
-    const result = await startListening(opts)
+    const result = await startListening(opts, 7)
 
-    expect(result).toEqual({ pid: 4242, config: opts })
+    expect(result).toEqual({ pid: 4242, config: opts, backend: 'delegated' })
     expect(mockSpawn).not.toHaveBeenCalled()
     expect(mockFetch).toHaveBeenCalledTimes(1)
     const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit]
@@ -292,9 +300,11 @@ describe('capture capability guard on startListening()', () => {
     expect(init.method).toBe('POST')
     // Only the fields the control server's build_args() actually accepts —
     // never a pre-built command line, and never the extra web-side fields
-    // (preset here) this shape has no room for.
+    // (preset here) this shape has no room for. sessionId IS included
+    // (unlike preset) — it identifies our own session row, not an operator
+    // choice, and the control API validates it independently regardless.
     expect(JSON.parse(init.body as string)).toEqual({
-      mode: 'multi', ess: true, includeEncrypted: true, durationSec: 10800,
+      mode: 'multi', ess: true, includeEncrypted: true, durationSec: 10800, sessionId: 7,
     })
   })
 
@@ -328,13 +338,27 @@ describe('capture capability guard on startListening()', () => {
 
   it('surfaces the control API\'s own error verbatim on a non-2xx response', async () => {
     forceNotCapable()
-    mockFetch.mockResolvedValue({
-      ok: false,
-      status: 409,
-      json: async () => ({ error: 'a capture is already running; stop it first', pid: 111 }),
-    })
+    mockFetch.mockResolvedValue(
+      fakeControlResponse(409, false, { error: 'a capture is already running; stop it first', pid: 111 }),
+    )
     await expect(startListening({ mode: 'multi', preset: 'pd', duration: 600 }))
       .rejects.toThrow('a capture is already running; stop it first')
+    expect(mockSpawn).not.toHaveBeenCalled()
+  })
+
+  it('falls back to a truncated raw body when a non-2xx response is not valid JSON', async () => {
+    // M1 in task-3-review.md: a proxy/gateway failure could hand back an
+    // HTML or plain-text body instead of the control server's own JSON
+    // contract. The raw text should still reach the operator, not a bare
+    // "HTTP 502" with no detail at all.
+    forceNotCapable()
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 502,
+      text: async () => '<html>Bad Gateway</html>',
+    })
+    await expect(startListening({ mode: 'multi', preset: 'pd', duration: 600 }))
+      .rejects.toThrow(/Bad Gateway/)
     expect(mockSpawn).not.toHaveBeenCalled()
   })
 
@@ -354,12 +378,64 @@ describe('capture capability guard on startListening()', () => {
 
     const result = await startListening({ preset: 'pd', duration: 600 })
 
-    expect(result).toEqual({ pid: 4321, config: { preset: 'pd', duration: 600 } })
+    expect(result).toEqual({ pid: 4321, config: { preset: 'pd', duration: 600 }, backend: 'local' })
     expect(mockFetch).not.toHaveBeenCalled()
     expect(mockSpawn).toHaveBeenCalledTimes(1)
     const [cmd, args] = mockSpawn.mock.calls[0] as [string, string[]]
     expect(cmd).toBe('bash')
     expect(args[0]).toMatch(/lwin_listen\.sh$/)
     expect(args).toContain('--preset')
+  })
+})
+
+describe('isDelegatedSessionAlive', () => {
+  it('reports alive only when the control API agrees BOTH that something is running AND that it is this pid', async () => {
+    // The pid match matters as much as `running`: `running: true` for a
+    // DIFFERENT pid means some OTHER capture is live (e.g. started from a
+    // shell after ours ended), not the session this call is asking about.
+    mockFetch.mockResolvedValue(fakeControlResponse(200, true, { running: true, pid: 42 }))
+    expect(await isDelegatedSessionAlive(42)).toBe(true)
+    expect(await isDelegatedSessionAlive(99)).toBe(false)
+  })
+
+  it('reports not alive when the control API reports nothing running', async () => {
+    mockFetch.mockResolvedValue(fakeControlResponse(200, true, { running: false, pid: null }))
+    expect(await isDelegatedSessionAlive(42)).toBe(false)
+  })
+
+  it('reports not alive (fails closed toward "stopped") when the control API is unreachable', async () => {
+    // Not proof the capture stopped, but "stopped" is the safe direction to
+    // be wrong in: a stale "still running" would wedge sessionStore with a
+    // session an operator can never clear from the UI (see processes.ts's
+    // comment on this function for the full reasoning).
+    mockFetch.mockRejectedValue(new Error('ECONNREFUSED'))
+    expect(await isDelegatedSessionAlive(42)).toBe(false)
+  })
+
+  it('reports not alive on a non-2xx response', async () => {
+    mockFetch.mockResolvedValue(fakeControlResponse(500, false, { error: 'boom' }))
+    expect(await isDelegatedSessionAlive(42)).toBe(false)
+  })
+})
+
+describe('stopDelegatedCapture', () => {
+  it('POSTs to the control API\'s /stop and resolves on a 200, regardless of whether anything was running', async () => {
+    // /stop is idempotent per the control server's own contract -- "nothing
+    // was running" is still a 200, not an error -- so this resolves either way.
+    mockFetch.mockResolvedValue(fakeControlResponse(200, true, { stopped: true, pid: 42, forced: false }))
+    await expect(stopDelegatedCapture()).resolves.toBeUndefined()
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('http://capture:8082/stop')
+    expect(init.method).toBe('POST')
+  })
+
+  it('surfaces an actionable message naming a real recovery command when the control API is unreachable', async () => {
+    mockFetch.mockRejectedValue(new Error('ECONNREFUSED'))
+    await expect(stopDelegatedCapture()).rejects.toThrow(/stack\.sh/)
+  })
+
+  it('surfaces the control API\'s own error verbatim on a non-2xx response', async () => {
+    mockFetch.mockResolvedValue(fakeControlResponse(500, false, { error: 'internal error while stopping' }))
+    await expect(stopDelegatedCapture()).rejects.toThrow('internal error while stopping')
   })
 })
