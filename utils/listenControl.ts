@@ -137,11 +137,14 @@ export const MAX_CAPTURE_DURATION_SEC = 24 * 60 * 60
 export const MIN_CAPTURE_DURATION_SEC = 1
 
 /**
- * Matches ListenControl.vue's own default (see that file's `duration` ref
- * docstring) and capture_control.py's MAX_DURATION_SEC: the longest a
- * delegated capture can run at all, so a blank/first-load field is a
- * deliberate choice rather than a number invented in the moment — the
- * failure mode that docstring documents two real sessions actually hitting.
+ * capture_control.py's MAX_DURATION_SEC: the longest a delegated capture can
+ * run at all, so a blank/first-load field is a deliberate choice rather than a
+ * number invented in the moment. Blank is not "until stopped" on this
+ * deployment — buildControlRequest() refuses a delegated request with no
+ * duration — so a blank field forced the operator to invent a number, which is
+ * how two real sessions both got 10800 (3h) typed in as whatever came to mind,
+ * with nothing to renew the capture at that mark. Pre-filling the longest sane
+ * value turns that guess into a deliberate one.
  */
 export const DEFAULT_CAPTURE_DURATION_SEC = MAX_CAPTURE_DURATION_SEC
 
@@ -220,10 +223,12 @@ export function buildCaptureStartBody(opts: {
  * sees a useless status line instead of e.g. "A listening session is already
  * running" or a capture-container validation error — exactly the "must not
  * lie or flatten a failure into something vague" ethos this project is built
- * on. Identical in behaviour to the same-named helper already duplicated in
- * `ListenControl.vue` and `RecordingsList.vue`; extracted here instead of
- * copied a third time, since it is a pure function this project's test
- * layout (`utils/**\/*.test.ts`) can actually cover.
+ * on. It was written to replace a same-named helper that the pre-redesign
+ * `ListenControl.vue` and `RecordingsList.vue` each carried their own copy of
+ * (both deleted since); extracted here rather than copied a third time,
+ * because it is a pure function this project's test layout
+ * (`utils/**\/*.test.ts`) can actually cover — and it is the single copy the
+ * bay now uses.
  */
 export function apiError(e: unknown, fallback: string): string {
   if (e && typeof e === 'object' && 'data' in e) {

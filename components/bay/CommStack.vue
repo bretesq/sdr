@@ -33,9 +33,10 @@
       <!--
         LAYOUT: how many radios and voice streams are actually in play.
 
-        The old console had this and the redesign dropped it: ListenControl.vue
-        carried a config summary plus `700 MHz voice receivers` / `800 MHz
-        voice receivers` controls, and the bay replaced all of it with
+        The old console had this and the redesign dropped it: the since-deleted
+        ListenControl.vue carried a config summary plus `700 MHz voice
+        receivers` / `800 MHz voice receivers` controls (see its
+        `configSummary` at 02c2804), and the bay replaced all of it with
         `{n} armed · {idle|on air|stalled}` — which says nothing about the
         receiver pool a missed call would have been missed by. It sits in the
         Receiver block rather than in Capture because it describes the
@@ -65,9 +66,10 @@
       CAPTURE: starts and stops the RADIO. Separate from the Active block
       above on purpose — Arm/Stop up there only gates which clips this
       browser tab plays; it has never touched op25. This is the control the
-      redesign dropped entirely (no page rendered ListenControl.vue after
-      the bay replaced it), so an operator had no way to start or stop a
-      capture from the console at all. See utils/listenControl.ts's module
+      redesign dropped entirely — after the bay replaced it, no page rendered
+      the old ListenControl.vue, which sat unreferenced until it was deleted —
+      so an operator had no way to start or stop a capture from the console at
+      all. See utils/listenControl.ts's module
       docstring for exactly why the surface below is this small: it is every
       field server/utils/processes.ts's buildControlRequest() will actually
       delegate to the capture container, and nothing it refuses.
@@ -859,11 +861,13 @@ const captureError = ref('')
 const durationValid = computed(() => isValidCaptureDuration(duration.value))
 
 /**
- * "86400s · 24h" beside the field. A bare second count is the same trap
- * ListenControl.vue's own `duration` docstring documents two real sessions
- * falling into with 10800 (3h) typed in as "whatever number came to mind" —
- * showing the human-scale equivalent live is what makes the number in the
- * box a considered choice rather than an unchecked one.
+ * "86400s · 24h" beside the field. A bare second count is the same trap two
+ * real sessions fell into, both with 10800 (3h) typed in as whatever number
+ * came to mind and no indication it meant the capture would silently end at
+ * that mark with nothing to renew it (recorded at the time in the deleted
+ * ListenControl.vue's `duration` docstring, 166fbb8) — showing the
+ * human-scale equivalent live is what makes the number in the box a
+ * considered choice rather than an unchecked one.
  */
 const durationHuman = computed(() => {
   const s = duration.value

@@ -201,7 +201,8 @@ export function stopTranscriber(): boolean {
  * or `gpuServer` — precisely so nothing calling it implies more than it knows.
  *
  * A direct HTTP probe rather than `stt_server.sh status`, because this is on a
- * polled path (RecordingsList polls transcriber state) and that script shells
+ * polled path (pages/index.vue polls `GET /api/transcribe/status` every 10s)
+ * and that script shells
  * out to `docker ps` — which can block for seconds on this host, where ~50
  * containers are running. Same signal, no docker in the read path.
  */

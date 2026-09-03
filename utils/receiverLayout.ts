@@ -7,7 +7,8 @@
  * The old console rendered a config summary and two spinners — `700 MHz
  * voice receivers` / `800 MHz voice receivers` — so an operator could see a
  * two-radio, ten-receiver session was in fact a two-radio, ten-receiver
- * session (see ListenControl.vue's `configSummary` at 02c2804, and its own
+ * session (see the since-deleted ListenControl.vue's `configSummary` at
+ * 02c2804, and its own
  * comment: "a reloaded page has no other way to tell a 9-receiver two-radio
  * session from a 1-receiver one"). The Strip Bay redesign dropped all of it,
  * leaving `{n} armed · {idle|on air|stalled}` — which says nothing about the

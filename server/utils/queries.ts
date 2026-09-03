@@ -330,7 +330,9 @@ export function listRecordings(q: RecordingQuery = {}): { rows: Recording[], tot
   // finished. Ordering by `start` would play a long call that began earlier
   // ahead of a short one that had already finished.
   //
-  // Every other caller (RecordingsList) passes no `afterId` and is unaffected.
+  // Every other caller passes no `afterId` and is unaffected: the bay's
+  // archive search (composables/useArchive.ts) and the feed's cursor seed
+  // (`limit: 1` in useScannerFeed.ts's arm) both want newest-first.
   const order = q.afterId !== undefined ? 'c.id ASC' : 'c.start DESC'
   const rows = db.prepare(
     `${CALL_SELECT} ${clause} ORDER BY ${order} LIMIT ? OFFSET ?`,
@@ -367,10 +369,15 @@ export interface Talkgroup {
   /**
    * The scraped RadioReference label, verbatim. Hearsay: measured against the
    * air it is wrong in both directions (24-PPD DISP is listed clear and runs
-   * 62 ADP calls out of 63). Kept because TalkgroupBrowser filters and colours
-   * on it and because it is the only thing we have for the 4,044 talkgroups
-   * nothing has ever been recorded on — never as the answer on its own. See
-   * `encryption` below and utils/talkgroupEncryption.ts.
+   * 62 ADP calls out of 63). Kept because it is the `listed` argument
+   * `talkgroupEncryption()` takes below — the clearly-marked fallback used
+   * ONLY when a talkgroup has no observed call, and then only when it claims
+   * encryption — and because that is the only thing we have for the 4,044
+   * talkgroups nothing has ever been recorded on. Never the answer on its
+   * own: no renderer reads this field. What the bay paints is `encryption`,
+   * via talkgroupMark() in components/bay/CommStack.vue, which marks a
+   * roster-only verdict `enc?` and says so in its tooltip. See `encryption`
+   * below and utils/talkgroupEncryption.ts.
    */
   enc: 'clear' | 'partial' | 'full'
   mode: string
@@ -490,7 +497,8 @@ export interface TalkgroupQuery {
    * Cap on returned rows, for the bay's roster search — a two-character query
    * can match thousands of the 4,163 and the standby panel can show a few
    * dozen. `matched` still reports the full count so the UI can say so.
-   * Omitted by TalkgroupBrowser, which wants every row it asked for.
+   * Omitted whenever the caller wants every row it asked for — which is what
+   * `GET /api/talkgroups/list` does with no `limit` in the query string.
    */
   limit?: number
 }
@@ -540,7 +548,7 @@ export function listTalkgroups(q: TalkgroupQuery = {}): {
 
   // Limited in JS rather than with SQL LIMIT so `matched` needs no second
   // COUNT(*) over a duplicated WHERE clause — the unlimited ceiling here is
-  // 4,163 rows, which TalkgroupBrowser already asks for on every load.
+  // 4,163 rows, which an uncapped `area=all` request already asks for.
   const matched = rows.length
   const page = q.limit !== undefined ? rows.slice(0, q.limit) : rows
 
@@ -567,6 +575,16 @@ export function listTalkgroups(q: TalkgroupQuery = {}): {
   }
 }
 
+/**
+ * Every distinct `cat` string in the roster, independent of any filter.
+ *
+ * No route serves this today. `GET /api/talkgroups/categories` did, and was
+ * deleted alongside its only caller — the roster table that had a category
+ * dropdown. Kept, unwired, because the `category` filter on listTalkgroups()
+ * above is live and takes one of exactly these strings: anything that offers
+ * that filter needs this list rather than the categories of whatever rows it
+ * happens to be holding. Its test is what keeps the two in step.
+ */
 export function listCategories(): string[] {
   const db = getDb()
   const rows = db.prepare(

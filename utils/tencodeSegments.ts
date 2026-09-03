@@ -1,9 +1,20 @@
 /**
  * Split a transcript into plain and code-bearing segments for rendering.
  *
- * Extracted from RecordingsList.vue so it can be tested: it is the consumer
- * half of a cross-runtime offset contract, and the producer half lives in
- * Python. A bug here silently annotates the wrong words rather than failing.
+ * Extracted from the old RecordingsList.vue so it could be tested: it is the
+ * consumer half of a cross-runtime offset contract, and the producer half
+ * lives in Python. A bug here silently annotates the wrong words rather than
+ * failing.
+ *
+ * That component has since been deleted and nothing renders these segments
+ * today — this file is presently unwired. It is kept rather than deleted for
+ * one reason: it makes no claim about the live app, so it cannot mislead a
+ * later reader the way a stale renderer can. The producer half is still fully
+ * live — scripts annotate ten-codes into the DB and server/utils/queries.ts
+ * attaches `CodeMention[]` to every `Recording` it returns — so the contract
+ * this function implements is a contract the running system still keeps, and
+ * these tests are what hold this side of it to it. Whatever renders codes in
+ * the bay should call `segments()` rather than re-derive the offset walk.
  */
 
 export interface CodeMention {

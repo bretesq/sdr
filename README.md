@@ -709,9 +709,10 @@ lose the ability to stop it. All four `web/listen.*` sidecar files are gitignore
 
 ### Layout
 ```
-pages/index.vue          three-panel dashboard
-components/              ListenControl · RecordingsList · TalkgroupBrowser
-server/api/              listen/ · recordings/ · talkgroups/ · config/
+pages/index.vue          the Strip Bay — the only page
+components/bay/          CommStack · CallStrip
+composables/             useScannerFeed · useArchive
+server/api/              listen/ · recordings/ · talkgroups/ · config/ · transcribe/
 server/utils/            paths · files · talkgroups · processes · session · recordings
 assets/css/compat.css    bridges PrimeFlex 3 theme classes onto PrimeVue 4 Aura tokens
 ```

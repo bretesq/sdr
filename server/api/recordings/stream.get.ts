@@ -14,10 +14,13 @@ import { dataVersion, recordingsSummary, type RecordingsSummary } from '~/server
  * -----------------------------
  * Both writers are already live — udp_audio_record.py commits each call to
  * sdr.db as it flushes, and stt_watch.py commits each transcript as Whisper
- * finishes one — but nothing told the browser. RecordingsList only reloaded on
- * mount, on a filter change, on the refresh button, and 1.5 s after Stop. In
- * multi-receiver mode nine receivers land calls concurrently, so a frozen table
- * hides a lot.
+ * finishes one — but nothing told the browser. The recordings table this was
+ * written for (the since-deleted RecordingsList.vue) only reloaded on mount,
+ * on a filter change, on the refresh button, and 1.5 s after Stop. In
+ * multi-receiver mode nine receivers land calls concurrently, so a frozen
+ * table hides a lot. The subscribers today are the bay's archive
+ * (composables/useArchive.ts) and the scanner feed (useScannerFeed.ts), which
+ * have no refresh button at all — the argument only got stronger.
  *
  * WHAT THE CHANGE SOURCE IS
  * -------------------------

@@ -444,7 +444,8 @@ describe('live feed ordering', () => {
   })
 
   it('leaves newest-first ordering alone when afterId is absent', () => {
-    // RecordingsList depends on this and passes no cursor.
+    // The bay's archive search (composables/useArchive.ts) depends on this and
+    // passes no cursor.
     const rows = listRecordings({ limit: 50 }).rows
     for (let i = 1; i < rows.length; i++) {
       expect(rows[i].start).toBeLessThanOrEqual(rows[i - 1].start)

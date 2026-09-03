@@ -43,8 +43,10 @@ import type { ReceiverLayout } from '~/utils/receiverLayout'
  *
  * `receiverLayout` says how many radios and voice receivers the capture is
  * built from — the reference information the Strip Bay redesign lost when it
- * dropped ListenControl.vue's config summary and its two voice-receiver
- * controls. Derived from lwin_both.json (see utils/receiverLayout.ts for the
+ * dropped the old ListenControl.vue's config summary and its two
+ * voice-receiver controls (that file has since been deleted; see its
+ * `configSummary` at 02c2804). Derived from lwin_both.json (see
+ * utils/receiverLayout.ts for the
  * derivation and paths.ts's multiRxConfigPath() for the file), never from the
  * session's stored config: the file is what multi_rx.py was actually handed.
  *

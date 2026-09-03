@@ -2,7 +2,7 @@
 version: 1
 slug: "pages-index-vue"
 primary_target: "pages/index.vue"
-related_targets: ["components/ScannerFeed.vue","components/RecordingsList.vue","components/ListenControl.vue","components/TalkgroupBrowser.vue"]
+related_targets: ["components/bay/CommStack.vue","components/bay/CallStrip.vue","composables/useScannerFeed.ts","composables/useArchive.ts"]
 ---
 
 Scope: the whole console at `pages/index.vue` and its panels. Visitor mode: Operate.
@@ -41,4 +41,8 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 ## Unresolved
 
 Whether the talkgroup reference browser (4,163 rows) stays on this surface or earns its
-own; it is the one panel the strip grammar does not obviously fit.
+own; it is the one panel the strip grammar does not obviously fit. Settled by omission
+rather than by decision: the old TalkgroupBrowser.vue was never mounted after the bay
+landed and has since been deleted. What this surface offers instead is the comm stack's
+roster SEARCH — one talkgroup looked up among 4,163, a few dozen rows at a time. The
+full-roster browse has no home, and whether it needs one is still open.

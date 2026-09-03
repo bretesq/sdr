@@ -235,8 +235,10 @@ function refreshCapture(): void {
   void feed.load()
 }
 
-// 10s, matching RecordingsList's transcriber poll — this is the same fact,
-// read on a different page, and there is no reason for it to move faster.
+// 10s. Whether the STT server answers changes on the scale of a container
+// restart, and this is the only poller of it left, so there is no reason for
+// it to move faster — see server/utils/transcriber.ts's isSttServerRunning()
+// for why that probe is an HTTP GET rather than `docker ps`.
 let sttTimer: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
