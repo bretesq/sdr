@@ -116,8 +116,37 @@ class LrrpDecodesRealMessages(unittest.TestCase):
         self.assertEqual(len(m.undecoded), 15)
 
     def test_an_unknown_type_is_reported_as_unknown(self):
-        m = A.parse_lrrp(bytes([0x63, 0]))
-        self.assertIn('unknown LRRP type 99', m.kind)
+        # 0x03 masks to 3, which is not in the recovered table. Masking must
+        # not turn an unrecognised type into a recognised one.
+        m = A.parse_lrrp(bytes([0x03, 0]))
+        self.assertIn('unknown LRRP type 3', m.kind)
+
+    def test_high_bits_of_octet_zero_are_flags_not_the_type(self):
+        """Both payloads captured off LWIN, differing ONLY in octet 0.
+
+        0x69 arrived once against 0x09's 161 times, and its remaining sixteen
+        bytes are byte-identical -- request token and all. A genuine change of
+        message type cannot produce an identical body, so 0x69 is type 9 with
+        flags. Reading the whole octet reported a "type 105" that does not
+        exist.
+        """
+        plain = bytes.fromhex('090f2203ffffee5244643a64625734311e')
+        flagged = bytes.fromhex('690f2203ffffee5244643a64625734311e')
+        self.assertEqual(plain[1:], flagged[1:], 'fixtures must differ only in octet 0')
+
+        a, b = A.parse_lrrp(plain), A.parse_lrrp(flagged)
+        self.assertEqual(a.kind, 'triggered location start request')
+        self.assertEqual(b.kind, a.kind)
+        self.assertEqual(b.undecoded, a.undecoded)
+
+    def test_the_flags_are_surfaced_but_not_interpreted(self):
+        # Losing them would hide the only thing distinguishing this message
+        # from the other 161. Naming them would be inventing a meaning.
+        flagged = bytes.fromhex('690f2203ffffee5244643a64625734311e')
+        m = A.parse_lrrp(flagged)
+        self.assertEqual(m.fields['flags'], '0x3')
+        self.assertNotIn('flags', A.parse_lrrp(LRRP_START_A).fields,
+                         'an unflagged message should not carry an empty flags field')
 
 
 class DispatchPrefersTheDestinationPort(unittest.TestCase):
