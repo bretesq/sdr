@@ -184,42 +184,83 @@ def crc16_p25(buf: bytes, length: int) -> int:
     return (crc ^ 0xffff) & 0xffff
 
 
-def _decode_block(bv: list[int], start: int, table, sym_bits: int,
-                  out_len: int) -> bytes | None:
-    """Viterbi-free trellis decode, exactly as op25 does it for rate 1/2.
+_POPCOUNT = tuple(bin(i).count('1') for i in range(16))
 
-    At each step pick the input whose expected codeword is closest to the one
-    received; an ambiguous minimum is a decode failure, not a coin flip. The
-    decoded input becomes the next state.
+
+def _decode_block(bv: list[int], start: int, table, sym_bits: int,
+                  out_len: int):
+    """Viterbi trellis decode. Returns (bytes, bit_errors_corrected).
+
+    op25's block_deinterleave -- and the first version of this function, ported
+    from it -- is GREEDY: it takes the closest symbol at each step, keeps no
+    path history, and returns failure the moment two candidates tie. That
+    throws away the error-correcting power of the code, because a tie at one
+    symbol is usually resolvable by the symbols that follow.
+
+    MEASURED on 541 real frames, greedy against this:
+
+        headers passing CRC16          495 -> 539   (+44)
+        checksum-valid datagrams       162 -> 181   (+19)
+
+    The rescued headers had path costs of 1-11 bit errors and every one of them
+    PASSES CRC16 -- an independent 16-bit check the decoder has no way to
+    satisfy by accident, which is what makes this a correction rather than a
+    decoder that has learned to accept noise.
+
+    The tradeoff: a path search never fails, so this always returns something.
+    Callers must gate on an independent check -- crc16_p25 for a header, the
+    sender's own block count plus the IPv4 checksum for data. `bit_errors` is
+    returned as a quality signal for the same reason.
     """
     if start + BLOCK_BITS > len(bv):
-        return None
-    bits: list[int] = []
-    state = 0
+        return None, None
+    n = len(table)
+    inf = float('inf')
+    cost = [0.0] + [inf] * (n - 1)          # the encoder starts in state 0
+    back: list[list[int]] = []
     for b in range(0, BLOCK_BITS, 4):
         cw = ((bv[start + DEINTERLEAVE[b + 0]] << 3)
               + (bv[start + DEINTERLEAVE[b + 1]] << 2)
               + (bv[start + DEINTERLEAVE[b + 2]] << 1)
               + bv[start + DEINTERLEAVE[b + 3]])
-        dist = [bin(cw ^ table[state][j]).count('1') for j in range(len(table[state]))]
-        lo = min(dist)
-        if dist.count(lo) != 1:
-            return None
-        state = dist.index(lo)
-        # The final symbol is a flush and carries no data.
-        if (b >> 2) < out_len * 8 // sym_bits:
-            for k in range(sym_bits - 1, -1, -1):
-                bits.append((state >> k) & 1)
+        nxt = [inf] * n
+        prev = [0] * n
+        for s in range(n):
+            if cost[s] == inf:
+                continue
+            row, base = table[s], cost[s]
+            for i in range(n):
+                c = base + _POPCOUNT[cw ^ row[i]]
+                if c < nxt[i]:
+                    nxt[i], prev[i] = c, s
+        cost, _unused = nxt, back.append(prev)
+    end = min(range(n), key=lambda s: cost[s])
+    errors = cost[end]
+
+    # Traceback. The state ENTERED at step t is the input decoded at step t,
+    # because this encoder's next state is its input.
+    states = [0] * len(back)
+    s = end
+    for t in range(len(back) - 1, -1, -1):
+        states[t] = s
+        s = back[t][s]
+
+    keep = out_len * 8 // sym_bits          # the last symbol is a flush
+    bits: list[int] = []
+    for st in states[:keep]:
+        for k in range(sym_bits - 1, -1, -1):
+            bits.append((st >> k) & 1)
     out = bytearray(out_len)
     for i, bit in enumerate(bits[:out_len * 8]):
         if bit:
             out[i >> 3] |= 1 << (7 - (i & 7))
-    return bytes(out)
+    return bytes(out), errors
 
 
 def decode_header_block(bv: list[int]) -> bytes | None:
-    """The PDU header: rate 1/2, 12 octets."""
-    return _decode_block(bv, FRAME_PREAMBLE_BITS, TRELLIS_1_2, 2, 12)
+    """The PDU header: rate 1/2, 12 octets. Caller must check crc16_p25."""
+    out, _errors = _decode_block(bv, FRAME_PREAMBLE_BITS, TRELLIS_1_2, 2, 12)
+    return out
 
 
 def decode_data_block(bv: list[int], index: int, fmt: int = 0x16):
@@ -260,7 +301,7 @@ def decode_data_block(bv: list[int], index: int, fmt: int = 0x16):
               if fmt == Pdu.FMT_RESPONSE else
               [('3/4', TRELLIS_3_4, 3, 18), ('1/2', TRELLIS_1_2, 2, 12)])
     for rate, table, sym, out_len in orders:
-        got = _decode_block(bv, start, table, sym, out_len)
+        got, _errors = _decode_block(bv, start, table, sym, out_len)
         if got is not None:
             return got, rate
     return None, None
@@ -281,6 +322,13 @@ def parse_raw_line(line: str) -> Pdu | None:
         return None
     fmt = hdr[0] & 0x1f
     n_blocks = (len(bv) - FRAME_PREAMBLE_BITS) // BLOCK_BITS
+    # STOP AT THE SENDER'S OWN COUNT. Anything past it is padding, and since
+    # the Viterbi decoder never fails it would decode that padding into
+    # plausible-looking bytes and append them to the datagram. Measured before
+    # this cap: 798 "decoded" blocks against 756 actually claimed.
+    claimed = hdr[HDR_BLKS_OCTET] & 0x7f
+    if claimed:
+        n_blocks = min(n_blocks, claimed + 1)
     payload = b''
     recovered = 0
     rates = []

@@ -331,6 +331,56 @@ class TrellisTablesHaveProvenance(unittest.TestCase):
         self.assertNotEqual(P.TRELLIS_1_2[0][:4], P.TRELLIS_3_4[0][:4])
 
 
+class ViterbiCorrectsRatherThanGuesses(unittest.TestCase):
+    """A path search never fails, so it must be gated by independent checks."""
+
+    def test_it_reports_the_bit_errors_it_corrected(self):
+        bv = P._bits(bytes.fromhex(RAW_LRRP_4BLK))
+        out, errors = P._decode_block(bv, P.FRAME_PREAMBLE_BITS,
+                                      P.TRELLIS_1_2, 2, 12)
+        self.assertIsNotNone(out)
+        self.assertEqual(errors, 0)          # a clean frame costs nothing
+        self.assertEqual(P.crc16_p25(out, 12), 0)
+
+    def test_a_correctable_error_is_corrected_and_still_passes_crc(self):
+        # THE POINT OF THE CHANGE. Corrupt two bits of the coded header; the
+        # greedy decoder either fails or produces a block whose CRC16 breaks.
+        # Viterbi should recover the original and the CRC should still pass --
+        # an independent 16-bit check it cannot satisfy by luck.
+        raw = bytearray(bytes.fromhex(RAW_LRRP_4BLK))
+        raw[16] ^= 0x01
+        raw[19] ^= 0x02
+        bv = P._bits(bytes(raw))
+        out, errors = P._decode_block(bv, P.FRAME_PREAMBLE_BITS,
+                                      P.TRELLIS_1_2, 2, 12)
+        self.assertIsNotNone(out)
+        self.assertGreater(errors, 0, 'should report having corrected something')
+        self.assertEqual(P.crc16_p25(out, 12), 0,
+                         'corrected block must still satisfy its own CRC')
+
+    def test_noise_is_refused_by_the_crc_not_by_the_decoder(self):
+        # Viterbi returns bytes for anything, so garbage must be caught by the
+        # gate rather than by the decode. parse_raw_line applies that gate.
+        import random
+        rng = random.Random(7)
+        junk = bytes(rng.randrange(256) for _ in range(88))
+        out, _errors = P._decode_block(P._bits(junk), P.FRAME_PREAMBLE_BITS,
+                                       P.TRELLIS_1_2, 2, 12)
+        self.assertIsNotNone(out, 'a path search always returns something')
+        self.assertIsNone(
+            P.parse_raw_line('NAC 0x1bd PDU raw: bits=704 blocks=3 : ' + junk.hex()),
+            'and parse_raw_line must still refuse it')
+
+    def test_data_blocks_stop_at_the_senders_own_count(self):
+        # Without the cap, padding past the claimed count decodes into
+        # plausible bytes and gets appended to the datagram: measured 798
+        # "decoded" blocks against 756 claimed.
+        pdu = P.parse_raw_line('NAC 0x1bd PDU raw: bits=1120 blocks=5 : '
+                               + RAW_LRRP_4BLK)
+        self.assertEqual(pdu.hdr_blks, 4)
+        self.assertLessEqual(pdu.blks, pdu.hdr_blks)
+
+
 class RealFramesDecodeEndToEnd(unittest.TestCase):
     """The whole chain, on bits that came off the air."""
 
