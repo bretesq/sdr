@@ -63,6 +63,15 @@ LOG=$R/results/op25_multi.log
 # session stop. results/*.log is the established place for this kind of
 # per-tool log in this repo.
 IMPORT_LOG=$R/results/grant_import.log
+
+# The packet-data import gets its OWN file rather than sharing the one above.
+# Two reasons, and neither is tidiness: the file above is named for grants and
+# its documented reading rule ("pick a BEGIN line, grep its token") is easier
+# to apply when one file holds one kind of entry; and the two importers fail
+# independently, so a reader chasing a missing packet census should not have to
+# sort it out of grant entries first. Both are still tagged, because two
+# PACKET imports can interleave with each other just as two grant imports can.
+PKT_IMPORT_LOG=$R/results/packet_import.log
 LEGS=700,800
 SECS=0
 STT=0
@@ -354,6 +363,23 @@ cleanup() {
       >> "$IMPORT_LOG"
     setsid python3 "$R/scripts/import_grants.py" --tag "$IMPORT_TAG" "$LOG" >> "$IMPORT_LOG" 2>&1 &
     echo "  grant import running in the background -> $IMPORT_LOG"
+
+    # The packet-data census, on the same evidence and the same terms.
+    #
+    # This ran only when somebody remembered to type it until now, which made
+    # the `packets` table a snapshot rather than a record: the log ROTATES on
+    # the next session start, so any PDU not imported before then was gone.
+    # The whole point of the table is that the census outlives a rotation, and
+    # that was not true while the import was manual.
+    #
+    # Same detached setsid + tag treatment as the grant import above, and the
+    # same reason for both: it outlives this launcher, and its output shares a
+    # file with other runs of itself.
+    printf '=== %s  BEGIN %s  %s\n' \
+      "$(date -Is)" "$IMPORT_TAG" "$LOG" >> "$PKT_IMPORT_LOG"
+    setsid python3 "$R/scripts/import_packets.py" --tag "$IMPORT_TAG" "$LOG" \
+      >> "$PKT_IMPORT_LOG" 2>&1 &
+    echo "  packet import running in the background -> $PKT_IMPORT_LOG"
   fi
   n=$(ls -1 "$R"/recordings/TG*.wav 2>/dev/null | wc -l)
   echo "-> $n call(s) total in $R/recordings/"

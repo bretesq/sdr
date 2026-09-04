@@ -45,6 +45,7 @@ sys.path.insert(0, os.path.join(R, 'scripts'))
 
 import p25_apps                                             # noqa: E402
 import p25_packet                                           # noqa: E402
+from import_grants import TaggedStream                      # noqa: E402
 from sdr_db import DB_PATH, connect                         # noqa: E402
 
 # op25 stamps local time as MM/DD/YY HH:MM:SS.ffffff, at the head of the line
@@ -117,18 +118,7 @@ def rows_from(paths: list[str], session_id: int | None):
     return out, stats
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('log', nargs='*',
-                    default=[os.path.join(R, 'results', 'op25_multi.log')])
-    ap.add_argument('--db', default=DB_PATH)
-    ap.add_argument('--session-id', type=int, default=None,
-                    help='tag rows with this sessions.id')
-    ap.add_argument('--dry-run', action='store_true',
-                    help='report only; write nothing')
-    a = ap.parse_args()
-
+def run(a) -> int:
     paths = [p for p in a.log if os.path.exists(p)]
     missing = [p for p in a.log if not os.path.exists(p)]
     for p in missing:
@@ -190,6 +180,49 @@ def main() -> int:
     finally:
         db.close()
     return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('log', nargs='*',
+                    default=[os.path.join(R, 'results', 'op25_multi.log')])
+    ap.add_argument('--db', default=DB_PATH)
+    ap.add_argument('--session-id', type=int, default=None,
+                    help='tag rows with this sessions.id')
+    ap.add_argument('--dry-run', action='store_true',
+                    help='report only; write nothing')
+    ap.add_argument('--tag', default=None,
+                    help='stamp every output line with this token, so two '
+                         'interleaved imports stay separable in one log file')
+    a = ap.parse_args()
+
+    if not a.tag:
+        return run(a)
+
+    # Same discipline, and the same reasoning, as import_grants.py: the
+    # launcher appends this program's output to a shared file from a detached
+    # process, and an import can still be running when the next capture starts.
+    # A token on the HEADER alone is not enough -- grouping needs the token on
+    # the lines being grouped, or one import's summary lands under another's
+    # header and reads as that import's result.
+    #
+    # Saved and restored rather than replaced outright: a leaked wrapper would
+    # stamp later output with a stale tag, which matters because this is also
+    # called in-process by scripts/tests/test_import_packets.py.
+    real_stdout, real_stderr = sys.stdout, sys.stderr
+    sys.stdout = TaggedStream(real_stdout, a.tag)
+    sys.stderr = TaggedStream(real_stderr, a.tag)
+    status = 1
+    try:
+        status = run(a)
+    finally:
+        sys.stdout, sys.stderr = real_stdout, real_stderr
+        # The END line is what distinguishes "failed" from "killed before it
+        # could report" when reading the shared log, so it is printed through
+        # the tagged stream and then the wrapper comes off.
+        print(f'=== END {a.tag} exit {status}', file=TaggedStream(real_stdout, a.tag))
+    return status
 
 
 if __name__ == '__main__':
