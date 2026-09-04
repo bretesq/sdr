@@ -142,7 +142,7 @@
           </select>
         </header>
 
-        <div class="bay__filedbody">
+        <div ref="filedScroller" class="bay__filedbody">
           <BayCallStrip
             v-for="c in filed"
             :key="c.id"
@@ -154,6 +154,15 @@
             {{ archive.loading.value ? 'reading' : 'nothing filed' }}
             <span class="idle__sub">{{ archive.search.value ? 'No filed call matches that.' : 'Calls file here once they have been recorded.' }}</span>
           </p>
+          <!--
+            Sentinel: scrolling it into view asks the archive for another page.
+            The rail held exactly one page of 120 until now, so the archive
+            simply ended there with no indication that 13,000 more existed.
+          -->
+          <div v-if="filed.length" ref="filedSentinel" class="filed__more">
+            <span v-if="archive.loading.value">reading more</span>
+            <span v-else-if="!archive.hasMore.value">end of the archive</span>
+          </div>
         </div>
       </section>
 
@@ -167,6 +176,9 @@
         :summary="packets.summary.value"
         :loaded="packets.loaded.value"
         :error="packets.error.value"
+        :loading="packets.loading.value"
+        :has-more="packets.hasMore.value"
+        @load-more="packets.loadMore"
       />
     </main>
   </div>
@@ -232,6 +244,11 @@ const RECEIVER_SHORT: Record<ReceiverStatus, string> = {
 
 // Read-only background feed; its poll starts and stops with the page.
 const packets = usePacketFeed()
+
+// The filed rail's own infinite scroll. `root` is the scrolling div, not the
+// viewport -- see useInfiniteScroll.
+const { sentinel: filedSentinel, root: filedScroller }
+  = useInfiniteScroll(() => archive.loadMore())
 
 const receiverShort = computed(() => RECEIVER_SHORT[receiverStatus({
   radioBusy: feed.radioBusy.value,

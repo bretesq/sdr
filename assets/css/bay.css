@@ -997,3 +997,20 @@ body {
   color: #9aa189;
   max-width: 68ch;
 }
+
+/* The end-of-list sentinel for both rails.
+   Occupies a line so the observer has something with height to intersect --
+   a zero-height element inside a scroller can sit permanently at the boundary
+   and either never fire or fire continuously. */
+.filed__more,
+.data__more {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 12px;
+  font-family: var(--f-label);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: #7f866f;
+}

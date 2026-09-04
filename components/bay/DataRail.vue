@@ -30,7 +30,7 @@
       <span class="fold__box" :class="{ 'fold__box--open': open }" aria-hidden="true" />
     </button>
 
-    <div v-show="open" id="data-strips" class="bay__databody">
+    <div v-show="open" id="data-strips" ref="root" class="bay__databody">
       <p v-if="!loaded" class="data__note">Reading the data channel.</p>
 
       <!--
@@ -67,6 +67,13 @@
           {{ sentence(p) }}
         </p>
       </article>
+
+      <!-- Sentinel: scrolling it into view asks for the next page. Kept
+           OUTSIDE the v-else chain so it exists whenever rows do. -->
+      <div v-if="rows.length" ref="sentinel" class="data__more" aria-hidden="true">
+        <span v-if="loading">reading more</span>
+        <span v-else-if="!hasMore">end of the record</span>
+      </div>
     </div>
   </section>
 </template>
@@ -84,7 +91,16 @@ const props = defineProps<{
   summary: PacketSummary | null
   loaded: boolean
   error: string | null
+  loading: boolean
+  hasMore: boolean
 }>()
+
+const emit = defineEmits<{ loadMore: [] }>()
+
+// The sentinel asks; the page's feed decides. This component holds no
+// pagination state of its own, so it cannot disagree with the feed about how
+// far it is scrolled.
+const { sentinel, root } = useInfiniteScroll(() => emit('loadMore'))
 
 /** Closed by default: this is background traffic, not the operator's task. */
 const open = ref(false)
