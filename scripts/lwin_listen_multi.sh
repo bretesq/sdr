@@ -144,7 +144,14 @@ check_lib() {   # <string> <patch name> <why>
     echo "ERROR: cannot read $so to verify patches/$2" >&2
     return 1
   fi
-  if ! strings "$so" 2>/dev/null | grep -q "$1"; then
+  # `grep -a` on the binary, NOT `strings | grep`. The capture container does
+  # not ship binutils, so `strings` is absent there: the pipeline produced
+  # nothing, grep found nothing, and this guard reported the patch missing and
+  # refused to start a container-hosted capture that was in fact correctly
+  # patched. Verified by md5: the container bind-mounts this exact file
+  # read-only from the host, so it always sees whatever `make install` put
+  # there. grep is in coreutils and present in both places.
+  if ! grep -qa "$1" "$so" 2>/dev/null; then
     echo "ERROR: installed op25 library is missing patches/$2" >&2
     echo "       $3" >&2
     echo "       Re-apply per patches/README.md, then REBUILD:" >&2
