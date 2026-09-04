@@ -161,10 +161,25 @@ FRAME_PREAMBLE_BITS = 112 # 48 frame sync + 64 NID
 # a CRC9, leaving 16 of user data.
 DATA_BLOCK_HEADER_LEN = 2
 
-# And the reassembled user data opens with a 2-octet SNDCP prefix before the
+# And the reassembled user data opens with a 2-octet SNDCP header before the
 # IP header. MEASURED: parse_ipv4 finds nothing at offset 0 and validates at
 # offset 2 on every packet observed, so the earlier "not IPv4" verdicts were
 # honest but were reading two octets too early.
+#
+# WHAT IT IS. Recovered from SDRTrunk's SNDCPPacketHeader: four 4-bit fields
+# across those 16 bits, named PDU_TYPE, OUTBOUND_UNKNOWN,
+# PACKET_HEADER_COMPRESSION and DATAGRAM_HEADER_COMPRESSION. On this system it
+# is CONSTANT -- `51 00` on all 283 checksum-valid datagrams -- so the nibbles
+# read 5, 1, 0, 0.
+#
+# Which name sits at which position is INFERRED from the order the fields are
+# declared, and nothing here can check that. What supports it: both
+# compression fields land on 0, and an uncompressed IPv4 header is exactly
+# what follows. That is a weak check (two of four fields are zero either way),
+# so the mapping is recorded as a lead rather than decoded into `fields`.
+#
+# Being constant is also why it cannot be worked out from our own data: there
+# is no variation to correlate against anything.
 SNDCP_PREFIX_LEN = 2
 
 
