@@ -76,6 +76,29 @@ LRRP_PACKET_TYPES = {
 # here would mean something about our understanding is wrong.
 LRRP_RESPONSE_TYPES = frozenset({7, 11, 13, 17, 21})
 
+# Octet 0 is NOT purely the packet type: its high bits carry flags.
+#
+# Evidence, and it is the strong kind. Over every checksum-valid datagram on
+# port 4001, octet 0 took two values -- 0x09 (x161) and 0x69 (x1) -- and the
+# 0x69 message's remaining SIXTEEN bytes are byte-identical to one of the 0x09
+# messages, request token and all:
+#
+#     09 0f 22 03 ff ff ee 52 44 64 3a 64 62 57 34 31 1e
+#     69 0f 22 03 ff ff ee 52 44 64 3a 64 62 57 34 31 1e
+#
+# A genuine change of message type cannot produce an identical body. So 0x69 is
+# type 9 with two flag bits set, and reading the whole octet as the type
+# reported a "type 105" that does not exist.
+#
+# The mask is 5 bits because every type in the recovered table fits in 5
+# (the largest is 21 = 0x15). A value whose low 5 bits are still not in the
+# table keeps reporting as unknown, which is the behaviour that should survive:
+# masking must not turn an unrecognised type into a recognised one.
+#
+# CAVEAT worth keeping: n=1 for the flagged variant. What the flags MEAN is not
+# decoded -- they are surfaced as a field, the same way the ARS flag nibble is.
+LRRP_TYPE_MASK = 0x1f
+
 
 @dataclass
 class AppMessage:
@@ -140,7 +163,8 @@ def parse_lrrp(payload: bytes) -> AppMessage | None:
     """
     if len(payload) < 2:
         return None
-    ptype = payload[0]
+    ptype = payload[0] & LRRP_TYPE_MASK        # see LRRP_TYPE_MASK
+    flags = payload[0] >> 5
     declared = payload[1]
     tokens = payload[2:]
 
@@ -149,6 +173,11 @@ def parse_lrrp(payload: bytes) -> AppMessage | None:
         'actual_len': len(tokens),
         'direction': 'radio->system' if ptype in LRRP_RESPONSE_TYPES else 'system->radio',
     }
+    if flags:
+        # Reported, not interpreted. Their meaning is unknown and one sample is
+        # not enough to guess at it, but losing them would hide the only thing
+        # that distinguishes this message from the other 161.
+        fields['flags'] = f'0x{flags:x}'
     if declared != len(tokens):
         fields['LENGTH_MISMATCH'] = True
     return AppMessage(
