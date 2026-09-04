@@ -197,6 +197,18 @@ cfg = json.load(open(sys.argv[1]))
 for i, ch in enumerate(cfg['channels']):
     if ch['name'] == 'CC':
         continue                      # pinned to the control channel; no audio
+    if ch.get('data_only'):
+        # SNDCP data receivers carry no voice, so a recorder on one writes a
+        # .wav for every data burst it decodes -- with no talkgroup and no
+        # frequency, because a data grant has neither. MEASURED: TGunknown
+        # calls went from 0.2% of the corpus before these receivers existed to
+        # 35% after, polluting both `calls` and recordings/ with files that
+        # contain no speech and can never be resolved to anything.
+        #
+        # op25 still sends audio to the port; with no recorder bound it is
+        # simply dropped, which is the correct outcome for a channel whose
+        # traffic is packets.
+        continue
     print(i, ch['destination'].rsplit(':', 1)[1], ch['device'], ch['name'])
 PY
 ) || exit $?
