@@ -134,6 +134,25 @@ class LogLineParsing(unittest.TestCase):
         self.assertEqual(pdu.blocks_lost, 4)
         self.assertEqual(pdu.sap_name, 'unencrypted user data')
 
+    def test_a_response_pdu_does_not_claim_to_have_a_sap(self):
+        """Real fmt=03 headers off LWIN reported sap=0c and sap=0d.
+
+        Those are not SAPs -- octet 1 of a response PDU carries response
+        class/type/status. Reporting them as "unknown SAP 12" would invent a
+        service that does not exist.
+        """
+        real = bytes.fromhex('230c0003595b800000 06 2c'.replace(' ', ''))
+        pdu = P.Pdu(nac=0x1bd, fmt=0x03, sap=0x0c, blks=0, hdr=real, payload=b'')
+        self.assertFalse(pdu.sap_valid)
+        self.assertIn('not a SAP', pdu.sap_name)
+        self.assertEqual(pdu.llid, 0x03595b)
+
+    def test_a_data_pdu_does_have_a_sap(self):
+        real = bytes.fromhex('76c00003595b830a48028f91')
+        pdu = P.Pdu(nac=0x1bd, fmt=0x16, sap=0x00, blks=0, hdr=real, payload=b'')
+        self.assertTrue(pdu.sap_valid)
+        self.assertEqual(pdu.sap_name, 'unencrypted user data')
+
     def test_sap_is_named_not_guessed(self):
         self.assertEqual(P.parse_log_line(log_line(b'\x00', sap=4)).sap_name,
                          'packet data')

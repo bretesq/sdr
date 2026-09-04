@@ -346,19 +346,21 @@ class TestValidationCatchesRealMistakes(unittest.TestCase):
         # THE BUDGET, DERIVED RATHER THAN ASSUMED. Both /start endpoints cap
         # nVoice700 and nVoice800 at 8, and their comments claim that keeps
         # the block inside 23460-23494. Nothing checked it. Here is the
-        # arithmetic those comments describe, run: 1 control + 8 + 8 + 1 SNDCP
-        # data receiver = 18 channels, two ports apart, last port exactly 23494.
+        # arithmetic those comments describe, run: 1 control + 8 + 8 + one SNDCP
+        # data receiver PER LEG = 19 channels, two ports apart, last port
+        # exactly 23496.
         #
-        # This was 17 channels ending at 23492 before LEG_700 declared a data
-        # frequency. The data receiver is unconditional -- an operator cannot
-        # dial it down -- so it belongs in the derivation rather than in the
-        # headroom, which is why the block was widened by 2 rather than the
-        # count being left to overflow it.
+        # This was 17 channels ending at 23492 before the legs declared data
+        # frequencies, then 18 when only the 700 leg had one. Those receivers
+        # are unconditional -- an operator cannot dial them down the way they
+        # can nVoice -- so they belong in the derivation rather than in
+        # headroom, which is why the block was widened rather than the count
+        # being left to overflow it.
         legs = [dict(M.LEG_700, n_voice=8), dict(M.LEG_800, n_voice=8)]
         cfg = self._cfg(legs)
         ports = sorted(int(c['destination'].rsplit(':', 1)[1])
                        for c in cfg['channels'])
-        self.assertEqual(len(ports), 18)
+        self.assertEqual(len(ports), 19)
         self.assertEqual(ports[0], M.BASE_PORT)
         self.assertEqual(
             ports[-1], M.LAST_PORT,

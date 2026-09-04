@@ -144,8 +144,29 @@ class Pdu:
     hdr: bytes
     payload: bytes
 
+    # Packet formats. fmt is octet 0 & 0x1f, as op25 reads it.
+    FMT_RESPONSE = 0x03
+    FMT_CONFIRMED = 0x16
+
+    @property
+    def sap_valid(self) -> bool:
+        """Is the `sap` field on the log line actually a SAP?
+
+        NO for a response PDU. The C++ reads octet 1 & 0x3f as SAP for EVERY
+        format, but a response PDU (fmt 0x03) does not carry a SAP there --
+        that octet holds response class/type/status. Observed off the air:
+        fmt=03 headers reported sap=0c and sap=0d, which are not SAPs at all,
+        while fmt=16 headers reported 00 and 06, which are.
+
+        Not fixed in the C++ on purpose: the raw header is on the log line, so
+        this is an interpretation question, and interpretation lives here.
+        """
+        return self.fmt != self.FMT_RESPONSE
+
     @property
     def sap_name(self) -> str:
+        if not self.sap_valid:
+            return f'n/a (fmt 0x{self.fmt:02x} response PDU; octet 1 is not a SAP)'
         return SAP_NAMES.get(self.sap, f'unknown SAP {self.sap}')
 
     @property

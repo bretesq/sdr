@@ -213,14 +213,23 @@ LEG_800 = {
     # at a time. They remain inside the window (offset 4.6875 MHz < 5.088) so a
     # real failover would still be reachable if they ever come up.
     'control': [],
-    # 856.4625 is announced as a data channel by the same TSBK 0x16 that names
-    # 769.68125 (2,953 announcements against 2,941 over the same 35 minutes, so
-    # the site advertises both equally). It gets NO receiver because it took
-    # zero of the 362 observed data grants -- every one went to the 700 leg.
-    # Announced and idle is not the same as carrying traffic, and the 800 leg's
-    # receivers are the scarce ones: it carries 84% of voice. Populate this if
-    # grants ever appear here.
-    'data': [],
+    # STARTING frequency for this leg's SNDCP data receiver.
+    #
+    # This said "NO receiver, it took zero of the 362 observed data grants" on
+    # the strength of a 35-minute sample. That was wrong, and wrong by a wide
+    # margin: over 11 hours the 800 leg took 6,347 of 8,084 grants -- 78% of
+    # ALL packet data on the site. The earlier window simply never saw one.
+    #
+    # 856.4625 is where it waits: TSBK 0x16 announces it as this leg's
+    # data-capable channel (101,290 announcements in 11 hours, against 48,384
+    # of ch1=ffff meaning "none currently assigned"). It does not stay there --
+    # tk_p25.py's tune_data_receivers moves it on every 0x14 grant.
+    #
+    # This is an ADDITIONAL channel, not a converted voice receiver. n_voice
+    # stays at 7: the concurrency measurement above found peak 5 of 7, so a
+    # spare exists, but spending it is a voice-coverage decision and this is a
+    # data change.
+    'data': [856_462_500],
     'dc_guard': 100_000,
 }
 
@@ -234,11 +243,11 @@ LEGS = {'700': LEG_700, '800': LEG_800}
 # (>= 2 apart) with no ceiling at all. Both ends of the budget were
 # comment-bound, and the budget is at exactly zero headroom:
 #
-#     channels = 1 control + n_voice_700 + n_voice_800 + 1 SNDCP data receiver
+#     channels = 1 control + n_voice_700 + n_voice_800 + 1 data receiver PER LEG
 #     last port = BASE_PORT + 2 * (channels - 1)
 #
-# At the MAX_VOICE of 8 that both front doors enforce, that is 18 channels and
-# a last port of 23460 + 2*17 = 23494. Exact. Nothing spare.
+# At the MAX_VOICE of 8 that both front doors enforce, that is 19 channels and
+# a last port of 23460 + 2*18 = 23496. Exact. Nothing spare.
 #
 # It was 17 channels ending at 23492 until the pinned SNDCP data receiver was
 # added (see LEG_700['data']). That receiver is not optional capacity an
@@ -263,8 +272,8 @@ LEGS = {'700': LEG_700, '800': LEG_800}
 # What is never legitimate is the block growing wider than the window that was
 # sized for it.
 BASE_PORT = 23460
-LAST_PORT = 23494
-PORT_BLOCK_SPAN = LAST_PORT - BASE_PORT          # 34 -> 18 channels, 2 apart
+LAST_PORT = 23496
+PORT_BLOCK_SPAN = LAST_PORT - BASE_PORT          # 36 -> 19 channels, 2 apart
 
 
 def leg_freqs(leg: dict) -> list[int]:
