@@ -33,6 +33,9 @@ ap = argparse.ArgumentParser(description='Build an op25 whitelist from the LWIN 
 ap.add_argument('-p', '--preset', choices=sorted(PRESETS), default='all')
 ap.add_argument('-t', '--tag', help='comma-separated tag(s), e.g. "Law Dispatch,Law Talk"')
 ap.add_argument('-g', '--tg', help='comma-separated talkgroup IDs (overrides other filters)')
+ap.add_argument('--add-tg', help='comma-separated talkgroup IDs to ADD to whatever the '
+                                 'preset/tag/match selected, including IDs absent from the '
+                                 'reference DB')
 ap.add_argument('-m', '--match', help='regex matched against alpha, description and category')
 ap.add_argument('--all-areas', action='store_true', help='statewide, not just Baton Rouge area')
 ap.add_argument('--include-partial', action='store_true')
@@ -85,6 +88,34 @@ else:
 
 kept    = [(t, v) for t, v in sel if v['enc'] in allowed]
 dropped = [(t, v) for t, v in sel if v['enc'] not in allowed]
+
+# --add-tg: union extra talkgroups onto whatever was selected above.
+#
+# Two things it does that --tg cannot, both of which came from a real request
+# to follow two busy talkgroups the preset was skipping:
+#
+#   1. It ADDS. `--tg` replaces the selection entirely (`if a.tg: ... else:`),
+#      so using it to pick up two talkgroups silently drops the preset's other
+#      222.
+#   2. It honours an ID the reference DB has never heard of. `--tg` selects
+#      FROM the DB, so an unknown ID produces a stderr warning and no entry --
+#      you ask to follow a talkgroup and get nothing. TG 20000 is exactly that
+#      case: the second-busiest talkgroup on the air here and absent from
+#      RadioReference. The receiver does not need a name to follow a number.
+#
+# These bypass the `enc` filter deliberately. An explicitly named talkgroup is
+# an instruction, not a suggestion, and --include-encrypted should not have to
+# be repeated to honour it.
+if a.add_tg:
+    extra = {int(x) for x in re.split(r'[,\s]+', a.add_tg.strip()) if x}
+    have = {t for t, _ in kept}
+    for tg in sorted(extra - have):
+        meta = db.get(str(tg))
+        kept.append((tg, meta or {
+            'alpha': '', 'desc': 'not in the reference DB', 'cat': '',
+            'tag': '', 'enc': 'clear',
+        }))
+
 kept.sort()
 
 if a.list or not kept:

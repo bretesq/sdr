@@ -105,6 +105,17 @@ export default defineEventHandler(async (event) => {
     setResponseStatus(event, 400)
     return { success: false, error: 'Talkgroups must be a comma-separated list of numbers' }
   }
+  // Same shape as `talkgroups`, different meaning: this ADDS to the preset
+  // rather than replacing it. Validated here and again in
+  // scripts/capture_control.py, which is the actual boundary — this check
+  // exists to give the console a useful 400 rather than to be relied upon.
+  if (body.addTalkgroups && !TG_LIST.test(body.addTalkgroups)) {
+    setResponseStatus(event, 400)
+    return {
+      success: false,
+      error: 'addTalkgroups must be a comma-separated list of numbers, e.g. "20000,5080"',
+    }
+  }
   if (body.match && !looksLikeValidPythonRegex(body.match)) {
     setResponseStatus(event, 400)
     return { success: false, error: `Not a valid regex: ${body.match}` }

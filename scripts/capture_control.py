@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -122,7 +123,7 @@ MAX_DURATION_SEC = 24 * 60 * 60
 ALLOWED_FIELDS = frozenset(
     {
         "mode", "ess", "includeEncrypted", "durationSec", "sessionId",
-        "nVoice700", "nVoice800", "preset",
+        "nVoice700", "nVoice800", "preset", "addTalkgroups",
     }
 )
 
@@ -169,6 +170,12 @@ MAX_SESSION_ID = 1_000_000
 # server's own clear 400, not a 500 from that downstream ValueError.
 MIN_VOICE = 1
 MAX_VOICE = 8
+
+# Upper bound on addTalkgroups. Not a safety property -- the field is already
+# constrained to digits and commas and never reaches a shell -- but
+# make_whitelist.py takes a short list of extras alongside a preset, and a
+# caller sending hundreds has misunderstood the field rather than attacked it.
+MAX_ADD_TALKGROUPS = 64
 
 # The talkgroup presets this endpoint will run, mapped to the EXACT argv this
 # module emits for each one.
@@ -318,6 +325,34 @@ def build_args(req: object) -> tuple[list[str], int | None]:
                 raise ValidationError(f"{field} must be between {MIN_VOICE} and {MAX_VOICE}")
             args.append(flag)
             args.append(str(n_voice))
+
+    # addTalkgroups: extra talkgroup IDs to follow ALONGSIDE the preset.
+    #
+    # This is the only field here whose value reaches argv as a caller-supplied
+    # STRING rather than as a token this module chose, so it gets the strictest
+    # validation in the file. Digits and commas only, enforced by re.fullmatch
+    # on the whole value, then re-emitted from the PARSED integers rather than
+    # from the caller's string -- so even a pattern that somehow satisfied the
+    # regex cannot survive into the command line as written.
+    #
+    # It is never passed to a shell: build_args returns a list and
+    # subprocess.Popen is called without shell=True, as this module's docstring
+    # states. The count bound is not a safety property, it is a sanity one --
+    # make_whitelist.py takes a list, not a corpus, and a caller sending
+    # thousands of ids is confused rather than hostile.
+    add_tgs = req.get("addTalkgroups")
+    if add_tgs is not None:
+        if not isinstance(add_tgs, str):
+            raise ValidationError("addTalkgroups must be a comma-separated string of IDs")
+        if not re.fullmatch(r"\d{1,7}(,\d{1,7})*", add_tgs):
+            raise ValidationError(
+                "addTalkgroups must be comma-separated talkgroup IDs, e.g. \"20000,5080\"")
+        ids = [int(x) for x in add_tgs.split(",")]
+        if len(ids) > MAX_ADD_TALKGROUPS:
+            raise ValidationError(
+                f"addTalkgroups accepts at most {MAX_ADD_TALKGROUPS} IDs")
+        args.append("--add-tg")
+        args.append(",".join(str(i) for i in ids))
 
     # isinstance() before the membership test, for the same reason `mode` gets
     # it above: `x in a_dict` hashes x, and a caller can send an unhashable
