@@ -174,6 +174,11 @@ LEG_700 = {
     # and ARS registrations travel -- are at 799-805 MHz, outside every window
     # this config can reach. Reading those needs another receiver and antenna.
     'data': [769_681_250],
+    # ONE receiver is already more than this leg earns. Measured: 51 retunes,
+    # 80% of which yielded no PDU at all -- the 700 leg takes 22% of data
+    # grants and its sessions are short (median 0.58 s from retune to last
+    # PDU). A second receiver here would mostly idle.
+    'n_data': 1,
     'dc_guard': 100_000,
 }
 
@@ -230,6 +235,20 @@ LEG_800 = {
     # spare exists, but spending it is a voice-coverage decision and this is a
     # data change.
     'data': [856_462_500],
+    # TWO receivers, because ONE was measurably starved. With a single data
+    # receiver on this leg, 659 of 893 reachable data grants -- 74% -- were
+    # refused by the dwell timer because the receiver was already busy. That
+    # is a concurrency shortage, not a dwell-length problem, and it is
+    # concentrated here: this leg takes 78% of grants, its retunes yield a PDU
+    # 81% of the time (against 20% on the 700 leg), and its sessions run long
+    # (median 3.24 s from retune to last PDU, max 35.4 s).
+    #
+    # Deliberately NOT paired with a dwell change. Median time-to-last-PDU
+    # already exceeds DATA_DWELL_SEC, so shortening the dwell would truncate
+    # live sessions while lengthening it would block more grants -- and moving
+    # both variables at once would make neither effect measurable. Receivers
+    # first, measure, then tune the dwell.
+    'n_data': 2,
     'dc_guard': 100_000,
 }
 
@@ -243,11 +262,20 @@ LEGS = {'700': LEG_700, '800': LEG_800}
 # (>= 2 apart) with no ceiling at all. Both ends of the budget were
 # comment-bound, and the budget is at exactly zero headroom:
 #
-#     channels = 1 control + n_voice_700 + n_voice_800 + 1 data receiver PER LEG
+#     channels = 1 control + n_voice_700 + n_voice_800
+#                          + n_data_700 + n_data_800
 #     last port = BASE_PORT + 2 * (channels - 1)
 #
-# At the MAX_VOICE of 8 that both front doors enforce, that is 19 channels and
-# a last port of 23460 + 2*18 = 23496. Exact. Nothing spare.
+# At the MAX_VOICE of 8 that both front doors enforce, with n_data 1 (700) and
+# 2 (800), that is 20 channels and a last port of 23460 + 2*19 = 23498. Exact.
+# Nothing spare.
+#
+# n_data is a per-leg count now rather than an implicit 1, because the 800 leg
+# needed two and the arithmetic should follow the configuration instead of
+# being re-derived by hand every time a receiver is added. Raising n_data
+# widens this block; scripts/tests/test_capture_control.py derives the count
+# from the leg definitions, so it fails loudly rather than silently
+# overflowing.
 #
 # It was 17 channels ending at 23492 until the pinned SNDCP data receiver was
 # added (see LEG_700['data']). That receiver is not optional capacity an
@@ -272,8 +300,8 @@ LEGS = {'700': LEG_700, '800': LEG_800}
 # What is never legitimate is the block growing wider than the window that was
 # sized for it.
 BASE_PORT = 23460
-LAST_PORT = 23496
-PORT_BLOCK_SPAN = LAST_PORT - BASE_PORT          # 36 -> 19 channels, 2 apart
+LAST_PORT = 23498
+PORT_BLOCK_SPAN = LAST_PORT - BASE_PORT          # 38 -> 20 channels, 2 apart
 
 
 def leg_freqs(leg: dict) -> list[int]:
@@ -399,8 +427,12 @@ def build(legs: list[dict], *, crypt_keys: str = '', whitelist: str, cc_whitelis
         # op25 logs "Receiver '<name>' configured with unknown trunking_sysname"
         # once at startup. That line is EXPECTED and is the marker that the pin
         # took; its absence means this channel is chasing voice.
-        for i, freq in enumerate(leg.get('data', [])):
-            channels.append(chan(f"DATA{leg['name']}_{i}", radio, freq,
+        starts = leg.get('data', [])
+        for i in range(leg.get('n_data', 0) if starts else 0):
+            # Start frequencies cycle, exactly as voice does: they only say
+            # where a receiver waits before the first grant moves it.
+            channels.append(chan(f"DATA{leg['name']}_{i}", radio,
+                                 starts[i % len(starts)],
                                  '', port, if_rate, lo, hi,
                                  sysname=f'{sysname}-DATA-CONV',
                                  data_only=True))

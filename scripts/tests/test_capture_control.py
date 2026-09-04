@@ -488,7 +488,7 @@ class VoiceChannelBudgetTest(unittest.TestCase):
         # ever declares a second data frequency, this derivation follows it and
         # this test fails until the block is widened, which is the whole point
         # of the exactness assertion below.
-        n_data = len(mrx.LEG_700.get('data', [])) + len(mrx.LEG_800.get('data', []))
+        n_data = mrx.LEG_700.get('n_data', 0) + mrx.LEG_800.get('n_data', 0)
         channels = 1 + 2 * cc.MAX_VOICE + n_data
         span = 2 * (channels - 1)
         self.assertLessEqual(

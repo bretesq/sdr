@@ -345,3 +345,50 @@ at `P25_1_2_Node` first and returned a table byte-for-byte identical to op25's
 independent copy — getting a known-correct answer out is what licenses trusting
 the unknown one. `scripts/tests/test_p25_packet.py` pins both tables and three
 real frames.
+
+### Addendum: one receiver per grant, and a pool (2026-09-04)
+
+Two bugs and a capacity finding, all from measuring what the single data
+receiver was actually doing over 893 reachable grants:
+
+```
+grant disposition: tuned 234   dwell-blocked 659   outside-window 1018
+  -> 74% of REACHABLE grants refused because the receiver was already busy
+
+rx 4  (700 leg): 51 tunes, 80% yielded no PDU at all
+rx 12 (800 leg): 183 tunes, 19% yielded nothing
+     first PDU after a retune: median 0.50 s
+     last  PDU after a retune: median 3.24 s, max 35.4 s
+```
+
+**The dwell length was not the problem.** Median time-to-last-PDU (3.24 s)
+already exceeds `DATA_DWELL_SEC` (3.0 s), so shortening the dwell would truncate
+live sessions while lengthening it would block more grants. 74% blocking on the
+leg carrying 78% of traffic is a concurrency shortage.
+
+So `n_data` is now a per-leg count: 1 on the 700 leg (which earns no more —
+80% of its retunes yielded nothing) and **2** on the 800 leg. The port-budget
+formula follows `n_data` rather than assuming one receiver per leg, and
+`test_capture_control` derives the count from the leg definitions so raising it
+fails loudly instead of silently overflowing the block.
+
+**Bug 1: every eligible receiver was tuned to the same frequency.**
+`tune_data_receivers` had no `return` after a successful tune, so a pool of N
+receivers covered one channel N times instead of N channels once — defeating
+the entire point of a pool. One receiver per grant now.
+
+**Bug 2: repeated grants consumed extra receivers.** Grants arrive in
+triplicate on this system. Without suppression, three receivers would be spent
+on one channel. A receiver still inside its dwell on that frequency is already
+working on it, so the grant is now ignored.
+
+Measured after both fixes plus the pool:
+
+```
+dwell-blocked share of reachable grants:  74%  ->  4%
+data blocks recovered (of those claimed): 91%  -> 100%
+```
+
+`DATA_DWELL_SEC` was deliberately left at 3.0. Moving receivers and dwell in
+the same change would have made neither effect measurable; with blocking down
+to 4% the dwell is no longer the binding constraint anyway.

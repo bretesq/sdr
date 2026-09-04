@@ -257,7 +257,7 @@ class TestTwoDeviceConfig(unittest.TestCase):
         """1 pinned control + n_voice per leg + 1 pinned SNDCP receiver per
         data frequency."""
         want = (1 + M.LEG_700['n_voice'] + M.LEG_800['n_voice']
-                + len(M.LEG_700.get('data', [])) + len(M.LEG_800.get('data', [])))
+                + M.LEG_700.get('n_data', 0) + M.LEG_800.get('n_data', 0))
         self.assertEqual(len(self.CFG['channels']), want)
 
 
@@ -346,9 +346,9 @@ class TestValidationCatchesRealMistakes(unittest.TestCase):
         # THE BUDGET, DERIVED RATHER THAN ASSUMED. Both /start endpoints cap
         # nVoice700 and nVoice800 at 8, and their comments claim that keeps
         # the block inside 23460-23494. Nothing checked it. Here is the
-        # arithmetic those comments describe, run: 1 control + 8 + 8 + one SNDCP
-        # data receiver PER LEG = 19 channels, two ports apart, last port
-        # exactly 23496.
+        # arithmetic those comments describe, run: 1 control + 8 + 8 + n_data
+        # (1 on the 700 leg, 2 on the 800) = 20 channels, two ports apart,
+        # last port exactly 23498.
         #
         # This was 17 channels ending at 23492 before the legs declared data
         # frequencies, then 18 when only the 700 leg had one. Those receivers
@@ -360,7 +360,7 @@ class TestValidationCatchesRealMistakes(unittest.TestCase):
         cfg = self._cfg(legs)
         ports = sorted(int(c['destination'].rsplit(':', 1)[1])
                        for c in cfg['channels'])
-        self.assertEqual(len(ports), 19)
+        self.assertEqual(len(ports), 20)
         self.assertEqual(ports[0], M.BASE_PORT)
         self.assertEqual(
             ports[-1], M.LAST_PORT,
@@ -445,10 +445,13 @@ class SndcpDataReceiverFollowsGrants(unittest.TestCase):
         cls.data = [c for c in cls.cfg['channels'] if c['name'].startswith('DATA')]
 
     def test_one_receiver_per_declared_data_frequency(self):
-        want = len(M.LEG_700.get('data', [])) + len(M.LEG_800.get('data', []))
+        want = M.LEG_700.get('n_data', 0) + M.LEG_800.get('n_data', 0)
         self.assertEqual(len(self.data), want)
-        self.assertEqual([c['frequency'] for c in self.data],
-                         M.LEG_700['data'] + M.LEG_800['data'])
+        # The 800 leg runs two receivers off one start frequency, so the list
+        # cycles rather than requiring an entry per receiver.
+        for ch in self.data:
+            leg = M.LEG_700 if ch['device'] == 'one' else M.LEG_800
+            self.assertIn(ch['frequency'], leg['data'])
 
     def test_its_trunking_sysname_is_not_the_trunking_system(self):
         # THE PIN ITSELF. tk_p25.py:144 looks trunking_sysname up in

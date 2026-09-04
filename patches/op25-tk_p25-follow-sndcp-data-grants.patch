@@ -1,6 +1,6 @@
 --- a/op25/gr-op25_repeater/apps/tk_p25.py
 +++ b/op25/gr-op25_repeater/apps/tk_p25.py
-@@ -118,6 +118,10 @@
+@@ -118,6 +118,15 @@
          self.debug = debug
          self.receivers = {}
          self.systems = {}
@@ -8,10 +8,15 @@
 +        # burst of grants cannot keep yanking a data receiver off the channel
 +        # it was just tuned to. See tune_data_receivers.
 +        self.data_tuned_at = {}
++        # msgq_id -> the frequency it was sent to, so a repeated grant does not
++        # consume a second receiver for a channel already covered. Grants
++        # arrive in triplicate on this system, so without this a three-receiver
++        # pool would put all three on one channel.
++        self.data_tuned_freq = {}
          self.chans = chans
          self.cleanup_timer = time.time()
          self.call_log = deque(maxlen=CALL_LOG_MAX_LEN)
-@@ -166,6 +170,76 @@
+@@ -166,6 +175,95 @@
                                     'rx_rcvr':    rx_rcvr,
                                     'conv_state': conv_state}
  
@@ -41,6 +46,17 @@
 +        if freq is None or int(freq) == 0:
 +            return
 +        now = time.time()
++        freq = int(freq)
++
++        # ALREADY COVERED? Grants repeat -- three identical ones in a row is
++        # normal here -- so a pool of receivers would otherwise be spent
++        # several times over on one channel. A receiver still inside its dwell
++        # on this frequency is working on it; nothing more to do.
++        for msgq_id, when in self.data_tuned_at.items():
++            if (self.data_tuned_freq.get(msgq_id) == freq
++                    and now - when < self.DATA_DWELL_SEC):
++                return
++
 +        for msgq_id in sorted(self.receivers.keys()):
 +            config = self.receivers[msgq_id].get('config') or {}
 +            if not config.get('data_only'):
@@ -63,6 +79,7 @@
 +                                     (log_ts.get(), msgq_id, now - self.data_tuned_at.get(msgq_id, 0.0)))
 +                continue
 +            self.data_tuned_at[msgq_id] = now
++            self.data_tuned_freq[msgq_id] = freq
 +
 +            tune_params = {'tuner':   msgq_id,
 +                           'sigtype': "P25",
@@ -84,11 +101,18 @@
 +            if self.debug >= 5:
 +                sys.stderr.write("%s [%d] data grant: tuned to %f for llid %d\n" %
 +                                 (log_ts.get(), msgq_id, freq / 1e6, llid))
++            # ONE receiver per grant. Without this the loop tuned EVERY
++            # eligible receiver to the same frequency, so a multi-receiver pool
++            # covered one channel N times instead of N channels once -- which
++            # is the entire reason the pool exists. Measured before the pool:
++            # 659 of 893 reachable grants (74%) were refused because the single
++            # receiver was busy.
++            return
 +
      # post_init is called once after all receivers have been created
      def post_init(self):
          for rx in self.receivers:
-@@ -885,6 +959,41 @@
+@@ -885,6 +983,41 @@
                      self.callsign = bsi
                      if self.debug >= 10:
                          sys.stderr.write('%s [%d] tsbk(0x0b) mot_bsi_grant: bsi: %s ch: %x(%s)\n' % (log_ts.get(), m_rxid, bsi, ch, self.channel_id_to_string(ch)))
