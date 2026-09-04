@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -365,3 +366,64 @@ class PairKeys(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestApplyIsStandalone(unittest.TestCase):
+    """--apply must not drag a harvest along with it.
+
+    main() reads `a.logs or [DEFAULT_LOG]`, so an invocation naming no log
+    still harvests the default one -- and harvest()'s speech pass rewrites
+    enc_observed on every transcribed call that lacks it. On the live database
+    that is ~15,000 rows written by a flag whose entire job is to update the
+    talkgroups table.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+        self.tmp.close()
+        self.db = sdr_db.connect(self.tmp.name)
+        self.dir = tempfile.mkdtemp()
+        self.ov = os.path.join(self.dir, 'enc_overrides.json')
+        with open(self.ov, 'w') as f:
+            f.write('{"900": {"enc": "clear", "why": "x", "reviewed": "y"}}')
+        self._real = enc_harvest.OVERRIDES
+        enc_harvest.OVERRIDES = self.ov
+
+    def tearDown(self):
+        enc_harvest.OVERRIDES = self._real
+        self.db.close()
+        os.unlink(self.tmp.name)
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _call(self, tgid=900, transcript='dispatch nineteen go ahead'):
+        self.db.execute(
+            'INSERT INTO calls (id, file, tgid, start, dur, transcript) '
+            'VALUES (?,?,?,?,?,?)', (1, 'x.wav', tgid, 1000.0, 5.0, transcript))
+        self.db.commit()
+
+    def test_apply_alone_leaves_calls_untouched(self):
+        self._call()
+        rc = enc_harvest.main(['--apply', '--db', self.tmp.name])
+        self.assertEqual(rc, 0)
+        row = self.db.execute(
+            'SELECT enc_observed FROM calls WHERE id = 1').fetchone()
+        self.assertIsNone(row['enc_observed'])
+
+    def test_apply_still_writes_the_override(self):
+        self.db.execute(
+            "INSERT INTO talkgroups (tgid, alpha, enc) VALUES (900, 'A', 'partial')")
+        self.db.commit()
+        enc_harvest.main(['--apply', '--db', self.tmp.name])
+        row = self.db.execute(
+            'SELECT enc, enc_overridden FROM talkgroups WHERE tgid = 900').fetchone()
+        self.assertEqual((row['enc'], row['enc_overridden']), ('clear', 1))
+
+    def test_naming_a_log_still_harvests(self):
+        """The opt-in path: both behaviours when a log is named explicitly."""
+        self._call()
+        log = os.path.join(self.dir, 'empty.log')
+        open(log, 'w').close()
+        enc_harvest.main(['--apply', '--db', self.tmp.name, log])
+        row = self.db.execute(
+            'SELECT enc_observed FROM calls WHERE id = 1').fetchone()
+        self.assertEqual(row['enc_observed'], 'clear')

@@ -253,7 +253,10 @@ def reconcile(db, ref: dict, *, min_obs: int = 5, log_text: str = '') -> list:
     return out
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    # argv is a parameter so the CLI can be exercised in-process. Reading
+    # sys.argv directly would make every test of main() a subprocess, and the
+    # thing most worth testing here is which rows it writes.
     p = argparse.ArgumentParser()
     p.add_argument('logs', nargs='*')
     p.add_argument('--db', default=sdr_db.DB_PATH)
@@ -263,7 +266,7 @@ def main() -> int:
                    help='minimum observations before proposing a change')
     p.add_argument('--apply', action='store_true',
                    help='copy reference/enc_overrides.json onto talkgroups.enc')
-    a = p.parse_args()
+    a = p.parse_args(argv)
 
     db = sdr_db.connect(a.db)
     try:
@@ -274,7 +277,15 @@ def main() -> int:
             # stops labelling a talkgroup by a classification already reviewed
             # and rejected. import_to_sqlite.py does the same after a rebuild.
             n = apply_overrides(db)
+            db.commit()
             print(f'applied {n} override(s) to talkgroups.enc')
+            # Applying overrides is a talkgroup-level edit and nothing about it
+            # needs a log. Falling through would run a harvest against
+            # DEFAULT_LOG, whose speech pass rewrites enc_observed on every
+            # transcribed call that has none -- ~15,000 rows the caller did not
+            # ask for and is not told about. Name a log explicitly to get both.
+            if not a.logs:
+                return 0
 
         total = collections.Counter()
         seen_text = []
