@@ -225,12 +225,28 @@ def decode_data_block(bv: list[int], index: int, fmt: int = 0x16):
 
     THE RATE DEPENDS ON THE PACKET FORMAT, which cost a bug to learn. A
     confirmed data packet (fmt 0x16) carries rate-3/4 blocks of 18 octets; a
-    RESPONSE packet (fmt 0x03) carries rate-1/2 blocks of 12. Observed on the
-    air: op25 -- which only implements rate 1/2 -- decoded a fmt=03 data block
-    cleanly to 12 octets (`fc ff ff ff ff ff ff ff bd 1d fc 83`) while failing
-    every fmt=16 one. An earlier version of this function applied 3/4
-    unconditionally and would have turned those 12 octets into garbage while
-    reporting success.
+    RESPONSE packet (fmt 0x03) carries rate-1/2 blocks of 12.
+
+    Evidence, since this mapping is inferred rather than read out of the
+    standard. Three fmt=03 blocks decoded cleanly at rate 1/2 and FAILED at
+    3/4:
+
+        sap=03 : fc ff ff ff ff ff ff ff bd 1d fc 83
+        sap=00 : fc ff ff ff ff ff ff ff bd 1d fc 83
+        sap=04 : f8 ff ff ff ff ff ff ff d7 5b 92 1c
+
+    The first two are byte-identical, which looked at first like a decoder
+    artifact -- a degenerate convergence over padding. It is not: the 196
+    on-air bits behind them are themselves bit-identical (72 ones each), so it
+    is the same message twice. The third differs, so they are not one constant.
+
+    All three share a shape -- 8 octets of near-all-ones then 4 varying bytes
+    -- consistent with a block-acknowledgement bitmap (all ones = everything
+    acked) plus a CRC32, which is what a 12-octet response block should look
+    like. Worth knowing for whoever writes the response parser.
+
+    An earlier version of this function applied 3/4 unconditionally and would
+    have turned those 12 octets into garbage while reporting success.
 
     Both rates are attempted regardless, format-indicated one first, because
     the mapping above is inferred from observation rather than read out of the
