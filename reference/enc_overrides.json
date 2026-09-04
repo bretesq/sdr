@@ -4,5 +4,15 @@
     "enc": "clear",
     "why": "21 of 21 calls intelligible; no ESS ever observed",
     "reviewed": "2026-09-01"
+  },
+  "17052": {
+    "enc": "clear",
+    "why": "17-SO DISP A: 169 calls over 5 days, not one carrying an ESS of any kind. RadioReference flags it 'partial'; nothing it has transmitted here is encrypted.",
+    "reviewed": "2026-09-04"
+  },
+  "17133": {
+    "enc": "clear",
+    "why": "17-BAKER PD HQ: 206 calls over 5 days, not one carrying an ESS of any kind. RadioReference flags it 'partial'; nothing it has transmitted here is encrypted.",
+    "reviewed": "2026-09-04"
   }
 }

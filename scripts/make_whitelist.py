@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Build an op25 talkgroup whitelist from the LWIN reference DB.
 
-Safety: only `clear` talkgroups are selected by default. `--include-partial` adds
-partially-encrypted talkgroups (which carry mostly clear traffic — see OBSERVATIONS.md §5);
-op25's -n still silences any encrypted frames. `--include-encrypted` adds fully-encrypted
-talkgroups, which will record as silence.
+Safety: only `clear` talkgroups are selected by default, except under the `pd` and
+`pd-all` presets, which include `partial` as well (see PRESETS_WITH_PARTIAL below).
+`--include-partial` adds partially-encrypted talkgroups (which carry mostly clear traffic
+— see OBSERVATIONS.md §5); op25's -n still silences any encrypted frames.
+`--include-encrypted` adds fully-encrypted talkgroups, which will record as silence.
 """
 import json, os, re, sys, argparse, collections
 
@@ -28,6 +29,33 @@ PRESETS = {
     'publicworks': ['Public Works', 'Utilities', 'Transportation'],
     'all':       None,
 }
+
+# Presets that select `partial` talkgroups without being asked to.
+#
+# The default filter exists to keep the recorder off talkgroups that would
+# capture nothing but silence. `full` is that case. `partial` is not: op25's -n
+# silences the encrypted frames within a call and keeps the rest, so a partial
+# talkgroup records the speech it actually carries.
+#
+# Excluding them from the law presets was measurably wrong. The eight law
+# dispatch talkgroups here that have ever been heard carry 4,075 clear calls
+# against 161 encrypted -- 96% plain speech -- and among them are BRPD Dispatch
+# 1-4 and EBR Sheriff Dispatch North/South/Alternate. A preset named `pd-all`
+# was excluding the primary police dispatch channels in its own area, which is
+# the opposite of what it exists to do. That went unnoticed from 2026-09-02
+# 18:23 until 2026-09-04 because the exclusion is silent: the whitelist is just
+# shorter, and a capture missing a third of its traffic looks exactly like a
+# quiet afternoon.
+#
+# Scoped to the law presets rather than made the global default, because the
+# 96% figure is measured HERE, on this tag family. Nothing has been measured
+# about partial-flagged fire, EMS or interop talkgroups, and asserting the same
+# of them would be a guess wearing a comment's clothes. `--include-partial`
+# keeps meaning exactly what it says for every other selection.
+#
+# To get a law preset WITHOUT partial talkgroups, select by tag instead:
+# `-t 'Law Dispatch'` takes the same rows through the plain filter.
+PRESETS_WITH_PARTIAL = {'pd', 'pd-all'}
 
 ap = argparse.ArgumentParser(description='Build an op25 whitelist from the LWIN reference DB')
 ap.add_argument('-p', '--preset', choices=sorted(PRESETS), default='all')
@@ -64,9 +92,13 @@ for _k, _v in db.items():
     if _ov is not None:
         _v['enc'] = _ov
 
+# `--tag` and `--match` bypass this: the implication belongs to the preset, and
+# a caller who named tags directly asked for the plain filter.
+partial_by_preset = not a.tag and not a.match and a.preset in PRESETS_WITH_PARTIAL
+
 allowed = {'clear'}
-if a.include_partial:   allowed.add('partial')
-if a.include_encrypted: allowed.add('full')
+if a.include_partial or partial_by_preset: allowed.add('partial')
+if a.include_encrypted:                    allowed.add('full')
 
 sel = []
 if a.tg:
