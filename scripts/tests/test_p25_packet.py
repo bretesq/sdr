@@ -414,6 +414,31 @@ class RealFramesDecodeEndToEnd(unittest.TestCase):
         _blk, rate = P.decode_data_block(bv, 1, fmt=0x16)
         self.assertEqual(rate, '3/4')
 
+    def test_scan_does_not_count_the_same_frame_twice(self):
+        """The raw dump and the decoded line describe ONE frame.
+
+        op25 emits both, and the decoded one comes from its rate-1/2-only path
+        so it always reports blks=0 for a confirmed data packet. Counting both
+        double-counted every PDU and reported block recovery as 45% when it was
+        85% -- a statistic produced by the measurement rather than the radio.
+        """
+        pdu = P.parse_raw_line('NAC 0x1bd PDU raw: bits=1120 blocks=5 : '
+                               + RAW_LRRP_4BLK)
+        decoded = ('x [12] NAC 0x1bd PDU: fmt=16 sap=00 blks=0 hdr='
+                   + ' '.join(f'{b:02x}' for b in pdu.hdr) + ' : ')
+        got = P.scan([
+            'x [12] NAC 0x1bd PDU raw: bits=1120 blocks=5 : ' + RAW_LRRP_4BLK,
+            decoded,
+        ])
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0][0].blks, 4)        # the properly decoded one
+
+    def test_a_decoded_line_with_no_raw_twin_is_still_kept(self):
+        # Frames from before the raw dump existed, or at lower verbosity, must
+        # not be silently dropped by the deduplication.
+        got = P.scan([log_line(b'\x45\x00')])
+        self.assertEqual(len(got), 1)
+
     def test_scan_prefers_the_raw_line_over_the_decoded_one(self):
         # Both lines describe the same PDU. The raw one carries the payload, so
         # taking the decoded one would silently report "no payload".

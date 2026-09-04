@@ -572,10 +572,25 @@ def scan(lines) -> list[tuple[Pdu, Verdict]]:
     -- never any payload.
     """
     out = []
+    seen_hdrs: set[bytes] = set()
     for line in lines:
         pdu = parse_raw_line(line)
-        if pdu is None:
+        if pdu is not None:
+            # A raw line and the `PDU: fmt=` line that follows it describe the
+            # SAME frame -- the C++ emits the dump inside process_blocks and the
+            # decoded line right after. Remember the header so the duplicate can
+            # be dropped below.
+            seen_hdrs.add(pdu.hdr)
+        else:
             pdu = parse_log_line(line)
+            if pdu is not None and pdu.hdr in seen_hdrs:
+                # DEDUPLICATION, and it matters for more than tidiness. This
+                # line comes from op25's own rate-1/2-only path, so for a
+                # confirmed data packet it always reports blks=0. Counting it
+                # alongside the properly decoded frame double-counted every PDU
+                # and dragged the reported block-recovery rate from 85% to 45%
+                # -- a statistic invented entirely by the measurement.
+                continue
         if pdu is not None:
             out.append((pdu, classify(pdu)))
     return out
