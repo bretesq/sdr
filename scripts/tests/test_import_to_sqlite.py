@@ -15,6 +15,7 @@ directory — never the real sdr.db or recordings/.
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -100,3 +101,69 @@ class TestImportCallsWritesDerivedColumns(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestOverridesSurviveARebuild(unittest.TestCase):
+    """import_talkgroups rebuilds the table; reviewed decisions must persist.
+
+    The function DELETEs every row and reinserts from the RadioReference
+    scrape. Before this, that silently discarded reference/enc_overrides.json:
+    a reclassification backed by hundreds of observed calls lasted only until
+    the next import, and the table went quietly back to agreeing with the
+    scrape. Nothing announced it -- the whitelist still honoured the override
+    (it reads the JSON directly), so only the console disagreed.
+    """
+
+    def setUp(self):
+        self.tmp_db = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+        self.tmp_db.close()
+        self.db = sdr_db.connect(self.tmp_db.name)
+        self.ref = tempfile.mkdtemp()
+        self._real_ref = import_to_sqlite.REF
+        import_to_sqlite.REF = self.ref
+        with open(os.path.join(self.ref, 'lwin_talkgroups.json'), 'w') as f:
+            json.dump({'900': {'alpha': 'A', 'desc': '', 'cat': 'c',
+                               'tag': 't', 'enc': 'partial'},
+                       '901': {'alpha': 'B', 'desc': '', 'cat': 'c',
+                               'tag': 't', 'enc': 'partial'}}, f)
+        self.ov = os.path.join(self.ref, 'enc_overrides.json')
+        with open(self.ov, 'w') as f:
+            json.dump({'_comment': 'docs, not a talkgroup',
+                       '900': {'enc': 'clear', 'why': 'observed',
+                               'reviewed': '2026-09-04'}}, f)
+        import enc_harvest
+        self._real_ov = enc_harvest.OVERRIDES
+        enc_harvest.OVERRIDES = self.ov
+
+    def tearDown(self):
+        import enc_harvest
+        enc_harvest.OVERRIDES = self._real_ov
+        import_to_sqlite.REF = self._real_ref
+        self.db.close()
+        os.unlink(self.tmp_db.name)
+        shutil.rmtree(self.ref, ignore_errors=True)
+
+    def _enc(self, tgid):
+        return self.db.execute(
+            'SELECT enc, enc_overridden FROM talkgroups WHERE tgid = ?',
+            (tgid,)).fetchone()
+
+    def test_reviewed_override_is_reapplied_after_the_rebuild(self):
+        import_to_sqlite.import_talkgroups(self.db, dry=False)
+        self.assertEqual(tuple(self._enc(900)), ('clear', 1))
+
+    def test_talkgroup_without_an_override_keeps_the_scrape(self):
+        import_to_sqlite.import_talkgroups(self.db, dry=False)
+        enc, overridden = self._enc(901)
+        self.assertEqual(enc, 'partial')
+        self.assertFalse(overridden)
+
+    def test_it_survives_a_second_rebuild(self):
+        """The regression is only visible on a re-import, so run two."""
+        import_to_sqlite.import_talkgroups(self.db, dry=False)
+        import_to_sqlite.import_talkgroups(self.db, dry=False)
+        self.assertEqual(tuple(self._enc(900)), ('clear', 1))
+
+    def test_dry_run_applies_nothing(self):
+        import_to_sqlite.import_talkgroups(self.db, dry=True)
+        self.assertIsNone(self._enc(900))

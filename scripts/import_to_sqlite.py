@@ -82,6 +82,17 @@ def import_talkgroups(db, dry):
             """INSERT INTO talkgroups
                (tgid, alpha, description, cat, tag, enc, mode, hex, tgcat)
                VALUES (?,?,?,?,?,?,?,?,?)""", rows)
+        # This function rebuilds the table from the scrape, which means it
+        # also DELETEs every reviewed reclassification. Re-applying them here
+        # is what makes reference/enc_overrides.json durable: without it, a
+        # human decision backed by hundreds of observed calls survives only
+        # until the next `import_to_sqlite.py` run, and disappears silently --
+        # the table simply goes back to agreeing with RadioReference.
+        #
+        # Imported here rather than at module scope so a --dry-run and the
+        # other importers do not need enc_harvest's dependencies.
+        import enc_harvest
+        enc_harvest.apply_overrides(db)
     return len(rows)
 
 

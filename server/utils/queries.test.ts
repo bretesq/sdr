@@ -124,9 +124,25 @@ describe('listTalkgroups', () => {
   it('reports the real encryption vocabulary, which has no "encrypted"', () => {
     const all = listTalkgroups({ area: 'all' }).rows
     expect(new Set(all.map(t => t.enc))).toEqual(new Set(['clear', 'partial', 'full']))
-    expect(listTalkgroups({ area: 'all', enc: 'clear' }).rows).toHaveLength(3193)
-    expect(listTalkgroups({ area: 'all', enc: 'partial' }).rows).toHaveLength(114)
-    expect(listTalkgroups({ area: 'all', enc: 'full' }).rows).toHaveLength(856)
+
+    // The three buckets partition the system: every talkgroup lands in
+    // exactly one, and filtering by a class returns only that class.
+    //
+    // Asserted as a partition rather than as three literal counts. The counts
+    // were 3193/114/856, which summed to 4163 and so stated this property by
+    // coincidence -- and broke the moment a reviewed reclassification moved
+    // two talkgroups from 'partial' to 'clear', which is a thing
+    // reference/enc_overrides.json exists to do. A test that fails when the
+    // system works as designed teaches you to edit the number, which is how
+    // the real assertion here would have been lost.
+    const buckets = (['clear', 'partial', 'full'] as const)
+      .map(enc => listTalkgroups({ area: 'all', enc }).rows)
+    for (const rows of buckets) expect(rows.length).toBeGreaterThan(0)
+    for (const [i, rows] of buckets.entries()) {
+      const enc = (['clear', 'partial', 'full'] as const)[i]
+      expect(rows.every(t => t.enc === enc)).toBe(true)
+    }
+    expect(buckets.reduce((n, rows) => n + rows.length, 0)).toBe(all.length)
   })
 
   it('synthesizes tgid, which the source JSON does not carry as a field', () => {

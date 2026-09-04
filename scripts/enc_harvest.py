@@ -130,11 +130,18 @@ def enc_pair_keys(log_text: str, *, min_obs: int = 2) -> list:
     return sorted(k for k, n in counts.items() if n >= min_obs)
 
 
-def load_overrides(path: str = OVERRIDES) -> dict:
+def load_overrides(path: str | None = None) -> dict:
     """Reviewed reclassifications, keyed by tgid. Absent file means none.
 
     Keys beginning with '_' are documentation, not talkgroups.
+
+    `path` resolves at CALL time, not at def time. Written as
+    `path: str = OVERRIDES` the default freezes at import, so a caller that
+    sets SDR_ROOT or points OVERRIDES at a fixture afterwards is silently
+    ignored and reads the real reference/ instead -- the failure mode being a
+    test that passes against production data.
     """
+    path = path or OVERRIDES
     if not os.path.exists(path):
         return {}
     with open(path) as f:
@@ -142,7 +149,7 @@ def load_overrides(path: str = OVERRIDES) -> dict:
                 if not k.startswith('_')}
 
 
-def apply_overrides(db, path: str = OVERRIDES) -> int:
+def apply_overrides(db, path: str | None = None) -> int:
     """Copy reviewed overrides onto talkgroups.enc so the web layer sees them.
 
     reference/lwin_talkgroups.json stays untouched — it is the upstream scrape,
@@ -254,10 +261,21 @@ def main() -> int:
                    help='print talkgroups whose observed behaviour disagrees')
     p.add_argument('--min-obs', type=int, default=5,
                    help='minimum observations before proposing a change')
+    p.add_argument('--apply', action='store_true',
+                   help='copy reference/enc_overrides.json onto talkgroups.enc')
     a = p.parse_args()
 
     db = sdr_db.connect(a.db)
     try:
+        if a.apply:
+            # The other half of --report. --report proposes a change and a
+            # human writes it into enc_overrides.json; this is what carries an
+            # accepted entry into the table the web layer reads, so the console
+            # stops labelling a talkgroup by a classification already reviewed
+            # and rejected. import_to_sqlite.py does the same after a rebuild.
+            n = apply_overrides(db)
+            print(f'applied {n} override(s) to talkgroups.enc')
+
         total = collections.Counter()
         seen_text = []
         for path in (a.logs or [DEFAULT_LOG]):
