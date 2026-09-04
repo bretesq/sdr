@@ -39,10 +39,22 @@ grep -c "def can_reach" tk_p25.py          # expect 1
 `scripts/lwin_listen_multi.sh` checks both markers at startup and refuses to run
 without them, because every failure mode below is **silent**.
 
-These are runtime Python changes under `apps/`, so **no cmake rebuild is
-needed** — `multi_rx.py` does `importlib.import_module('tk_p25')` with the apps
-directory on `sys.path`, and there is no other `tk_p25.py` on this system that
-could shadow it. (A patch to `lib/*.cc` would need a rebuild; none here do.)
+`op25-tk_p25-*.patch` are runtime Python changes under `apps/`, so they need
+**no cmake rebuild** — `multi_rx.py` does `importlib.import_module('tk_p25')`
+with the apps directory on `sys.path`, and there is no other `tk_p25.py` on this
+system that could shadow it.
+
+`op25-p25p1-*.patch` is **C++ under `lib/`, and does need a rebuild**:
+
+```bash
+cd /home/besquivel/rtl/src/op25/build && make -j8 && sudo make install
+```
+
+Re-applying that patch without rebuilding changes nothing at all: the running
+decoder is `/usr/local/lib/x86_64-linux-gnu/libgnuradio-op25_repeater.so`, and
+until `make install` replaces it the source edit is inert. That failure is
+silent in the direction that matters — packet data simply stays invisible, which
+is indistinguishable from a system that carries none.
 
 Not recorded here: `README.md` gotcha #4 (op25's `cmake_policy(SET CMP0026 OLD)`
 vs CMake 4.2) is a build-system change under `src/op25/CMakeLists.txt`, and
@@ -105,3 +117,181 @@ exercised at all (measured: 0 occurrences).
 
 **Upstream:** not submitted. Worth reporting to boatbod/op25 — the bug is generic
 to any multi-band, multi-device trunking config, not specific to LWIN.
+
+---
+
+## `op25-p25p1-read-sndcp-packet-data.patch`
+
+Generated against upstream **`71abcd0`** ("Additional -v11 debug of terminal
+commands"). Verified: applies cleanly to pristine `71abcd0` and reproduces our
+working files byte-for-byte.
+
+**Why this is needed.** LWIN site 13 runs integrated voice and data. Measured
+over 35 minutes on 2026-09-03 from `results/op25_multi.log`:
+
+| TSBK | meaning | count |
+|---|---|---|
+| `0x16` | SNDCP data channel announcement | 5,705 |
+| `0x14` | SNDCP data channel **grant** to a radio | 362 |
+| `0x15` | SNDCP data page request | 140 |
+
+All 362 grants named the same channel (`0x14cc` → 769.68125 MHz) across 112
+distinct radios. None of that payload was readable, and **op25 dropped it twice
+over, silently both times**:
+
+1. `p25_framer.cc` capped DUID `0x0c` at 962 bits — header + 3 data blocks,
+   sized for multi-block trunking. A real IPv4+UDP datagram is 28 bytes of
+   header before any payload and an LRRP position report runs to ~58, needing
+   5–6 data blocks. Longer frames were truncated, so the header `crc16` at
+   `p25p1_fdma.cc:494` failed and `process_PDU` returned **before any logging**.
+2. Anything that survived would have hit `p25p1_fdma.cc:502`, which requires
+   `sap == 61` (trunking). SNDCP user data is not SAP 61.
+
+So the log showed zero `PDU:` lines and zero `non-MBT message ignored` lines
+even while a receiver sat on the data channel for hours. Absence of evidence
+looked exactly like evidence of absence.
+
+**What it changes.**
+
+* `max_frame_lengths[0x0c]`: `962` → `1728`, yielding header + 7 data blocks.
+  1728 is the hard ceiling, not a round number: `frame_body` is a
+  `std::vector<bool>` sized `P25_VOICE_FRAME_SIZE`, and the three
+  `frame_body[next_bit++]` writes are **unchecked**, so anything larger is a
+  silent overflow. Going beyond 7 blocks means growing that buffer and
+  bounds-checking those writes — a separate change, and one that wants the
+  `blks` field of real headers as evidence that it is needed.
+* `process_PDU`'s non-MBT branch now logs the raw 12-byte header block and the
+  raw data blocks at `-v 10`, instead of discarding them.
+
+**What it deliberately does not do.** It interprets nothing. Block format
+(confirmed carries 2 octets of DBSN/CRC9 before its 10 of user data;
+unconfirmed uses all 12) and header field offsets are decided in
+`scripts/p25_packet.py`. Field offsets are the part of this work least supported
+by evidence — op25 itself reads `blks` from octet 6, which does not match the
+layout the standard is usually quoted as having — and a wrong guess in C++ costs
+a rebuild and a capture outage, while a wrong guess in Python costs an edit.
+
+**The log format is a contract.** `scripts/p25_packet.py`'s `PDU_LINE` regex
+must match what this patch prints, and `scripts/tests/test_p25_packet.py` pins
+it. If they drift, the regex matches nothing and the result reads as "this
+system carries no data" — the same false negative described above. Change both
+together.
+
+Verify after applying and rebuilding:
+
+```bash
+grep -c "1728,	                // c - pdu" src/op25/op25/gr-op25_repeater/lib/p25_framer.cc   # expect 1
+grep -c "NAC 0x%03x PDU: fmt=" src/op25/op25/gr-op25_repeater/lib/p25p1_fdma.cc              # expect 1
+```
+
+### Addendum: the three PDU outcomes (2026-09-04)
+
+The first version of this patch logged only SUCCESS. That was not enough to
+diagnose anything: an 11-hour capture with a receiver pinned to a real data
+channel, and ~29 data grants/hour naming that exact frequency, produced **zero**
+PDU lines — and zero was consistent with four different explanations at once
+(frames never arrived / arrived and failed trellis decode / arrived and failed
+the header CRC / arrived fine but the receiver was elsewhere).
+
+`d_stat_pdu_attempted` and `d_stat_pdu_passed` already count two of those, but
+they are readable only via a `"fec_stats"` command that nothing in op25 polls,
+and `scripts/make_multirx_cfg.py` deliberately emits **no terminal section**, so
+there is no channel to send that command down. The counters were unreachable by
+construction.
+
+So the patch now names each outcome separately:
+
+| Log line | Means |
+|---|---|
+| `p25_framer::load_nid() PDU nid seen, ... need N more symbols` | a DUID `0x0c` NID was received; the framer is now waiting for N more symbols |
+| `PDU: process_PDU entered, fr_len=N` | the frame COMPLETED and reached the decoder |
+| `PDU: block deinterleave/trellis FAILED` | reached us, but a block would not decode — signal quality |
+| `PDU: header crc16 FAILED (N blocks)` | blocks decoded, header CRC did not — truncated reassembly or bit errors |
+| `PDU: fmt=.. sap=.. blks=.. hdr=.. : ..` | success, payload follows |
+
+The first two together are the load-bearing pair. **NID logged with no
+`process_PDU entered` means the body never completed** — a sync/length problem,
+not a FEC one — and that is invisible without this line, because `rx_sync.cc`'s
+sync-expiry path calls `sync_reset()` and drops the pending frame silently.
+
+Note `rx_sync.cc:533-536` already truncates `d_fragment_len` to what actually
+arrived **when a new frame sync is detected mid-frame**, so a PDU followed by
+another P25 frame completes at its true length regardless of
+`max_frame_lengths`. The gap is the LAST frame of a burst: if the carrier drops
+before `d_fragment_len` symbols arrive, nothing flushes it. Raising the limit to
+1728 made that window wider (88 ms → 168 ms of required carrier), so if the
+instrumentation shows NIDs without completions, the fix is a flush-on-expiry in
+`rx_sync`, not a further change to the constant.
+
+### Gotcha: `p25p1_fdma.cc` is CRLF, `p25_framer.cc` is CRLF too
+
+Both files are CRLF in upstream `71abcd0`. Editing them with anything that
+normalises line endings (Python's `read_text()`/`write_text()`, which applies
+universal newlines on read and writes `\n`) rewrites **every line**, turning a
+20-line patch into a 527-line one that is useless as a record. This happened
+once while writing this patch and was caught only by `git diff --stat` looking
+absurd for a two-line change.
+
+Use byte-level I/O (`read_bytes`/`write_bytes`) on these two files, and sanity
+check with:
+
+```bash
+git -C src/op25 diff --stat -- op25/gr-op25_repeater/lib/   # expect tens of lines, not hundreds
+```
+
+---
+
+## `op25-tk_p25-follow-sndcp-data-grants.patch`
+
+Generated as a diff on top of `op25-tk_p25-multiband-receiver-pool.patch`, not
+against pristine — both touch `tk_p25.py`, so they must be applied **in that
+order**. Verified: pristine `71abcd0` + multiband + this one reproduces our
+working `tk_p25.py` byte-for-byte.
+
+**Why this is needed.** LWIN has no fixed data channel. An early 35-minute
+sample saw all 362 SNDCP grants (TSBK `0x14`) name `0x14cc` = 769.68125, which
+looked like a permanent assignment and got a receiver pinned there. Over 11
+hours that reading collapsed:
+
+| measure | value |
+|---|---|
+| SNDCP data grants | 8,084 |
+| distinct radios | 984 |
+| **distinct channels granted** | **19** |
+| share on the 800 MHz leg | 78% |
+| share on 769.68125 (the pinned frequency) | **4.0%** |
+
+Data channels are allocated out of the ordinary traffic-channel pool exactly as
+voice is. A pinned receiver sees one frequency in nineteen.
+
+**What it changes.** op25 logged `0x14` as `unhandled` and did nothing with it.
+Now `p25_system.decode_tsbk` decodes it and calls a new
+`rx_ctl.tune_data_receivers(freq, llid)`, which retunes every channel marked
+`data_only` in the config (emitted by `scripts/make_multirx_cfg.py`).
+
+**What it deliberately does not do.** It does not route data grants through the
+voice pool. `tune_voice` is talkgroup-centric — it reads
+`self.talkgroups[tgid]['tag']`, and a data grant has no talkgroup — but the real
+reason is capacity: `find_talkgroup` would let data grants compete with voice
+for receivers, and the 800 leg carries 84% of voice traffic. This path only ever
+touches `data_only` channels, so **voice coverage cannot regress**. Two tests in
+`scripts/tests/test_multirx_cfg.py` hold both halves of that: the data channel
+is marked, and nothing else is.
+
+Two behaviours worth knowing:
+
+* **Dwell.** `DATA_DWELL_SEC = 3.0`. LWIN issues ~21 grants/minute across 15+
+  channels, so an unconstrained retune would hop away mid-burst and decode
+  nothing. The receiver also needs ~0.17 s to acquire sync on this system.
+* **Device window.** Grants outside a receiver's `freq_min`/`freq_max` are
+  skipped rather than attempted, for the same reason `can_reach` exists in the
+  multiband patch: the two HackRFs are non-tunable and cover different bands, so
+  78% of grants are physically unreachable by the 700-leg receiver.
+
+**The hard limit this does NOT fix.** `iden_up` id 1 carries `toff +30` MHz, so
+a grant naming 769.68125 assigns the pair **769.68125 down / 799.68125 up**.
+Our receivers are on the downlink, so they hear **outbound data only** (system →
+radio). Inbound traffic — where LRRP position reports and ARS registrations
+travel — is at 799–805 MHz (700 leg) and 806–824 MHz (800 leg), outside every
+window this config can reach. Reading those needs another receiver and antenna;
+the RTL-SDRs measured +0.4 dB on this band and will not do it.

@@ -161,7 +161,9 @@ MAX_SESSION_ID = 1_000_000
 # each channel adds a decimating FIR running at the device's full sample
 # rate, and each needs its own udp_audio_record.py process and a UDP port two
 # above the last, so the count has to stay small enough that the port block
-# (BASE_PORT 23460 in lwin_listen_multi.sh) stays inside 23460-23492. 1 is the
+# (BASE_PORT 23460 in lwin_listen_multi.sh) stays inside 23460-23494 -- widened
+# by 2 from 23492 when the pinned SNDCP data receiver became an always-present
+# 18th channel; see make_multirx_cfg.py's PORT_BLOCK_SPAN. 1 is the
 # floor because scripts/make_multirx_cfg.py's build() raises ValueError for a
 # leg with zero voice channels -- a caller sending 0 here should get this
 # server's own clear 400, not a 500 from that downstream ValueError.

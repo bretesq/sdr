@@ -123,6 +123,39 @@ check_patch "def can_reach" \
   "op25-tk_p25-multiband-receiver-pool.patch" \
   "Without it receivers keep claiming grants on the band they cannot reach: measured 1,300 tune attempts for 6 calls on the 700 leg." \
   || PATCHES_OK=0
+check_patch "def tune_data_receivers" \
+  "op25-tk_p25-follow-sndcp-data-grants.patch" \
+  "Without it the data receiver never moves, and LWIN spreads SNDCP grants over 19 frequencies: it would see ~4% of them and the rest would look like a system with no packet data." \
+  || PATCHES_OK=0
+
+# The C++ patch is checked against the INSTALLED LIBRARY, not the source.
+#
+# Source and binary disagree here in a way that is invisible: `patch` restores
+# lib/*.cc without rebuilding, and multi_rx loads
+# libgnuradio-op25_repeater.so, so an un-rebuilt tree runs the OLD decoder
+# while the source looks correct. Every failure mode of that patch is a silent
+# absence of packet data, which is exactly what a grep of the source would
+# reassure us about. So grep the artifact that actually runs.
+check_lib() {   # <string> <patch name> <why>
+  local so
+  so=$(ldconfig -p 2>/dev/null | awk '/libgnuradio-op25_repeater\.so /{print $NF; exit}')
+  [ -n "$so" ] || so=/usr/local/lib/x86_64-linux-gnu/libgnuradio-op25_repeater.so
+  if [ ! -r "$so" ]; then
+    echo "ERROR: cannot read $so to verify patches/$2" >&2
+    return 1
+  fi
+  if ! strings "$so" 2>/dev/null | grep -q "$1"; then
+    echo "ERROR: installed op25 library is missing patches/$2" >&2
+    echo "       $3" >&2
+    echo "       Re-apply per patches/README.md, then REBUILD:" >&2
+    echo "       cd src/op25/build && make -j8 && sudo make install" >&2
+    return 1
+  fi
+}
+check_lib "PDU: process_PDU entered" \
+  "op25-p25p1-read-sndcp-packet-data.patch" \
+  "Without it every packet-data PDU is discarded before it is logged, in three separate places, and the system looks like it carries no data at all." \
+  || PATCHES_OK=0
 [ "$PATCHES_OK" -eq 1 ] || exit 1
 
 python3 "$R/scripts/make_whitelist.py" "${GEN[@]+"${GEN[@]}"}" -o "$WL" || exit $?

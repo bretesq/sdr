@@ -254,8 +254,10 @@ class TestTwoDeviceConfig(unittest.TestCase):
         M.validate(self.CFG, [M.LEG_700, M.LEG_800])
 
     def test_channel_count(self):
-        """1 pinned control + n_voice per leg."""
-        want = 1 + M.LEG_700['n_voice'] + M.LEG_800['n_voice']
+        """1 pinned control + n_voice per leg + 1 pinned SNDCP receiver per
+        data frequency."""
+        want = (1 + M.LEG_700['n_voice'] + M.LEG_800['n_voice']
+                + len(M.LEG_700.get('data', [])) + len(M.LEG_800.get('data', [])))
         self.assertEqual(len(self.CFG['channels']), want)
 
 
@@ -343,14 +345,20 @@ class TestValidationCatchesRealMistakes(unittest.TestCase):
     def test_the_biggest_config_the_front_doors_allow_still_fits_the_block(self):
         # THE BUDGET, DERIVED RATHER THAN ASSUMED. Both /start endpoints cap
         # nVoice700 and nVoice800 at 8, and their comments claim that keeps
-        # the block inside 23460-23492. Nothing checked it. Here is the
-        # arithmetic those comments describe, run: 1 control + 8 + 8 = 17
-        # channels, two ports apart, last port exactly 23492.
+        # the block inside 23460-23494. Nothing checked it. Here is the
+        # arithmetic those comments describe, run: 1 control + 8 + 8 + 1 SNDCP
+        # data receiver = 18 channels, two ports apart, last port exactly 23494.
+        #
+        # This was 17 channels ending at 23492 before LEG_700 declared a data
+        # frequency. The data receiver is unconditional -- an operator cannot
+        # dial it down -- so it belongs in the derivation rather than in the
+        # headroom, which is why the block was widened by 2 rather than the
+        # count being left to overflow it.
         legs = [dict(M.LEG_700, n_voice=8), dict(M.LEG_800, n_voice=8)]
         cfg = self._cfg(legs)
         ports = sorted(int(c['destination'].rsplit(':', 1)[1])
                        for c in cfg['channels'])
-        self.assertEqual(len(ports), 17)
+        self.assertEqual(len(ports), 18)
         self.assertEqual(ports[0], M.BASE_PORT)
         self.assertEqual(
             ports[-1], M.LAST_PORT,
@@ -411,6 +419,85 @@ class CryptKeys(unittest.TestCase):
         # default and the safe direction.
         for ch in self.cfg()['channels']:
             self.assertEqual(ch['crypt_keys'], '')
+
+
+class SndcpDataReceiverFollowsGrants(unittest.TestCase):
+    """The data receiver must chase DATA grants and never VOICE grants.
+
+    It was originally pinned to one frequency, on the strength of a 35-minute
+    sample in which every data grant named 769.68125. Over 11 hours that turned
+    out to be 4% of them -- LWIN allocates data channels dynamically across 19
+    frequencies -- so it now follows TSBK 0x14 instead.
+
+    Every failure here is SILENT on the air: a receiver on the wrong frequency
+    still decodes, still logs, still records. It is simply not there when the
+    short data burst happens, and the absence looks exactly like a system that
+    carries no data. That is the mistake this whole line of work started from,
+    so it gets held by tests rather than by comments.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cfg = M.build([M.LEG_700, M.LEG_800], whitelist='/tmp/wl.txt',
+                          cc_whitelist='/tmp/cc.txt', tgid_tags='')
+        cls.data = [c for c in cls.cfg['channels'] if c['name'].startswith('DATA')]
+
+    def test_one_receiver_per_declared_data_frequency(self):
+        want = len(M.LEG_700.get('data', [])) + len(M.LEG_800.get('data', []))
+        self.assertEqual(len(self.data), want)
+        self.assertEqual([c['frequency'] for c in self.data],
+                         M.LEG_700['data'] + M.LEG_800['data'])
+
+    def test_its_trunking_sysname_is_not_the_trunking_system(self):
+        # THE PIN ITSELF. tk_p25.py:144 looks trunking_sysname up in
+        # self.systems; a hit builds a p25_receiver that grants can retune, a
+        # miss (:156) leaves it conventional and fixed. So this name matching
+        # the real system is the difference between a pinned data receiver and
+        # a twelfth voice receiver.
+        system = self.cfg['trunking']['chans'][0]['sysname']
+        for ch in self.data:
+            self.assertNotEqual(ch['trunking_sysname'], system, ch['name'])
+
+    def test_it_is_the_only_kind_of_channel_that_is_unpinned(self):
+        # The converse, so the assertion above cannot pass by the sysname
+        # simply being wrong everywhere: every OTHER channel must still be a
+        # real trunking receiver, or the config decodes nothing at all.
+        system = self.cfg['trunking']['chans'][0]['sysname']
+        for ch in self.cfg['channels']:
+            if ch['name'].startswith('DATA'):
+                continue
+            self.assertEqual(ch['trunking_sysname'], system, ch['name'])
+
+    def test_it_is_marked_data_only(self):
+        # THE HOOK. tk_p25.py's tune_data_receivers moves ONLY channels marked
+        # here, so without this flag the receiver silently reverts to sitting on
+        # its starting frequency and sees ~4% of grants.
+        for ch in self.data:
+            self.assertTrue(ch['data_only'], ch['name'])
+
+    def test_no_other_channel_is_data_only(self):
+        # The converse, and the guarantee that voice cannot regress: a voice
+        # receiver marked data_only would be dragged off its talkgroup by a
+        # data grant.
+        for ch in self.cfg['channels']:
+            if not ch['name'].startswith('DATA'):
+                self.assertFalse(ch['data_only'], ch['name'])
+
+    def test_it_carries_no_whitelist_and_no_keys(self):
+        # A whitelist would be meaningless on a channel that never takes a
+        # grant, and keys are for voice. Both empty keeps the log clean of
+        # talkgroup machinery on a receiver that has no talkgroup.
+        for ch in self.data:
+            self.assertEqual(ch['whitelist'], '', ch['name'])
+            self.assertEqual(ch['crypt_keys'], '', ch['name'])
+
+    def test_it_is_inside_its_device_window(self):
+        # validate() enforces this for every channel, but state it here too:
+        # the data frequency arrived from a decoded TSBK rather than from
+        # RadioReference, so it is the one most likely to be wrong someday.
+        for ch in self.data:
+            self.assertLessEqual(ch['freq_min'], ch['frequency'], ch['name'])
+            self.assertGreaterEqual(ch['freq_max'], ch['frequency'], ch['name'])
 
 
 if __name__ == '__main__':

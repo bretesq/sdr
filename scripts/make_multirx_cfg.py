@@ -154,6 +154,26 @@ LEG_700 = {
     # / 48 radio IDs / 1 startup timeout in 75 s on the One at VGA:20.
     # 774.54375 is a live alternate and is inside the window (+3.125 MHz).
     'control': [773_056_250, 774_543_750],
+    # STARTING frequency for this leg's SNDCP data receiver. NOT "the data
+    # channel" -- there isn't one.
+    #
+    # An early 35-minute sample saw all 362 data grants (TSBK 0x14) name
+    # 0x14cc = 769.68125, which looked like a fixed assignment. It is not. Over
+    # 11 hours: 8,084 grants across 19 DIFFERENT frequencies, 78% of them on the
+    # 800 leg, allocated out of the ordinary traffic-channel pool exactly as
+    # voice is. 769.68125 carries about 4% of them.
+    #
+    # So the receiver FOLLOWS grants -- tk_p25.py's tune_data_receivers moves it
+    # on every 0x14 -- and this list only says where it waits beforehand. One
+    # entry is one receiver.
+    #
+    # A NOTE ON WHAT THIS CAN AND CANNOT HEAR. iden_up id 1 carries toff +30
+    # MHz, so a grant naming 769.68125 assigns the pair 769.68125 down /
+    # 799.68125 up. This receiver is on the DOWNLINK, so it hears outbound data
+    # (system -> radio) only. Inbound reports -- which is where LRRP positions
+    # and ARS registrations travel -- are at 799-805 MHz, outside every window
+    # this config can reach. Reading those needs another receiver and antenna.
+    'data': [769_681_250],
     'dc_guard': 100_000,
 }
 
@@ -193,6 +213,14 @@ LEG_800 = {
     # at a time. They remain inside the window (offset 4.6875 MHz < 5.088) so a
     # real failover would still be reachable if they ever come up.
     'control': [],
+    # 856.4625 is announced as a data channel by the same TSBK 0x16 that names
+    # 769.68125 (2,953 announcements against 2,941 over the same 35 minutes, so
+    # the site advertises both equally). It gets NO receiver because it took
+    # zero of the 362 observed data grants -- every one went to the 700 leg.
+    # Announced and idle is not the same as carrying traffic, and the 800 leg's
+    # receivers are the scarce ones: it carries 84% of voice. Populate this if
+    # grants ever appear here.
+    'data': [],
     'dc_guard': 100_000,
 }
 
@@ -206,11 +234,21 @@ LEGS = {'700': LEG_700, '800': LEG_800}
 # (>= 2 apart) with no ceiling at all. Both ends of the budget were
 # comment-bound, and the budget is at exactly zero headroom:
 #
-#     channels = 1 control + n_voice_700 + n_voice_800
+#     channels = 1 control + n_voice_700 + n_voice_800 + 1 SNDCP data receiver
 #     last port = BASE_PORT + 2 * (channels - 1)
 #
-# At the MAX_VOICE of 8 that both front doors enforce, that is 17 channels and
-# a last port of 23460 + 2*16 = 23492. Exact. Nothing spare.
+# At the MAX_VOICE of 8 that both front doors enforce, that is 18 channels and
+# a last port of 23460 + 2*17 = 23494. Exact. Nothing spare.
+#
+# It was 17 channels ending at 23492 until the pinned SNDCP data receiver was
+# added (see LEG_700['data']). That receiver is not optional capacity an
+# operator dials up -- it is one channel, always, on any leg that declares a
+# data frequency -- so it is counted into the budget here rather than being
+# allowed to silently consume the headroom that did not exist. Widening the
+# block by 2 is the change the ValueError below has always demanded of anyone
+# who grew this config, and it was made in all three places at once:
+# here, scripts/capture_control.py's MAX_VOICE comment, and
+# server/api/listen/start.post.ts's.
 #
 # And there is a live path to overflow already written into this file:
 # LEG_800's comment says its two dead control channels "remain inside the
@@ -225,13 +263,23 @@ LEGS = {'700': LEG_700, '800': LEG_800}
 # What is never legitimate is the block growing wider than the window that was
 # sized for it.
 BASE_PORT = 23460
-LAST_PORT = 23492
-PORT_BLOCK_SPAN = LAST_PORT - BASE_PORT          # 32 -> 17 channels, 2 apart
+LAST_PORT = 23494
+PORT_BLOCK_SPAN = LAST_PORT - BASE_PORT          # 34 -> 18 channels, 2 apart
+
+
+def leg_freqs(leg: dict) -> list[int]:
+    """Every frequency this leg must be able to reach.
+
+    One list, used by widest_offset and by both of validate()'s window checks,
+    so a frequency added to a leg cannot be range-checked in one place and
+    skipped in another.
+    """
+    return leg['voice'] + leg['control'] + leg.get('data', [])
 
 
 def widest_offset(leg: dict) -> float:
     """Largest |channel - centre| this leg must reach, in Hz."""
-    return max(abs(f - leg['centre']) for f in leg['voice'] + leg['control'])
+    return max(abs(f - leg['centre']) for f in leg_freqs(leg))
 
 
 def build(legs: list[dict], *, crypt_keys: str = '', whitelist: str, cc_whitelist: str,
@@ -253,7 +301,8 @@ def build(legs: list[dict], *, crypt_keys: str = '', whitelist: str, cc_whitelis
 
     devices, channels, port = [], [], base_port
 
-    def chan(name, radio, freq, wl, port, if_rate, lo, hi):
+    def chan(name, radio, freq, wl, port, if_rate, lo, hi, sysname=sysname,
+             data_only=False):
         # Decryption keys go on VOICE channels only: the control channel carries
         # no voice, so loading them there would do nothing. Empty string means
         # "no keys", which is op25's own default and leaves encrypted bursts
@@ -285,6 +334,11 @@ def build(legs: list[dict], *, crypt_keys: str = '', whitelist: str, cc_whitelis
             'blacklist': '',
             'crypt_keys': keys,
             'crypt_behavior': crypt_behavior,
+            # Read by tk_p25.py's tune_data_receivers: ONLY channels marked
+            # here are moved by an SNDCP data grant (TSBK 0x14). Everything
+            # else keeps taking voice grants exactly as before, so the data
+            # path cannot regress voice coverage.
+            'data_only': data_only,
         }
 
     for leg in legs:
@@ -320,6 +374,27 @@ def build(legs: list[dict], *, crypt_keys: str = '', whitelist: str, cc_whitelis
             start = leg['voice'][i % len(leg['voice'])]
             channels.append(chan(f"VC{leg['name']}_{i}", radio, start,
                                  whitelist, port, if_rate, lo, hi))
+            port += 2
+        # The SNDCP data receiver, PINNED. It must never chase a voice grant:
+        # data bursts are short and a receiver that wandered off would miss them.
+        #
+        # Pinning is done by giving it a trunking_sysname no trunking system
+        # claims. tk_p25.py:144 looks the name up in self.systems; on a miss it
+        # leaves rx_rcvr None (:156) and builds a 'Conventional' conv_state
+        # (:160), and only a p25_receiver is ever handed a grant. So the channel
+        # decodes its fixed frequency forever. This is the same mechanism the CC
+        # receiver uses via an impossible whitelist, but stronger: that one is
+        # still a trunking receiver that merely never matches, while this one is
+        # not a trunking receiver at all.
+        #
+        # op25 logs "Receiver '<name>' configured with unknown trunking_sysname"
+        # once at startup. That line is EXPECTED and is the marker that the pin
+        # took; its absence means this channel is chasing voice.
+        for i, freq in enumerate(leg.get('data', [])):
+            channels.append(chan(f"DATA{leg['name']}_{i}", radio, freq,
+                                 '', port, if_rate, lo, hi,
+                                 sysname=f'{sysname}-DATA-CONV',
+                                 data_only=True))
             port += 2
 
     return {
@@ -382,7 +457,7 @@ def validate(cfg: dict, legs: list[dict]) -> None:
         leg = leg_by_radio[name]
         limit = usable_half_span(dev['rate'], dev['usable_bw_pct'],
                                  if_rate_for(dev['rate']))
-        for f in leg['voice'] + leg['control']:
+        for f in leg_freqs(leg):
             off = abs(f - dev['frequency'])
             if off > limit:
                 raise ValueError(
@@ -407,7 +482,7 @@ def validate(cfg: dict, legs: list[dict]) -> None:
                 f"channel {ch['name']} declares reachable range {got} but its "
                 f"device window is {want}; op25 would skip grants it can tune, "
                 f"or claim grants it cannot")
-        for f in leg['voice'] + leg['control']:
+        for f in leg_freqs(leg):
             if not (ch['freq_min'] <= f <= ch['freq_max']):
                 raise ValueError(
                     f"channel {ch['name']} cannot reach {f/1e6:.5f} MHz, which "

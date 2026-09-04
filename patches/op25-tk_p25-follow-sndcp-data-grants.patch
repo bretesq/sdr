@@ -1,0 +1,132 @@
+--- a/op25/gr-op25_repeater/apps/tk_p25.py
++++ b/op25/gr-op25_repeater/apps/tk_p25.py
+@@ -118,6 +118,10 @@
+         self.debug = debug
+         self.receivers = {}
+         self.systems = {}
++        # msgq_id -> time.time() of the last SNDCP data-grant retune, so a
++        # burst of grants cannot keep yanking a data receiver off the channel
++        # it was just tuned to. See tune_data_receivers.
++        self.data_tuned_at = {}
+         self.chans = chans
+         self.cleanup_timer = time.time()
+         self.call_log = deque(maxlen=CALL_LOG_MAX_LEN)
+@@ -166,6 +170,76 @@
+                                    'rx_rcvr':    rx_rcvr,
+                                    'conv_state': conv_state}
+ 
++    # A data receiver stays put this long before another grant may move it.
++    # LWIN issues ~21 data grants/minute spread over 15 channels, so an
++    # unconstrained retune would hop away mid-burst and decode nothing. The
++    # receiver also needs time to acquire sync (measured ~0.17 s on this
++    # system) before any PDU can be framed at all.
++    DATA_DWELL_SEC = 3.0
++
++    def tune_data_receivers(self, freq, llid):
++        """Point every data-only receiver at a freshly granted SNDCP channel.
++
++        WHY THIS EXISTS. LWIN does NOT have a fixed data channel. Measured over
++        11 hours: 8,084 SNDCP grants (TSBK 0x14) spread across 19 DIFFERENT
++        frequencies, allocated out of the ordinary traffic-channel pool exactly
++        as voice is. A receiver pinned to one frequency sees ~4% of them.
++
++        Deliberately NOT routed through the voice pool. tune_voice is
++        talkgroup-centric (it reads self.talkgroups[tgid]['tag']) and data
++        grants have no talkgroup; more importantly, putting data grants into
++        find_talkgroup would make them compete with voice for receivers, and
++        the 800 leg carries 84% of voice traffic. This path only ever touches
++        receivers explicitly marked data_only in the channel config, so voice
++        coverage cannot regress.
++        """
++        if freq is None or int(freq) == 0:
++            return
++        now = time.time()
++        for msgq_id in sorted(self.receivers.keys()):
++            config = self.receivers[msgq_id].get('config') or {}
++            if not config.get('data_only'):
++                continue
++
++            # Respect the device window. These receivers sit on non-tunable
++            # HackRFs covering different bands, and a grant on the other leg is
++            # simply unreachable -- the same lesson as can_reach() above, which
++            # exists because cross-band claims cost 1,243 failed tunes.
++            lo, hi = int(config.get('freq_min') or 0), int(config.get('freq_max') or 0)
++            if lo and hi and not (lo <= int(freq) <= hi):
++                if self.debug >= 10:
++                    sys.stderr.write("%s [%d] data grant skipped: %f outside window %f-%f\n" %
++                                     (log_ts.get(), msgq_id, freq / 1e6, lo / 1e6, hi / 1e6))
++                continue
++
++            if now - self.data_tuned_at.get(msgq_id, 0.0) < self.DATA_DWELL_SEC:
++                if self.debug >= 10:
++                    sys.stderr.write("%s [%d] data grant skipped: dwell, %.1fs since last retune\n" %
++                                     (log_ts.get(), msgq_id, now - self.data_tuned_at.get(msgq_id, 0.0)))
++                continue
++            self.data_tuned_at[msgq_id] = now
++
++            tune_params = {'tuner':   msgq_id,
++                           'sigtype': "P25",
++                           'freq':    int(freq),
++                           'tgid':    None,
++                           'rate':    4800,          # P25 Phase 1 FDMA data
++                           'tdma':    None}
++            if self.frequency_set is None:
++                return
++            rc = self.frequency_set(tune_params)
++            if rc is False:
++                # Explicitly `is False`: only multi_rx.change_freq returns a
++                # bool, and a frequency_set returning None must not be read as
++                # failure. Same reasoning as tune_voice.
++                if self.debug >= 5:
++                    sys.stderr.write("%s [%d] data grant unreachable, freq %f, llid %d\n" %
++                                     (log_ts.get(), msgq_id, freq / 1e6, llid))
++                continue
++            if self.debug >= 5:
++                sys.stderr.write("%s [%d] data grant: tuned to %f for llid %d\n" %
++                                 (log_ts.get(), msgq_id, freq / 1e6, llid))
++
+     # post_init is called once after all receivers have been created
+     def post_init(self):
+         for rx in self.receivers:
+@@ -885,6 +959,41 @@
+                     self.callsign = bsi
+                     if self.debug >= 10:
+                         sys.stderr.write('%s [%d] tsbk(0x0b) mot_bsi_grant: bsi: %s ch: %x(%s)\n' % (log_ts.get(), m_rxid, bsi, ch, self.channel_id_to_string(ch)))
++        elif opcode == 0x14:   # sndcp data channel grant
++            # op25 logged this as "unhandled" and did nothing with it. It is
++            # the assignment of a data channel to ONE radio, and it is the only
++            # message that says where packet data is about to happen -- TSBK
++            # 0x16 announces a default/registration channel (it reported
++            # ch1=ffff, meaning "none assigned", 48,384 times in 11 hours) and
++            # does not track per-session allocation.
++            #
++            # Layout, confirmed against 8,084 real grants: opcode/flags, mfid,
++            # service options, ch1 (transmit), ch2 (receive, always ffff here),
++            # then the 24-bit target address.
++            # Offsets MATCH op25's own 0x00 grp_v_ch_grant handler, which has
++            # the identical shape (one options octet, channel, channel, 24-bit
++            # address). They were first copied from the 0x16 handler, which has
++            # NO options octet -- everything landed two nibbles out, ch1 decoded
++            # as 0xf9ff (iden 0xf, absent from the freq table), so
++            # channel_id_to_frequency returned None and this whole path went
++            # inert while looking like it was running.
++            mfrid = (tsbk >> 80) & 0xff
++            dso   = (tsbk >> 72) & 0xff
++            ch1   = (tsbk >> 56) & 0xffff
++            ch2   = (tsbk >> 40) & 0xffff
++            llid  = (tsbk >> 16) & 0xffffff
++            freq  = self.channel_id_to_frequency(ch1)
++            if self.debug >= 10:
++                sys.stderr.write('%s [%d] tsbk(0x14) sndcp_data_ch_grant: dso: %02x ch1: %x(%s) ch2: %x llid: %d\n' %
++                                 (log_ts.get(), m_rxid, dso, ch1, self.channel_id_to_string(ch1), ch2, llid))
++            if not freq:
++                # Loud, because this is how the offset bug above hid: an
++                # unresolvable channel id silently meant "no data grants exist".
++                if self.debug >= 10:
++                    sys.stderr.write('%s [%d] tsbk(0x14) sndcp_data_ch_grant: ch1 %x does not resolve to a frequency\n' %
++                                     (log_ts.get(), m_rxid, ch1))
++            if freq and self.rx_ctl is not None:
++                self.rx_ctl.tune_data_receivers(freq, llid)
+         elif opcode == 0x16:   # sndcp data ch
+             ch1  = (tsbk >> 48) & 0xffff
+             ch2  = (tsbk >> 32) & 0xffff

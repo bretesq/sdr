@@ -479,9 +479,17 @@ class VoiceChannelBudgetTest(unittest.TestCase):
     def test_max_voice_keeps_the_udp_block_inside_its_window(self):
         # The reason the bound is 8 and not 12, checked against the generator
         # that actually lays the ports out rather than against the sentence in
-        # this module's comment. One control channel plus MAX_VOICE per leg,
-        # two ports apart:
-        channels = 1 + 2 * cc.MAX_VOICE
+        # this module's comment. One control channel plus MAX_VOICE per leg
+        # plus the pinned SNDCP data receivers, two ports apart:
+        #
+        # The data count is read off the generator's own leg definitions rather
+        # than written as a literal here. That receiver is unconditional -- an
+        # operator cannot dial it down the way they can nVoice -- so if a leg
+        # ever declares a second data frequency, this derivation follows it and
+        # this test fails until the block is widened, which is the whole point
+        # of the exactness assertion below.
+        n_data = len(mrx.LEG_700.get('data', [])) + len(mrx.LEG_800.get('data', []))
+        channels = 1 + 2 * cc.MAX_VOICE + n_data
         span = 2 * (channels - 1)
         self.assertLessEqual(
             span, mrx.PORT_BLOCK_SPAN,
