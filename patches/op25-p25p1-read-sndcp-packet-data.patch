@@ -1,0 +1,212 @@
+diff --git a/op25/gr-op25_repeater/lib/imbe_vocoder/CMakeLists.txt b/op25/gr-op25_repeater/lib/imbe_vocoder/CMakeLists.txt
+index 89a53c0..c2828bd 100644
+--- a/op25/gr-op25_repeater/lib/imbe_vocoder/CMakeLists.txt
++++ b/op25/gr-op25_repeater/lib/imbe_vocoder/CMakeLists.txt
+@@ -1,4 +1,4 @@
+-cmake_minimum_required(VERSION 2.6)
++cmake_minimum_required(VERSION 3.10)
+ 
+ SET( MORE_FLAGS "-fPIC")
+ SET( CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} ${MORE_FLAGS}" )
+diff --git a/op25/gr-op25_repeater/lib/p25_framer.cc b/op25/gr-op25_repeater/lib/p25_framer.cc
+index 59b40d1..6b059ea 100644
+--- a/op25/gr-op25_repeater/lib/p25_framer.cc
++++ b/op25/gr-op25_repeater/lib/p25_framer.cc
+@@ -28,7 +28,25 @@ static const int max_frame_lengths[16] = {
+     0,	                    // 9 - VSELP "voice PDU"
+     P25_VOICE_FRAME_SIZE,	// a - ldu2
+     0,	                    // b - undef
+-    962,	                // c - pdu (triple data block MBT)
++    // c - pdu. Was 962 ("triple data block MBT"): header + 3 data blocks, which
++    // is all multi-block trunking ever needs. But the SAME duid carries SNDCP
++    // PACKET DATA, and a real packet does not fit: an IPv4+UDP datagram is 28
++    // bytes of header before any payload, and an LRRP position report runs to
++    // ~58, needing 5-6 data blocks. Those frames were truncated here, so the
++    // header crc16 in p25p1_fdma.cc:494 failed and process_PDU returned BEFORE
++    // any logging -- the packet data was invisible rather than reported as
++    // dropped. That is why LWIN looked like a voice-only system for so long.
++    //
++    // 1728 is not a round number, it is the hard ceiling: frame_body is a
++    // std::vector<bool> sized P25_VOICE_FRAME_SIZE (p25_framer.cc's ctor) and
++    // the three `frame_body[next_bit++]` writes below are UNCHECKED, so any
++    // larger value is a silent overflow rather than a longer frame.
++    // Empirically 1728 yields header + 7 data blocks:
++    //     bv.size() = 1680 after status-bit removal, (1680-112)/196 = 8.
++    // Raising it further means growing that buffer and bounds-checking those
++    // writes, which is a separate change and wants evidence -- the `blks`
++    // field of real headers -- that more than 7 is actually needed.
++    1728,	                // c - pdu (header + 7 data blocks; see above)
+     0, 0,	                // d, e - undef
+     432	                    // f - tdu
+ };
+@@ -227,6 +245,21 @@ uint32_t p25_framer::load_nid(const uint8_t *syms, int nsyms, const uint64_t fs)
+     if (frame_size_limit == 0)
+         frame_size_limit = P25_VOICE_FRAME_SIZE;
+ 
++    // OBSERVABILITY for packet data. A DUID 0x0c NID having been RECEIVED is a
++    // different fact from a PDU frame having been ASSEMBLED, and until now
++    // nothing distinguished them: if the body never arrives, rx_sync's sync
++    // expiry calls sync_reset() and the frame is dropped with no trace, so an
++    // 11-hour capture with real data traffic on the tuned channel produced
++    // exactly the same silence as a system carrying no data at all.
++    //
++    // This line says "we saw a packet-data frame start, and here is how many
++    // more symbols we are about to demand". Pair it with the process_PDU
++    // outcome lines in p25p1_fdma.cc: NID logged + no outcome means the body
++    // never completed, which is a sync/length problem rather than a FEC one.
++    if ((duid == 0x0c) && (d_debug >= 10))
++        fprintf(stderr, "%s p25_framer::load_nid() PDU nid seen, duid=0x0c, need %u more symbols (limit %u bits)\n",
++                logts.get(d_msgq_id), (frame_size_limit >> 1) - nsyms, frame_size_limit);
++
+     return (frame_size_limit >> 1) - nsyms;
+ }
+ 
+diff --git a/op25/gr-op25_repeater/lib/p25p1_fdma.cc b/op25/gr-op25_repeater/lib/p25p1_fdma.cc
+index d3a7b29..af8b2b9 100644
+--- a/op25/gr-op25_repeater/lib/p25p1_fdma.cc
++++ b/op25/gr-op25_repeater/lib/p25p1_fdma.cc
+@@ -489,10 +489,24 @@ namespace gr {
+             uint8_t fmt, sap, blks, op = 0;
+             block_vector deinterleave_buf;
+             d_stat_pdu_attempted++;
++            // OUTCOME LOGGING. Every failure path below used to be a bare
++            // `return`, and d_stat_pdu_* is only readable via a "fec_stats"
++            // command that nothing polls and that a terminal-less config
++            // cannot reach at all. So a PDU that arrived and failed was
++            // indistinguishable from a PDU that never arrived -- and both
++            // from a system carrying no packet data. Naming the three
++            // outcomes separately is what turns a zero into a diagnosis.
++            if (d_debug >= 10)
++                fprintf(stderr, "%s NAC 0x%03x PDU: process_PDU entered, fr_len=%u\n",
++                        logts.get(d_msgq_id), framer->nac, fr_len);
+             if ((process_blocks(fr, fr_len, deinterleave_buf) == 0) &&
+                     (deinterleave_buf.size() > 0)) {			// extract all blocks associated with this PDU
+-                if (crc16(deinterleave_buf[0].data(), 12) != 0) // validate PDU header
++                if (crc16(deinterleave_buf[0].data(), 12) != 0) { // validate PDU header
++                    if (d_debug >= 10)
++                        fprintf(stderr, "%s NAC 0x%03x PDU: header crc16 FAILED (%zu blocks) -- truncated reassembly or bit errors\n",
++                                logts.get(d_msgq_id), framer->nac, deinterleave_buf.size());
+                     return;
++                }
+                 d_stat_pdu_passed++;
+ 
+                 fmt =  deinterleave_buf[0][0] & 0x1f;
+@@ -540,9 +554,53 @@ namespace gr {
+                                 logts.get(d_msgq_id), framer->nac, fmt, op, s0, s1, s2, s3);
+                     }
+                 } else if (d_debug >= 10) {
+-                    fprintf(stderr, "%s NAC 0x%03x PDU:  non-MBT message ignored\n", logts.get(d_msgq_id), framer->nac);
++                    // NOT trunking signalling -- this is SNDCP packet data and
++                    // its control messages, which op25 has always discarded
++                    // here. LWIN site 13 grants a data channel to individual
++                    // radios continuously (TSBK 0x14: 362 grants to 112 radios
++                    // in 35 minutes), and none of it was ever readable.
++                    //
++                    // Deliberately DUMB: emit the raw header block and the raw
++                    // data blocks, and interpret neither. Block format
++                    // (confirmed carries 2 octets of DBSN/CRC9 before its 10 of
++                    // user data; unconfirmed uses all 12) and the header field
++                    // offsets are decided in scripts/p25_packet.py, because a
++                    // wrong guess there costs an edit while a wrong guess here
++                    // costs a rebuild and a capture outage. The format of this
++                    // line is part of that contract and is pinned by
++                    // scripts/tests/test_p25_packet.py -- change both together.
++                    //
++                    // No payload CRC32 check: a corrupt reassembly fails the
++                    // IPv4 header checksum downstream, which is a stronger test
++                    // than we could apply without knowing the block format.
++                    size_t navail = deinterleave_buf.size() - 1;
++                    size_t nblks  = (blks > 0 && blks <= navail) ? blks : navail;
++                    std::string hdr, data;
++                    char hx[4];
++                    for (size_t i = 0; i < 12; i++) {
++                        snprintf(hx, sizeof(hx), "%02x", deinterleave_buf[0][i]);
++                        if (i) hdr += ' ';
++                        hdr += hx;
++                    }
++                    for (size_t j = 1; j <= nblks; j++) {
++                        for (size_t i = 0; i < 12; i++) {
++                            snprintf(hx, sizeof(hx), "%02x", deinterleave_buf[j][i]);
++                            if (!data.empty()) data += ' ';
++                            data += hx;
++                        }
++                    }
++                    fprintf(stderr, "%s NAC 0x%03x PDU: fmt=%02x sap=%02x blks=%u hdr=%s : %s\n",
++                            logts.get(d_msgq_id), framer->nac, fmt, sap,
++                            (unsigned) nblks, hdr.c_str(), data.c_str());
+                 }
+ 
++            } else if (d_debug >= 10) {
++                // The third outcome: the frame completed and reached us, but
++                // trellis 1/2 decode or deinterleave failed on a block, so there
++                // is nothing to CRC. Distinct from a crc16 failure -- this one
++                // points at signal quality rather than at framing.
++                fprintf(stderr, "%s NAC 0x%03x PDU: block deinterleave/trellis FAILED, fr_len=%u\n",
++                        logts.get(d_msgq_id), framer->nac, fr_len);
+             }
+         }
+ 
+@@ -558,11 +616,62 @@ namespace gr {
+ 
+             int bl_cnt = 0;
+             int bl_len = (bv.size() - (48+64)) / 196;
++
++            // RAW BIT DUMP, packet data only. Every data block in every PDU so
++            // far has failed block_deinterleave while the header block decoded
++            // cleanly (0 header CRC failures in 29 PDUs). That pattern is
++            // systematic rather than signal quality, and the likely cause is
++            // that data blocks are rate-3/4 trellis at 18 octets while this
++            // function only implements rate-1/2 at 12 -- the path built for
++            // TSBKs and PDU headers. Both occupy 196 bits on air, so framing
++            // looks right and only the decode is wrong.
++            //
++            // That is a HYPOTHESIS. Rather than write a second trellis decoder
++            // in C++ on the strength of it, emit the post-status bit vector and
++            // let a decoder be prototyped in Python against real bits. If the
++            // guess is wrong we lose an afternoon instead of a week.
++            //
++            // GATED ON duid 0x0c: process_blocks also serves process_TSBK,
++            // which runs thousands of times a minute on the control channel.
++            // Dumping there would bury the log. Bits are packed MSB-first from
++            // bv[0]; blocks start at bit 112 (48 FS + 64 NID) every 196 bits.
++            if ((framer->duid == 0x0c) && (d_debug >= 10)) {
++                std::string hex;
++                char hx[4];
++                for (size_t i = 0; i < bv.size(); i += 8) {
++                    uint8_t b = 0;
++                    for (size_t j = 0; j < 8 && (i + j) < bv.size(); j++)
++                        b |= (bv[i + j] ? 1 : 0) << (7 - j);
++                    snprintf(hx, sizeof(hx), "%02x", b);
++                    hex += hx;
++                }
++                fprintf(stderr, "%s NAC 0x%03x PDU raw: bits=%zu blocks=%d : %s\n",
++                        logts.get(d_msgq_id), framer->nac, bv.size(), bl_len, hex.c_str());
++            }
+             for (bl_cnt = 0; bl_cnt < bl_len; bl_cnt++) { // deinterleave,  decode trellis1_2, save 12 byte block
+                 dbuf.push_back({0,0,0,0,0,0,0,0,0,0,0,0});
+                 if(block_deinterleave(bv, 48+64+bl_cnt*196, dbuf[bl_cnt].data()) != 0) {
+                     dbuf.pop_back();
+-                    return -1;
++                    // KEEP the blocks that DID decode. This was `return -1`, which
++                    // discarded the whole PDU -- including a perfectly good header
++                    // block -- as soon as any later block failed.
++                    //
++                    // That is the common case for packet data, not an edge case.
++                    // Measured on LWIN 2026-09-04: a PDU arrived with fr_len=648,
++                    // which is 630 bits after status removal; (630-112)/196 = 2.64,
++                    // so block 0 was complete and block 1 was a FRAGMENT. The frame
++                    // had been correctly truncated mid-block by rx_sync.cc:533-536
++                    // when the next frame sync arrived, which is exactly what should
++                    // happen -- and then the good header was thrown away with the
++                    // fragment, reported only as `deinterleave/trellis FAILED`.
++                    //
++                    // `break` costs nothing elsewhere: the existing
++                    // `return (bl_cnt > 0) ? 0 : -1` below already fails when NO
++                    // block decoded, process_TSBK CRC-checks every block it reads,
++                    // and process_PDU's MBT path already refuses to run when
++                    // `blks >= deinterleave_buf.size()`. Nothing downstream trusts
++                    // the block count without checking it.
++                    break;
+                 }
+             }
+             return (bl_cnt > 0) ? 0 : -1;

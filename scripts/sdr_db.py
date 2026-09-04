@@ -266,6 +266,70 @@ CREATE TABLE IF NOT EXISTS call_codes (
 );
 CREATE INDEX IF NOT EXISTS idx_call_codes_call  ON call_codes(call_id);
 CREATE INDEX IF NOT EXISTS idx_call_codes_canon ON call_codes(canonical, call_id);
+
+-- SNDCP packet data: the OTHER thing LWIN carries, and until now the only
+-- part of this system with no durable record at all.
+--
+-- Site 13 runs integrated voice and data. Over 11 hours it issued 8,084 data
+-- channel grants (TSBK 0x14) to 984 distinct radios -- against 279 radios ever
+-- observed transmitting VOICE in this entire database. So this table is not a
+-- footnote to `calls`; on radio count it is the larger census of the two, and
+-- the two join on radio id (packets.llid against calls.src_addr).
+--
+-- Written by scripts/import_packets.py from op25's log, the same way
+-- import_grants.py writes `grants`. Nothing here is inferred: a row exists
+-- because a PDU header passed its CRC16, and `clear` is 1 only when the
+-- payload's own IPv4 header checksum validated.
+--
+-- WHAT THIS CAN AND CANNOT CONTAIN. Every datagram observed is OUTBOUND,
+-- system to radio, because iden_up id 1 carries toff +30 MHz: a grant naming
+-- 769.68125 assigns 769.68125 down / 799.68125 up, and every receiver in this
+-- config is on the downlink. So `app_kind` holds registration
+-- acknowledgements and location REQUESTS. The location reports themselves
+-- travel inbound at 799-805 / 806-824 MHz and cannot be tuned here, which is
+-- why no row will ever carry a coordinate.
+CREATE TABLE IF NOT EXISTS packets (
+  id         INTEGER PRIMARY KEY,
+  ts         REAL    NOT NULL,      -- unix seconds, local-clock derived
+  session_id INTEGER REFERENCES sessions(id),
+
+  -- The radio, from PDU header octets 3-5. Joins to calls.src_addr, which is
+  -- the point of storing it: 941 of 984 data-session radios had never been
+  -- heard on voice, though that figure is depressed by voice-side src_addr
+  -- coverage being sparse rather than by the radios being data-only.
+  llid       INTEGER,
+  nac        INTEGER,
+
+  -- PDU framing. fmt 0x16 = confirmed data, 0x03 = response. `sap` is
+  -- MEANINGLESS when fmt is 0x03: octet 1 of a response PDU carries response
+  -- class/type/status, not a service access point, so it is stored NULL there
+  -- rather than as a number that would read as a service.
+  fmt        INTEGER,
+  sap        INTEGER,
+  blks_claimed   INTEGER,           -- what the sender said followed the header
+  blks_recovered INTEGER,           -- what FEC actually gave us
+
+  -- IP layer. NULL unless the datagram decoded far enough to read it.
+  src_ip     TEXT,
+  dst_ip     TEXT,
+  proto      INTEGER,
+  sport      INTEGER,
+  dport      INTEGER,
+  -- 1 only when the IPv4 header checksum VALIDATED. That is a 16-bit check the
+  -- decoder cannot satisfy by accident, so this column means "proved
+  -- cleartext", not "looked plausible".
+  clear      INTEGER NOT NULL DEFAULT 0,
+
+  -- Application layer, as far as it is honestly known. app_payload keeps the
+  -- bytes so a better parser can be run over history without re-capturing:
+  -- LRRP token bodies and the ARS flag nibble are deliberately undecoded.
+  app        TEXT,                  -- 'ARS' | 'LRRP' | NULL
+  app_kind   TEXT,
+  app_payload TEXT                  -- lowercase hex, no separators
+);
+CREATE INDEX IF NOT EXISTS idx_packets_ts   ON packets(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_packets_llid ON packets(llid, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_packets_app  ON packets(app, app_kind);
 """
 
 

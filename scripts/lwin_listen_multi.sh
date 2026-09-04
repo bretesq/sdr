@@ -63,6 +63,15 @@ LOG=$R/results/op25_multi.log
 # session stop. results/*.log is the established place for this kind of
 # per-tool log in this repo.
 IMPORT_LOG=$R/results/grant_import.log
+
+# The packet-data import gets its OWN file rather than sharing the one above.
+# Two reasons, and neither is tidiness: the file above is named for grants and
+# its documented reading rule ("pick a BEGIN line, grep its token") is easier
+# to apply when one file holds one kind of entry; and the two importers fail
+# independently, so a reader chasing a missing packet census should not have to
+# sort it out of grant entries first. Both are still tagged, because two
+# PACKET imports can interleave with each other just as two grant imports can.
+PKT_IMPORT_LOG=$R/results/packet_import.log
 LEGS=700,800
 SECS=0
 STT=0
@@ -122,6 +131,46 @@ check_patch "leaving it unclaimed" \
 check_patch "def can_reach" \
   "op25-tk_p25-multiband-receiver-pool.patch" \
   "Without it receivers keep claiming grants on the band they cannot reach: measured 1,300 tune attempts for 6 calls on the 700 leg." \
+  || PATCHES_OK=0
+check_patch "def tune_data_receivers" \
+  "op25-tk_p25-follow-sndcp-data-grants.patch" \
+  "Without it the data receiver never moves, and LWIN spreads SNDCP grants over 19 frequencies: it would see ~4% of them and the rest would look like a system with no packet data." \
+  || PATCHES_OK=0
+
+# The C++ patch is checked against the INSTALLED LIBRARY, not the source.
+#
+# Source and binary disagree here in a way that is invisible: `patch` restores
+# lib/*.cc without rebuilding, and multi_rx loads
+# libgnuradio-op25_repeater.so, so an un-rebuilt tree runs the OLD decoder
+# while the source looks correct. Every failure mode of that patch is a silent
+# absence of packet data, which is exactly what a grep of the source would
+# reassure us about. So grep the artifact that actually runs.
+check_lib() {   # <string> <patch name> <why>
+  local so
+  so=$(ldconfig -p 2>/dev/null | awk '/libgnuradio-op25_repeater\.so /{print $NF; exit}')
+  [ -n "$so" ] || so=/usr/local/lib/x86_64-linux-gnu/libgnuradio-op25_repeater.so
+  if [ ! -r "$so" ]; then
+    echo "ERROR: cannot read $so to verify patches/$2" >&2
+    return 1
+  fi
+  # `grep -a` on the binary, NOT `strings | grep`. The capture container does
+  # not ship binutils, so `strings` is absent there: the pipeline produced
+  # nothing, grep found nothing, and this guard reported the patch missing and
+  # refused to start a container-hosted capture that was in fact correctly
+  # patched. Verified by md5: the container bind-mounts this exact file
+  # read-only from the host, so it always sees whatever `make install` put
+  # there. grep is in coreutils and present in both places.
+  if ! grep -qa "$1" "$so" 2>/dev/null; then
+    echo "ERROR: installed op25 library is missing patches/$2" >&2
+    echo "       $3" >&2
+    echo "       Re-apply per patches/README.md, then REBUILD:" >&2
+    echo "       cd src/op25/build && make -j8 && sudo make install" >&2
+    return 1
+  fi
+}
+check_lib "PDU: process_PDU entered" \
+  "op25-p25p1-read-sndcp-packet-data.patch" \
+  "Without it every packet-data PDU is discarded before it is logged, in three separate places, and the system looks like it carries no data at all." \
   || PATCHES_OK=0
 [ "$PATCHES_OK" -eq 1 ] || exit 1
 
@@ -314,6 +363,23 @@ cleanup() {
       >> "$IMPORT_LOG"
     setsid python3 "$R/scripts/import_grants.py" --tag "$IMPORT_TAG" "$LOG" >> "$IMPORT_LOG" 2>&1 &
     echo "  grant import running in the background -> $IMPORT_LOG"
+
+    # The packet-data census, on the same evidence and the same terms.
+    #
+    # This ran only when somebody remembered to type it until now, which made
+    # the `packets` table a snapshot rather than a record: the log ROTATES on
+    # the next session start, so any PDU not imported before then was gone.
+    # The whole point of the table is that the census outlives a rotation, and
+    # that was not true while the import was manual.
+    #
+    # Same detached setsid + tag treatment as the grant import above, and the
+    # same reason for both: it outlives this launcher, and its output shares a
+    # file with other runs of itself.
+    printf '=== %s  BEGIN %s  %s\n' \
+      "$(date -Is)" "$IMPORT_TAG" "$LOG" >> "$PKT_IMPORT_LOG"
+    setsid python3 "$R/scripts/import_packets.py" --tag "$IMPORT_TAG" "$LOG" \
+      >> "$PKT_IMPORT_LOG" 2>&1 &
+    echo "  packet import running in the background -> $PKT_IMPORT_LOG"
   fi
   n=$(ls -1 "$R"/recordings/TG*.wav 2>/dev/null | wc -l)
   echo "-> $n call(s) total in $R/recordings/"

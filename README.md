@@ -775,6 +775,62 @@ The model file (`models/ggml-small.en.bin`) and the built whisper.cpp binaries
 (`tools/whisper.cpp/build/bin/whisper-cli`) are the only new artifacts. To use a different
 model, pass `--model <path>` to either script.
 
+## 11. The uplink — measured, and out of reach from here
+
+LWIN's packet data is readable (see `patches/README.md` and `scripts/p25_packet.py`),
+but **only the outbound half**. `iden_up` id 1 carries `toff +30` MHz and id 0 carries
+`-45`, so every grant assigns a channel *pair*:
+
+| leg | downlink | uplink |
+|---|---|---|
+| 700 | 769–775 | **799–805** |
+| 800 | 851–860 | **806–815** |
+
+Our receivers are on the downlink, so we see the system **asking** radios for their
+location and never the answers. LRRP position reports travel inbound.
+
+**Bandwidth is not the obstacle.** The two uplink bands are adjacent — 799–815, 16 MHz
+— and one HackRF at 20 Msps covers both (±8.50 MHz around 807).
+
+**Signal is the obstacle, and it was measured rather than assumed.** Two hours on
+803.05625 — the control channel uplink, where every radio in range transmits
+registrations, affiliations and service requests — on the better of the two antennas:
+
+```
+elapsed 01:59:30   log lines 6918   frames 0   candidate frame syncs 0
+```
+
+The second zero is the informative one. On the downlink the framer regularly logs
+`p25_framer::load_nid() error check failed` — it found something frame-sync-shaped and
+rejected it on BCH. Here it found **nothing to reject in two hours**. That distinguishes
+"too weak to decode" from "not present", and it is the latter.
+
+Positive control, same command and software, pointed at the CC downlink for 60 s:
+
+```
+624 frames — 496 TSBK, 48 LDU1, 31 TDU15, 1 HDU
+```
+
+A 60-second version of the uplink test came first and was NOT conclusive: uplink carries
+traffic only when an in-range radio transmits, so a short empty window proves nothing.
+Two hours is what makes the negative worth recording.
+
+**Why, roughly.** A site runs ~100 W per channel from a tower with line of sight over the
+area; a portable is ~3 W (−15 dB) and a mobile ~25 W (−6 dB), at street level, often
+inside a vehicle or building — and our antenna is window-mounted, in the clutter too.
+Uplink reception is a **proximity** problem: you hear the subscribers near *you*, not the
+ones near the tower.
+
+**So no purchase fixes this at this location.** A 790–820 MHz band-pass filter, an LNA, or
+a 12-bit receiver all rescue *marginal* signal, and there is nothing marginal here — a
+sweep did show strong cellular uplink at 827–829 MHz (+24.4 dB, above anything of ours,
+and worth filtering if this is ever retried), but filtering cannot create a frame sync
+where there are none. What would change the answer is **siting**: an antenna near where
+radios actually operate — a station, a garage, a district — or a directional antenna aimed
+at one such concentration. Both are physical decisions, not equipment.
+
+Even full success would yield the radios near that antenna, not the fleet.
+
 ## Legal note
 Everything here is **receive-only** of unencrypted, publicly broadcast signals, which is
 legal in the US. Encrypted talkgroups were not decrypted (several EBR law-enforcement

@@ -930,3 +930,154 @@ export function followedTalkgroups(sinceSec = 6 * 3600): FollowedTalkgroup[] {
     // Busiest first, then by id so the order is stable between calls.
     .sort((a, b) => b.recentCalls - a.recentCalls || a.tgid - b.tgid)
 }
+
+/**
+ * One SNDCP packet-data PDU, as stored by scripts/import_packets.py.
+ *
+ * `clear` is the load-bearing field and it means something specific: the
+ * payload's own IPv4 header checksum VALIDATED. That is a 16-bit check the
+ * decoder cannot satisfy by accident, so it reads as "proved cleartext", never
+ * "looked plausible". A row with clear = false is not evidence of encryption —
+ * it may be a response PDU with no IP layer at all — which is why the UI must
+ * not render it as one.
+ */
+export interface Packet {
+  id: number
+  ts: number
+  llid: number | null
+  fmt: number | null
+  sap: number | null
+  blksClaimed: number | null
+  blksRecovered: number | null
+  srcIp: string | null
+  dstIp: string | null
+  sport: number | null
+  dport: number | null
+  clear: boolean
+  app: string | null
+  appKind: string | null
+  appPayload: string | null
+  /** Has this radio ever been heard transmitting VOICE? See packetSummary. */
+  heardOnVoice: boolean
+}
+
+export interface PacketQuery {
+  limit?: number
+  afterId?: number
+  llid?: number
+  app?: string
+  /** Only rows whose payload proved cleartext. */
+  clearOnly?: boolean
+}
+
+/**
+ * Recent packet-data PDUs, newest first.
+ *
+ * The `heardOnVoice` join is the reason this table is worth surfacing at all:
+ * the data plane sees far more radios than the voice plane does, so the
+ * interesting question about any given radio id is whether we have ever heard
+ * it speak. Computed in SQL rather than per row in JS for the same reason
+ * listRecordings joins its talkgroup metadata.
+ */
+export function listPackets(q: PacketQuery = {}): { rows: Packet[], total: number, maxId: number } {
+  const db = getDb()
+  const where: string[] = []
+  const params: (string | number)[] = []
+
+  if (q.llid !== undefined) {
+    where.push('p.llid = ?')
+    params.push(q.llid)
+  }
+  if (q.app !== undefined) {
+    where.push('p.app = ?')
+    params.push(q.app)
+  }
+  if (q.clearOnly) {
+    where.push('p.clear = 1')
+  }
+  if (q.afterId !== undefined) {
+    where.push('p.id > ?')
+    params.push(q.afterId)
+  }
+
+  const clause = where.length ? `WHERE ${where.join(' AND ')}` : ''
+  const limit = Math.min(Math.max(q.limit ?? 100, 1), 500)
+
+  const agg = db.prepare(
+    `SELECT COUNT(*) AS total, COALESCE(MAX(p.id), 0) AS maxId
+       FROM packets p ${clause}`).get(...params) as { total: number, maxId: number }
+
+  const rows = db.prepare(
+    `SELECT p.id, p.ts, p.llid, p.fmt, p.sap,
+            p.blks_claimed     AS blksClaimed,
+            p.blks_recovered   AS blksRecovered,
+            p.src_ip AS srcIp, p.dst_ip AS dstIp, p.sport, p.dport,
+            p.clear, p.app, p.app_kind AS appKind, p.app_payload AS appPayload,
+            EXISTS (SELECT 1 FROM calls c
+                     WHERE c.src_addr = p.llid AND c.src_addr IS NOT NULL
+                       AND c.src_addr != 0) AS heardOnVoice
+       FROM packets p
+       ${clause}
+       ORDER BY p.id DESC
+       LIMIT ?`).all(...params, limit) as Record<string, unknown>[]
+
+  return {
+    total: agg.total,
+    maxId: agg.maxId,
+    rows: rows.map(r => ({
+      ...r,
+      clear: Boolean(r.clear),
+      heardOnVoice: Boolean(r.heardOnVoice),
+    })) as unknown as Packet[],
+  }
+}
+
+export interface PacketSummary {
+  total: number
+  clear: number
+  radios: number
+  radiosAlsoOnVoice: number
+  latestTs: number | null
+  byKind: { app: string, kind: string, n: number }[]
+}
+
+/**
+ * The headline figures, in one round trip.
+ *
+ * `radiosAlsoOnVoice` is deliberately reported next to `radios` rather than as
+ * a standalone "data-only radios" count. The gap between them is real but it
+ * is NOT evidence of a data-only fleet: voice-side src_addr coverage is sparse
+ * (the calls schema records 542 populated of 3,765 grants), so the difference
+ * partly measures our own blind spot. Presenting both numbers lets the caller
+ * see that, where a single derived figure would hide it.
+ */
+export function packetSummary(): PacketSummary {
+  const db = getDb()
+  const head = db.prepare(
+    `SELECT COUNT(*) AS total,
+            COALESCE(SUM(clear), 0) AS clear,
+            COUNT(DISTINCT llid) AS radios,
+            MAX(ts) AS latestTs
+       FROM packets`).get() as Record<string, number | null>
+
+  const both = db.prepare(
+    `SELECT COUNT(DISTINCT p.llid) AS n FROM packets p
+      WHERE p.llid IN (SELECT src_addr FROM calls
+                        WHERE src_addr IS NOT NULL AND src_addr != 0)`
+  ).get() as { n: number }
+
+  const byKind = db.prepare(
+    `SELECT app, app_kind AS kind, COUNT(*) AS n FROM packets
+      WHERE app IS NOT NULL
+      GROUP BY app, app_kind
+      ORDER BY n DESC`).all() as { app: string, kind: string, n: number }[]
+
+  return {
+    total: Number(head.total ?? 0),
+    clear: Number(head.clear ?? 0),
+    radios: Number(head.radios ?? 0),
+    radiosAlsoOnVoice: both.n,
+    latestTs: head.latestTs === null ? null : Number(head.latestTs),
+    byKind,
+  }
+}
