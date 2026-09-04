@@ -123,7 +123,7 @@ MAX_DURATION_SEC = 24 * 60 * 60
 ALLOWED_FIELDS = frozenset(
     {
         "mode", "ess", "includeEncrypted", "durationSec", "sessionId",
-        "nVoice700", "nVoice800", "preset", "addTalkgroups",
+        "nVoice700", "nVoice800", "preset", "addTalkgroups", "includePartial",
     }
 )
 
@@ -304,6 +304,27 @@ def build_args(req: object) -> tuple[list[str], int | None]:
         raise ValidationError("includeEncrypted must be a boolean")
     if include_encrypted:
         args.append("--include-encrypted")
+
+    # includePartial: talkgroups RadioReference flags 'partial'.
+    #
+    # This was unreachable over the delegated path until now, and its absence
+    # was expensive rather than cosmetic. The ten talkgroups it gates are the
+    # PRIMARY DISPATCH CHANNELS -- BRPD Dispatch 1-4, EBR Sheriff Dispatch
+    # North/South/Alternate, Baker PD HQ -- so a capture running the `pd-all`
+    # preset was silently excluding exactly the traffic that preset exists to
+    # collect. Measured: no call on any of the eight since 2026-09-02 18:23,
+    # which is when captures moved to this delegated path.
+    #
+    # And the flag they are excluded on is wrong about them. What the radios
+    # actually sent, from the ESS header rather than the roster: 4,022 calls
+    # clear against 157 ADP-encrypted. make_whitelist.py's own comment already
+    # warns that `enc` records how a talkgroup is DOCUMENTED, not what it
+    # transmits.
+    include_partial = req.get("includePartial", False)
+    if not isinstance(include_partial, bool):
+        raise ValidationError("includePartial must be a boolean")
+    if include_partial:
+        args.append("--include-partial")
 
     # nVoice700/nVoice800: receiver-count overrides for lwin_listen_multi.sh's
     # own --n-voice-700/--n-voice-800 flags (see that script's own defaults,

@@ -139,6 +139,23 @@ class BuildArgsTest(unittest.TestCase):
         )
         self.assertIsNone(session_id)
 
+    def test_include_partial_reaches_the_whitelist_builder(self):
+        """The flag that decides whether dispatch gets recorded at all.
+
+        It was absent from ALLOWED_FIELDS while the web layer listed it as
+        unsupported, so a caller asking for partial talkgroups over the
+        delegated path got a capture that silently skipped them -- including
+        BRPD Dispatch 1-4 and the Sheriff dispatch channels.
+        """
+        args, _ = build_args({"mode": "multi", "preset": "pd-all",
+                              "includePartial": True, "durationSec": 86400})
+        self.assertIn("--include-partial", args)
+
+    def test_include_partial_and_encrypted_are_independent(self):
+        args, _ = build_args({"mode": "multi", "includePartial": True})
+        self.assertIn("--include-partial", args)
+        self.assertNotIn("--include-encrypted", args)
+
     def test_omits_flags_that_were_not_requested(self):
         args, session_id = build_args({"mode": "multi"})
         self.assertEqual(args, [])
@@ -194,6 +211,12 @@ class BuildArgsTest(unittest.TestCase):
             build_args({"mode": "multi", "includeEncrypted": "yes"})
         with self.assertRaises(ValidationError):
             build_args({"mode": "multi", "includeEncrypted": 0})
+
+    def test_rejects_non_boolean_include_partial(self):
+        with self.assertRaises(ValidationError):
+            build_args({"mode": "multi", "includePartial": "yes"})
+        with self.assertRaises(ValidationError):
+            build_args({"mode": "multi", "includePartial": 0})
 
     def test_rejects_boolean_duration(self):
         # isinstance(True, int) is True in Python -- without an explicit

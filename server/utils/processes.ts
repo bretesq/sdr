@@ -460,6 +460,7 @@ function buildControlRequest(
   nVoice700?: number
   nVoice800?: number
   addTalkgroups?: string
+  includePartial?: boolean
 } {
   const unsupported: string[] = []
   if (opts.mode !== 'multi') {
@@ -486,7 +487,6 @@ function buildControlRequest(
   if (opts.tag !== undefined) unsupported.push('tag (no remote tag selection)')
   if (opts.match !== undefined) unsupported.push('match (no remote regex selection)')
   if (opts.allAreas) unsupported.push('allAreas')
-  if (opts.includePartial) unsupported.push('includePartial')
   if (opts.stt) unsupported.push('stt (the capture container does not run the transcription watcher)')
   if (opts.legs !== undefined) unsupported.push('legs (fixed to 700,800 remotely)')
   if (opts.census !== undefined) unsupported.push('census (fixed remotely)')
@@ -515,6 +515,7 @@ function buildControlRequest(
     nVoice700?: number
     nVoice800?: number
     addTalkgroups?: string
+    includePartial?: boolean
   } = {
     mode: 'multi',
     durationSec: opts.duration as number,
@@ -529,6 +530,7 @@ function buildControlRequest(
   if (opts.ess !== undefined) body.ess = opts.ess
   if (opts.includeEncrypted !== undefined) body.includeEncrypted = opts.includeEncrypted
   if (opts.addTalkgroups !== undefined) body.addTalkgroups = opts.addTalkgroups
+  if (opts.includePartial !== undefined) body.includePartial = opts.includePartial
   if (sessionId !== undefined) body.sessionId = sessionId
   // Already range-checked by server/api/listen/start.post.ts's handler
   // (1..MAX_VOICE) before startListening() is ever called, but that upstream
