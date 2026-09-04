@@ -49,6 +49,17 @@ export interface ListenOptions {
   census?: boolean
   preset?: string
   talkgroups?: string
+  /**
+   * multi only. Extra talkgroup IDs to follow ALONGSIDE the preset.
+   *
+   * Distinct from `talkgroups`, which maps to make_whitelist.py's --tg and
+   * REPLACES the selection entirely -- using that to add two talkgroups
+   * silently drops the preset's other 222. This maps to --add-tg, which unions
+   * onto whatever the preset chose and also honours an ID the reference DB has
+   * never heard of (TG 20000 here is the second-busiest talkgroup on the air
+   * and absent from RadioReference).
+   */
+  addTalkgroups?: string
   tag?: string
   match?: string
   allAreas?: boolean
@@ -81,6 +92,7 @@ export function buildListenArgs(opts: ListenOptions): string[] {
   if (opts.preset)           args.push('--preset', opts.preset)
   if (opts.tag)              args.push('--tag', opts.tag)
   if (opts.talkgroups)       args.push('--tg', opts.talkgroups)
+  if (opts.addTalkgroups)    args.push('--add-tg', opts.addTalkgroups)
   if (opts.match)            args.push('--match', opts.match)
   if (opts.allAreas)         args.push('--all-areas')
   if (opts.includePartial)   args.push('--include-partial')
@@ -447,6 +459,7 @@ function buildControlRequest(
   sessionId?: number
   nVoice700?: number
   nVoice800?: number
+  addTalkgroups?: string
 } {
   const unsupported: string[] = []
   if (opts.mode !== 'multi') {
@@ -468,7 +481,8 @@ function buildControlRequest(
       unsupported.push(`preset "${opts.preset}" (must be one of: ${CAPTURE_PRESETS.join(', ')})`)
     }
   }
-  if (opts.talkgroups !== undefined) unsupported.push('talkgroups (no remote talkgroup selection)')
+  if (opts.talkgroups !== undefined) unsupported.push(
+    'talkgroups (it REPLACES the preset selection; use addTalkgroups to extend one)')
   if (opts.tag !== undefined) unsupported.push('tag (no remote tag selection)')
   if (opts.match !== undefined) unsupported.push('match (no remote regex selection)')
   if (opts.allAreas) unsupported.push('allAreas')
@@ -500,6 +514,7 @@ function buildControlRequest(
     sessionId?: number
     nVoice700?: number
     nVoice800?: number
+    addTalkgroups?: string
   } = {
     mode: 'multi',
     durationSec: opts.duration as number,
@@ -513,6 +528,7 @@ function buildControlRequest(
   if (preset !== undefined) body.preset = preset
   if (opts.ess !== undefined) body.ess = opts.ess
   if (opts.includeEncrypted !== undefined) body.includeEncrypted = opts.includeEncrypted
+  if (opts.addTalkgroups !== undefined) body.addTalkgroups = opts.addTalkgroups
   if (sessionId !== undefined) body.sessionId = sessionId
   // Already range-checked by server/api/listen/start.post.ts's handler
   // (1..MAX_VOICE) before startListening() is ever called, but that upstream

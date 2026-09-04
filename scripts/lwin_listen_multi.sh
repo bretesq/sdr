@@ -100,6 +100,7 @@ while [ $# -gt 0 ]; do
     --preset)            GEN+=(--preset "$2"); shift ;;
     --tag)               GEN+=(--tag "$2"); shift ;;
     --tg)                GEN+=(--tg "$2"); shift ;;
+    --add-tg)            GEN+=(--add-tg "$2"); shift ;;
     --match)             GEN+=(--match "$2"); shift ;;
     --all-areas)         GEN+=(--all-areas) ;;
     --include-partial)   GEN+=(--include-partial) ;;

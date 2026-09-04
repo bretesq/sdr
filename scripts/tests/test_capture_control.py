@@ -64,6 +64,59 @@ def _compose_service_block(compose: str, service: str) -> str:
     return "\n".join(lines[start:end])
 
 
+class AddTalkgroupsTest(unittest.TestCase):
+    """`addTalkgroups` is the only field whose value reaches argv as a
+    caller-supplied string, so it gets the strictest checks in this file."""
+
+    BASE = {"mode": "multi", "preset": "pd-all", "durationSec": 3600}
+
+    def test_it_reaches_argv_as_its_own_token(self):
+        args, _ = build_args({**self.BASE, "addTalkgroups": "20000,5080"})
+        self.assertIn("--add-tg", args)
+        self.assertEqual(args[args.index("--add-tg") + 1], "20000,5080")
+
+    def test_the_value_is_rebuilt_from_parsed_integers(self):
+        # Re-emitted from ints, not echoed from the caller's string, so a
+        # pattern that somehow satisfied the regex still cannot survive as
+        # written.
+        args, _ = build_args({**self.BASE, "addTalkgroups": "007,20000"})
+        self.assertEqual(args[args.index("--add-tg") + 1], "7,20000")
+
+    def test_injection_attempts_are_refused(self):
+        for bad in ("20000; rm -rf /", "20000 && id", "$(id)", "`id`",
+                    "20000|cat /etc/passwd", "--tg", "20000 --n-voice-800 99"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValidationError):
+                    build_args({**self.BASE, "addTalkgroups": bad})
+
+    def test_non_numeric_and_empty_are_refused(self):
+        for bad in ("", "abc", "20000,", ",20000", "20000,,5080", "20000, 5080"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValidationError):
+                    build_args({**self.BASE, "addTalkgroups": bad})
+
+    def test_a_non_string_is_refused_rather_than_coerced(self):
+        for bad in (20000, ["20000"], {"tg": 1}, True, None.__class__):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValidationError):
+                    build_args({**self.BASE, "addTalkgroups": bad})
+
+    def test_an_absurd_id_is_refused(self):
+        # Talkgroup ids are at most 7 digits on this system; a longer run is a
+        # typo or a probe, not a talkgroup.
+        with self.assertRaises(ValidationError):
+            build_args({**self.BASE, "addTalkgroups": "12345678"})
+
+    def test_too_many_ids_are_refused(self):
+        many = ",".join(str(i) for i in range(1, cc.MAX_ADD_TALKGROUPS + 2))
+        with self.assertRaises(ValidationError):
+            build_args({**self.BASE, "addTalkgroups": many})
+
+    def test_omitting_it_changes_nothing(self):
+        args, _ = build_args(self.BASE)
+        self.assertNotIn("--add-tg", args)
+
+
 class BuildArgsTest(unittest.TestCase):
     def test_rejects_unknown_mode(self):
         with self.assertRaises(ValidationError):
