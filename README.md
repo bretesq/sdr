@@ -649,11 +649,38 @@ for control-channel captures instead.
 
 ## Tests
 
+**Run all of these FROM THE REPO ROOT.**
+
 ```bash
 npm test                                        # both suites
-./node_modules/.bin/vitest run                  # 28 TypeScript
-python3 -m unittest discover -s scripts/tests   # 35 Python
+./node_modules/.bin/vitest run                  # 317 TypeScript
+python3 -m unittest discover -s scripts/tests   # 455 Python
 ```
+
+### Do not run the Python suite from inside `scripts/tests`
+
+`cd scripts/tests && python3 -m unittest discover -s .` looks equivalent and is
+not. `scripts/tests/test_capture_control.py` imports
+`from scripts.capture_control import ...` — a package path that only resolves
+with the repo root on `sys.path`. From inside the directory it fails with
+`ModuleNotFoundError: No module named 'scripts'`, and unittest reports it as
+one collection ERROR among otherwise passing tests:
+
+```
+Ran 381 tests ... FAILED (errors=1)      <- wrong invocation
+Ran 455 tests ... OK                     <- from the repo root
+```
+
+That failure is **manufactured by the invocation**, and it is convincing: it
+names a real test file, it is stable across runs, and everything else passes.
+It was mistaken for a pre-existing repo defect for a whole session and written
+into two commit messages as "the lone discovery-path error predates this work".
+It does not exist. `npm test` has always exited 0.
+
+Two lessons worth keeping, since this repo's failures are usually of exactly
+this shape: check how a project runs its own tests before explaining why they
+fail, and treat a diagnostic's output as evidence about the *diagnostic* until
+it has been shown otherwise.
 
 The TypeScript tests run against the real `sdr.db` rather than fixtures,
 deliberately: every data bug here has been a disagreement between assumed and
