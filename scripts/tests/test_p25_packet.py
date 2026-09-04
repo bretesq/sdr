@@ -381,6 +381,49 @@ class ViterbiCorrectsRatherThanGuesses(unittest.TestCase):
         self.assertLessEqual(pdu.blks, pdu.hdr_blks)
 
 
+class SignaturesKeepFlaggedMessagesVisible(unittest.TestCase):
+    """The watcher reports FIRST SIGHTINGS, so what counts as "seen" matters.
+
+    A flagged LRRP message reports the same kind as an unflagged one now that
+    octet 0 is masked correctly. If the signature ignored flags, the watcher
+    would treat the next flagged message as already-seen -- which is exactly
+    the observability that found the bug in the first place.
+    """
+
+    def _results(self, *payloads):
+        out = []
+        for data in payloads:
+            pdu = P.parse_raw_line('NAC 0x1bd PDU raw: bits=1120 blocks=5 : '
+                                   + RAW_LRRP_4BLK)
+            # Swap in the application payload we want to signature.
+            ip = P.parse_ipv4(pdu.payload[P.SNDCP_PREFIX_LEN:])
+            self.assertIsNotNone(ip)
+            v = P.Verdict('ipv4', True, 'test', {
+                'ip': {**ip, 'udp': {**ip['udp'], 'data': data}}})
+            out.append((pdu, v))
+        return out
+
+    def test_a_flagged_message_is_a_DIFFERENT_signature(self):
+        plain = bytes.fromhex('090f2203ffffee5244643a64625734311e')
+        flagged = bytes.fromhex('690f2203ffffee5244643a64625734311e')
+        sigs = P.app_signatures(self._results(plain, flagged))
+        self.assertEqual(len(sigs), 2, sigs)
+        self.assertTrue(any('flags=0x3' in s for s in sigs), sigs)
+        self.assertTrue(any('flags' not in s for s in sigs), sigs)
+
+    def test_identical_messages_collapse_to_one_signature(self):
+        plain = bytes.fromhex('090f2203ffffee5244643a64625734311e')
+        self.assertEqual(len(P.app_signatures(self._results(plain, plain))), 1)
+
+    def test_unclear_pdus_contribute_nothing(self):
+        # A signature must never be minted from a payload we did not prove
+        # readable -- that would report traffic we cannot actually read.
+        pdu = P.parse_raw_line('NAC 0x1bd PDU raw: bits=1120 blocks=5 : '
+                               + RAW_LRRP_4BLK)
+        unclear = P.Verdict('not-ipv4', False, 'test', {})
+        self.assertEqual(P.app_signatures([(pdu, unclear)]), [])
+
+
 class RealFramesDecodeEndToEnd(unittest.TestCase):
     """The whole chain, on bits that came off the air."""
 

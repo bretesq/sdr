@@ -659,18 +659,61 @@ def scan(lines) -> list[tuple[Pdu, Verdict]]:
     return out
 
 
+def app_signatures(results: list[tuple[Pdu, Verdict]]) -> list[str]:
+    """One stable line per distinct KIND OF application message seen.
+
+    Exists for the watcher, and the flags are the whole reason it exists.
+
+    The watcher reports first sightings, and it found a real parser bug that
+    way: a message reporting as "unknown LRRP type 105" turned out to be type 9
+    with two flag bits set. Fixing the parser then made that variant report as
+    an ordinary "triggered location start request" -- a kind already seen -- so
+    the NEXT flagged message would have gone unnoticed. The fix removed the
+    observability that found the bug.
+
+    Including the flags in the signature restores it. A flagged message is a
+    distinct signature from an unflagged one, so it is reported once, and the
+    1-in-162 case stays visible.
+    """
+    import p25_apps as apps
+
+    seen = set()
+    for pdu, verdict in results:
+        if not verdict.clear:
+            continue
+        udp = (verdict.detail.get('ip') or {}).get('udp') or {}
+        msg = apps.parse(udp.get('sport'), udp.get('dport'), udp.get('data', b''))
+        if msg is None:
+            continue
+        flags = msg.fields.get('flags')
+        seen.add(f'{msg.protocol}: {msg.kind}'
+                 + (f'  flags={flags}' if flags else ''))
+    return sorted(seen)
+
+
 def main(argv: list[str]) -> int:
     import collections
     import sys
 
-    if len(argv) < 2:
-        sys.stderr.write('usage: p25_packet.py <op25 log> [...]\n')
+    # --signatures prints one stable line per distinct kind of application
+    # message and nothing else, for scripts/watch_p25_apps.sh to diff against
+    # what it has already reported. See app_signatures.
+    sigs_only = '--signatures' in argv
+    paths = [a for a in argv[1:] if not a.startswith('--')]
+
+    if not paths:
+        sys.stderr.write('usage: p25_packet.py [--signatures] <op25 log> [...]\n')
         return 2
 
     results = []
-    for path in argv[1:]:
+    for path in paths:
         with open(path, errors='ignore') as fh:
             results.extend(scan(fh))
+
+    if sigs_only:
+        for line in app_signatures(results):
+            print(line)
+        return 0
 
     if not results:
         print('no packet-data PDUs found.')
