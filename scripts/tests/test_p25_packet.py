@@ -281,3 +281,145 @@ class ScanOverAWholeLog(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# Real `PDU raw:` frames captured off LWIN site 13 on 2026-09-04, verbatim.
+# Not synthesised: a hand-built frame would test the decoder against the same
+# assumptions that wrote it, which is precisely the failure this file's
+# docstring is about.
+RAW_LRRP_4BLK = (
+    '5575f5ff77ff1bdcec1231d9994ac422b762e29e535220e92f2c2b2220ccf62dcd22fd3eb91'
+    '732ae323c27e086202f2dd2f4331a2f253224bbc572eff2d7742be3e714eb47b27e7c737265'
+    'a7f0ed0e227209daaada0dbad28a8bcccc53dadb28219c6367e7487eeb76f04388571a52fa2'
+    '20000000027adbaaaaaaa575d00000000fb64aaaaaaaa5730000000')
+RAW_ARS_3BLK = (
+    '5575f5ff77ff1bdcec1231d9994ac422dd1592a42352274921298b222e621a22bd22cc9fa91'
+    '1e2fe32af27ee86202f22e2f4832a2f24e22e7b1572e172d6a428e3e0843bb2a23e7c80728c'
+    '24f0e1b6228f24daa9d2529ae23b000000062edbeaaaaaaa5fec5000000659e87aaaaaa0540'
+    '000')
+RAW_RESPONSE_0BLK = (
+    '5575f5ff77ff1bdcec1231d9994a2522dd12221121222749222799122e622223ff92cc92222'
+    '5500000000000')
+
+
+class TrellisTablesHaveProvenance(unittest.TestCase):
+    """A wrong FEC table produces confident garbage, so pin both of them."""
+
+    def test_rate_one_half_matches_op25s_independent_copy(self):
+        # THE PROVENANCE CHECK. Both tables were recovered from SDRTrunk
+        # bytecode by the same parser; this one is independently verifiable
+        # against op25's own source, and its agreement is what licenses
+        # trusting the 3/4 table, which nothing here can cross-check.
+        self.assertEqual(P.TRELLIS_1_2, (
+            (0x2, 0xC, 0x1, 0xF),
+            (0xE, 0x0, 0xD, 0x3),
+            (0x9, 0x7, 0xA, 0x4),
+            (0x5, 0xB, 0x6, 0x8),
+        ))
+
+    def test_rate_three_quarter_is_eight_by_eight_over_four_bit_codewords(self):
+        self.assertEqual(len(P.TRELLIS_3_4), 8)
+        for row in P.TRELLIS_3_4:
+            self.assertEqual(len(row), 8)
+            self.assertEqual(len(set(row)), 8, 'codewords in a row must be distinct')
+            for cw in row:
+                self.assertTrue(0 <= cw <= 15)
+
+    def test_the_two_rates_are_actually_different_codes(self):
+        # If these ever coincided, every "rate 3/4" test below would be
+        # silently exercising the 1/2 path instead.
+        self.assertNotEqual(P.TRELLIS_1_2[0][:4], P.TRELLIS_3_4[0][:4])
+
+
+class RealFramesDecodeEndToEnd(unittest.TestCase):
+    """The whole chain, on bits that came off the air."""
+
+    def test_lrrp_frame_decodes_to_a_checksum_valid_datagram(self):
+        pdu = P.parse_raw_line('NAC 0x1bd PDU raw: bits=1120 blocks=5 : '
+                               + RAW_LRRP_4BLK)
+        self.assertIsNotNone(pdu)
+        self.assertEqual(pdu.fmt, 0x16)
+        self.assertEqual(pdu.sap_name, 'unencrypted user data')
+        self.assertEqual(pdu.hdr_blks, 4)
+        self.assertEqual(pdu.blks, 4)              # all four recovered
+        self.assertEqual(pdu.blocks_lost, 0)
+
+        v = P.classify(pdu)
+        self.assertTrue(v.clear, v.reason)
+        self.assertEqual(v.detail['block_format'], 'sndcp')
+        ip = v.detail['ip']
+        self.assertEqual(ip['src'], '10.51.1.10')
+        self.assertEqual(ip['protocol'], 17)
+        self.assertTrue(ip['checksum_ok'])
+        self.assertEqual(ip['udp']['dport'], 4001)
+        self.assertEqual(ip['udp']['hint'], 'LRRP (location)')
+
+    def test_ars_frame_decodes_to_a_checksum_valid_datagram(self):
+        pdu = P.parse_raw_line('NAC 0x1bd PDU raw: bits=910 blocks=4 : '
+                               + RAW_ARS_3BLK)
+        self.assertIsNotNone(pdu)
+        v = P.classify(pdu)
+        self.assertTrue(v.clear, v.reason)
+        self.assertEqual(v.detail['ip']['udp']['dport'], 4005)
+        self.assertEqual(v.detail['ip']['udp']['hint'], 'ARS (registration)')
+
+    def test_a_response_pdu_is_header_only_and_that_is_not_a_failure(self):
+        pdu = P.parse_raw_line('NAC 0x1bd PDU raw: bits=350 blocks=1 : '
+                               + RAW_RESPONSE_0BLK)
+        self.assertIsNotNone(pdu)
+        self.assertEqual(pdu.fmt, 0x03)
+        self.assertEqual(pdu.hdr_blks, 0)          # sender claimed none
+        self.assertEqual(pdu.blocks_lost, 0)       # so nothing was lost
+        self.assertEqual(pdu.payload, b'')
+        self.assertEqual(P.classify(pdu).kind, 'empty')
+
+    def test_the_header_block_crc_validates(self):
+        # The gate parse_raw_line applies before reporting anything.
+        for raw in (RAW_LRRP_4BLK, RAW_ARS_3BLK, RAW_RESPONSE_0BLK):
+            with self.subTest(raw=raw[:24]):
+                bv = P._bits(bytes.fromhex(raw))
+                hdr = P.decode_header_block(bv)
+                self.assertIsNotNone(hdr)
+                self.assertEqual(P.crc16_p25(hdr, 12), 0)
+
+    def test_a_corrupted_frame_is_refused_rather_than_reported(self):
+        # Flip bits inside the header block; the CRC must catch it and
+        # parse_raw_line must return None rather than a plausible-looking Pdu.
+        bad = bytearray(bytes.fromhex(RAW_LRRP_4BLK))
+        bad[20] ^= 0xff
+        bad[21] ^= 0xff
+        pdu = P.parse_raw_line('NAC 0x1bd PDU raw: bits=1120 blocks=5 : '
+                               + bytes(bad).hex())
+        self.assertIsNone(pdu)
+
+    def test_the_rate_used_per_block_is_recorded(self):
+        # fmt=16 data blocks are rate 3/4. Recording it matters because the
+        # rate is inferred from the format rather than read from the standard,
+        # so a frame that decoded under the OTHER rate is evidence worth
+        # keeping rather than silently normalising away.
+        pdu = P.parse_raw_line('NAC 0x1bd PDU raw: bits=1120 blocks=5 : '
+                               + RAW_LRRP_4BLK)
+        self.assertEqual(pdu.block_rates, ['3/4'] * 4)
+
+    def test_a_response_pdus_data_block_is_rate_one_half(self):
+        """Learned from the air, not from the spec.
+
+        op25 -- which implements rate 1/2 only -- decoded a fmt=03 data block
+        cleanly to 12 octets while failing every fmt=16 one. Applying 3/4 to
+        these would have produced garbage and called it success.
+        """
+        self.assertEqual(P.Pdu.FMT_RESPONSE, 0x03)
+        # The format decides which rate is tried first.
+        bv = P._bits(bytes.fromhex(RAW_LRRP_4BLK))
+        _blk, rate = P.decode_data_block(bv, 1, fmt=0x16)
+        self.assertEqual(rate, '3/4')
+
+    def test_scan_prefers_the_raw_line_over_the_decoded_one(self):
+        # Both lines describe the same PDU. The raw one carries the payload, so
+        # taking the decoded one would silently report "no payload".
+        lines = [
+            'x [12] NAC 0x1bd PDU raw: bits=1120 blocks=5 : ' + RAW_LRRP_4BLK,
+        ]
+        got = P.scan(lines)
+        self.assertEqual(len(got), 1)
+        self.assertTrue(got[0][1].clear)

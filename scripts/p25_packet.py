@@ -90,6 +90,195 @@ PDU_LINE = re.compile(
     r'(?P<payload>(?:[0-9a-f]{2}(?: [0-9a-f]{2})*)?)\s*$'
 )
 
+# ---------------------------------------------------------------------------
+# The `PDU raw:` line, and the two trellis codes needed to read it.
+#
+#   09/04/26 09:41:02.1 [12] NAC 0x1bd PDU raw: bits=700 blocks=3 : 5575f5ff...
+#
+# Bits are packed MSB-first; blocks start at bit 112 (48 frame sync + 64 NID)
+# every 196 bits. The C++ emits this and interprets none of it -- see the
+# module docstring.
+# ---------------------------------------------------------------------------
+PDU_RAW_LINE = re.compile(
+    r'NAC 0x(?P<nac>[0-9a-f]+) PDU raw: '
+    r'bits=(?P<bits>\d+) blocks=(?P<blocks>\d+) : (?P<hex>[0-9a-f]+)\s*$'
+)
+
+# The 196-bit block interleaver, identical for both trellis rates.
+# Copied from op25's block_deinterleave (p25p1_fdma.cc), which is itself from
+# wireshark's packet-p25cai.c.
+DEINTERLEAVE = (
+      0,  1,  2,  3,  52, 53, 54, 55, 100,101,102,103, 148,149,150,151,
+      4,  5,  6,  7,  56, 57, 58, 59, 104,105,106,107, 152,153,154,155,
+      8,  9, 10, 11,  60, 61, 62, 63, 108,109,110,111, 156,157,158,159,
+     12, 13, 14, 15,  64, 65, 66, 67, 112,113,114,115, 160,161,162,163,
+     16, 17, 18, 19,  68, 69, 70, 71, 116,117,118,119, 164,165,166,167,
+     20, 21, 22, 23,  72, 73, 74, 75, 120,121,122,123, 168,169,170,171,
+     24, 25, 26, 27,  76, 77, 78, 79, 124,125,126,127, 172,173,174,175,
+     28, 29, 30, 31,  80, 81, 82, 83, 128,129,130,131, 176,177,178,179,
+     32, 33, 34, 35,  84, 85, 86, 87, 132,133,134,135, 180,181,182,183,
+     36, 37, 38, 39,  88, 89, 90, 91, 136,137,138,139, 184,185,186,187,
+     40, 41, 42, 43,  92, 93, 94, 95, 140,141,142,143, 188,189,190,191,
+     44, 45, 46, 47,  96, 97, 98, 99, 144,145,146,147, 192,193,194,195,
+     48, 49, 50, 51)
+
+# Rate 1/2: 4 states x 4 dibit inputs -> 4-bit codeword. 12 octets out.
+# Used by TSBKs and by the PDU HEADER block. Identical to op25's own table.
+TRELLIS_1_2 = (
+    (0x2, 0xC, 0x1, 0xF),
+    (0xE, 0x0, 0xD, 0x3),
+    (0x9, 0x7, 0xA, 0x4),
+    (0x5, 0xB, 0x6, 0x8),
+)
+
+# Rate 3/4: 8 states x 8 tribit inputs -> 4-bit codeword. 18 octets out.
+# Used by PDU DATA blocks, which is why op25 could never read one: it only
+# implements the table above, so every data block failed while headers decoded
+# perfectly (0 header CRC failures in 29 PDUs).
+#
+# PROVENANCE, because a wrong FEC table produces confident garbage: recovered
+# from SDRTrunk's P25_3_4_Node bytecode with a class-file parser, NOT written
+# from memory. The same parser was pointed at P25_1_2_Node first and returned
+# the table above byte-for-byte identical to op25's independent copy -- getting
+# a known-correct answer out is what licenses trusting the unknown one.
+TRELLIS_3_4 = (
+    (2, 13, 14,  1,  7,  8, 11,  4),
+    (14, 1,  7,  8, 11,  4,  2, 13),
+    (10, 5,  6,  9, 15,  0,  3, 12),
+    (6,  9, 15,  0,  3, 12, 10,  5),
+    (15, 0,  3, 12, 10,  5,  6,  9),
+    (3, 12, 10,  5,  6,  9, 15,  0),
+    (7,  8, 11,  4,  2, 13, 14,  1),
+    (11, 4,  2, 13, 14,  1,  7,  8),
+)
+
+BLOCK_BITS = 196          # one coded block, either rate
+FRAME_PREAMBLE_BITS = 112 # 48 frame sync + 64 NID
+
+# Each data block spends its first 2 octets on a data-block serial number and
+# a CRC9, leaving 16 of user data.
+DATA_BLOCK_HEADER_LEN = 2
+
+# And the reassembled user data opens with a 2-octet SNDCP prefix before the
+# IP header. MEASURED: parse_ipv4 finds nothing at offset 0 and validates at
+# offset 2 on every packet observed, so the earlier "not IPv4" verdicts were
+# honest but were reading two octets too early.
+SNDCP_PREFIX_LEN = 2
+
+
+def _bits(packed: bytes) -> list[int]:
+    return [(b >> (7 - j)) & 1 for b in packed for j in range(8)]
+
+
+def crc16_p25(buf: bytes, length: int) -> int:
+    """op25's crc16, used to validate a PDU header block. 0 means valid."""
+    poly = (1 << 12) + (1 << 5) + (1 << 0)
+    crc = 0
+    for i in range(length):
+        for j in range(8):
+            crc = ((crc << 1) | ((buf[i] >> (7 - j)) & 1)) & 0x1ffff
+            if crc & 0x10000:
+                crc = (crc & 0xffff) ^ poly
+    return (crc ^ 0xffff) & 0xffff
+
+
+def _decode_block(bv: list[int], start: int, table, sym_bits: int,
+                  out_len: int) -> bytes | None:
+    """Viterbi-free trellis decode, exactly as op25 does it for rate 1/2.
+
+    At each step pick the input whose expected codeword is closest to the one
+    received; an ambiguous minimum is a decode failure, not a coin flip. The
+    decoded input becomes the next state.
+    """
+    if start + BLOCK_BITS > len(bv):
+        return None
+    bits: list[int] = []
+    state = 0
+    for b in range(0, BLOCK_BITS, 4):
+        cw = ((bv[start + DEINTERLEAVE[b + 0]] << 3)
+              + (bv[start + DEINTERLEAVE[b + 1]] << 2)
+              + (bv[start + DEINTERLEAVE[b + 2]] << 1)
+              + bv[start + DEINTERLEAVE[b + 3]])
+        dist = [bin(cw ^ table[state][j]).count('1') for j in range(len(table[state]))]
+        lo = min(dist)
+        if dist.count(lo) != 1:
+            return None
+        state = dist.index(lo)
+        # The final symbol is a flush and carries no data.
+        if (b >> 2) < out_len * 8 // sym_bits:
+            for k in range(sym_bits - 1, -1, -1):
+                bits.append((state >> k) & 1)
+    out = bytearray(out_len)
+    for i, bit in enumerate(bits[:out_len * 8]):
+        if bit:
+            out[i >> 3] |= 1 << (7 - (i & 7))
+    return bytes(out)
+
+
+def decode_header_block(bv: list[int]) -> bytes | None:
+    """The PDU header: rate 1/2, 12 octets."""
+    return _decode_block(bv, FRAME_PREAMBLE_BITS, TRELLIS_1_2, 2, 12)
+
+
+def decode_data_block(bv: list[int], index: int, fmt: int = 0x16):
+    """One data block. Returns (bytes, rate) or (None, None).
+
+    THE RATE DEPENDS ON THE PACKET FORMAT, which cost a bug to learn. A
+    confirmed data packet (fmt 0x16) carries rate-3/4 blocks of 18 octets; a
+    RESPONSE packet (fmt 0x03) carries rate-1/2 blocks of 12. Observed on the
+    air: op25 -- which only implements rate 1/2 -- decoded a fmt=03 data block
+    cleanly to 12 octets (`fc ff ff ff ff ff ff ff bd 1d fc 83`) while failing
+    every fmt=16 one. An earlier version of this function applied 3/4
+    unconditionally and would have turned those 12 octets into garbage while
+    reporting success.
+
+    Both rates are attempted regardless, format-indicated one first, because
+    the mapping above is inferred from observation rather than read out of the
+    standard -- and a block that decodes under only one rate tells us which it
+    was. `index` is 1-based.
+    """
+    start = FRAME_PREAMBLE_BITS + index * BLOCK_BITS
+    orders = ([('1/2', TRELLIS_1_2, 2, 12), ('3/4', TRELLIS_3_4, 3, 18)]
+              if fmt == Pdu.FMT_RESPONSE else
+              [('3/4', TRELLIS_3_4, 3, 18), ('1/2', TRELLIS_1_2, 2, 12)])
+    for rate, table, sym, out_len in orders:
+        got = _decode_block(bv, start, table, sym, out_len)
+        if got is not None:
+            return got, rate
+    return None, None
+
+
+def parse_raw_line(line: str) -> Pdu | None:
+    """Decode a `PDU raw:` line all the way to a Pdu with its payload.
+
+    Returns None when the header block will not decode or fails CRC -- there is
+    nothing trustworthy to report in that case, and saying so is the point.
+    """
+    m = PDU_RAW_LINE.search(line)
+    if not m:
+        return None
+    bv = _bits(bytes.fromhex(m['hex']))
+    hdr = decode_header_block(bv)
+    if hdr is None or crc16_p25(hdr, 12) != 0:
+        return None
+    fmt = hdr[0] & 0x1f
+    n_blocks = (len(bv) - FRAME_PREAMBLE_BITS) // BLOCK_BITS
+    payload = b''
+    recovered = 0
+    rates = []
+    for i in range(1, n_blocks):
+        blk, rate = decode_data_block(bv, i, fmt)
+        if blk is None:
+            break                      # keep what decoded, same as the C++
+        payload += blk[DATA_BLOCK_HEADER_LEN:]
+        recovered += 1
+        rates.append(rate)
+    pdu = Pdu(nac=int(m['nac'], 16), fmt=fmt, sap=hdr[1] & 0x3f,
+              blks=recovered, hdr=hdr, payload=payload)
+    pdu.block_rates = rates
+    return pdu
+
+
 # Octets 3-5 of the PDU header: the 24-bit logical link id, i.e. the radio.
 #
 # CONFIRMED against the first real header decoded off the air (2026-09-04):
@@ -143,6 +332,10 @@ class Pdu:
     blks: int
     hdr: bytes
     payload: bytes
+    # Which trellis rate each recovered data block decoded under, in order.
+    # Empty for a Pdu built from the decoded `PDU: fmt=` line, which carries
+    # no blocks. See decode_data_block on why this is worth recording.
+    block_rates: list = field(default_factory=list)
 
     # Packet formats. fmt is octet 0 & 0x1f, as op25 reads it.
     FMT_RESPONSE = 0x03
@@ -299,7 +492,13 @@ def candidate_payloads(pdu: Pdu) -> list[tuple[str, bytes]]:
     to one branch and the header bit gets documented.
     """
     raw = pdu.payload
-    out = [('unconfirmed', raw)]
+    out = []
+    # FIRST, because it is the proven layout: a frame decoded from `PDU raw:`
+    # already has its per-block DBSN/CRC9 octets removed, and the user data
+    # opens with a 2-octet SNDCP prefix ahead of the IP header.
+    if len(raw) > SNDCP_PREFIX_LEN:
+        out.append(('sndcp', raw[SNDCP_PREFIX_LEN:]))
+    out.append(('unconfirmed', raw))
     if len(raw) >= BLOCK:
         stripped = b''.join(raw[i + 2:i + BLOCK]
                             for i in range(0, len(raw) - BLOCK + 1, BLOCK))
@@ -347,10 +546,18 @@ def classify(pdu: Pdu) -> Verdict:
 
 
 def scan(lines) -> list[tuple[Pdu, Verdict]]:
-    """Read a whole op25 log, returning every PDU with its verdict."""
+    """Read a whole op25 log, returning every PDU with its verdict.
+
+    Prefers the `PDU raw:` line, which carries the whole frame and lets us
+    decode the rate-3/4 data blocks op25 cannot. Falls back to the decoded
+    `PDU: fmt=` line, which gives the header but -- until the raw dump existed
+    -- never any payload.
+    """
     out = []
     for line in lines:
-        pdu = parse_log_line(line)
+        pdu = parse_raw_line(line)
+        if pdu is None:
+            pdu = parse_log_line(line)
         if pdu is not None:
             out.append((pdu, classify(pdu)))
     return out
@@ -371,8 +578,10 @@ def main(argv: list[str]) -> int:
 
     if not results:
         print('no packet-data PDUs found.')
-        print('  If the receiver was on the data channel, this means the op25 '
-              'PDU patch is not in place -- see patches/README.md.')
+        print('  If a data receiver was following grants, this means the op25 '
+              'PDU patch is not in place -- see patches/README.md. Check the '
+              'INSTALLED library, not the source: '
+              'strings <libgnuradio-op25_repeater.so> | grep process_PDU')
         return 1
 
     kinds = collections.Counter(v.kind for _, v in results)
@@ -384,6 +593,10 @@ def main(argv: list[str]) -> int:
     print(f'  by shape: {dict(kinds)}')
     print(f'  by SAP:   {dict(saps)}')
     print(f'  IN THE CLEAR (IPv4 checksum validated): {len(clear)}')
+    lost = sum(p.blocks_lost for p, _ in results)
+    claimed = sum(p.hdr_blks for p, _ in results)
+    if claimed:
+        print(f'  data blocks: {claimed - lost}/{claimed} recovered')
     for pdu, verdict in clear[:10]:
         ip = verdict.detail['ip']
         udp = ip.get('udp')

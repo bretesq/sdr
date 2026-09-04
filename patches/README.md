@@ -295,3 +295,53 @@ radio). Inbound traffic — where LRRP position reports and ARS registrations
 travel — is at 799–805 MHz (700 leg) and 806–824 MHz (800 leg), outside every
 window this config can reach. Reading those needs another receiver and antenna;
 the RTL-SDRs measured +0.4 dB on this band and will not do it.
+
+### Addendum: the raw bit dump, and what it proved (2026-09-04)
+
+`process_blocks` now also emits the whole post-status bit vector for DUID
+`0x0c` frames at `-v 10`:
+
+```
+NAC 0x1bd PDU raw: bits=700 blocks=3 : 5575f5ff77ff1bdc...
+```
+
+Bits packed MSB-first; blocks start at bit 112 (48 frame sync + 64 NID) every
+196 bits. **Gated on `duid == 0x0c`** because `process_blocks` also serves
+`process_TSBK`, which runs thousands of times a minute on the control channel.
+
+**Why, and what it settled.** Every data block in every PDU failed
+`block_deinterleave` while headers decoded perfectly — 0 header CRC failures in
+29 PDUs. That is systematic, not signal quality, and the suspected cause was
+that data blocks are rate-**3/4** trellis at 18 octets while `process_blocks`
+implements rate-1/2 at 12 (the path built for TSBKs and PDU headers). Both
+occupy 196 bits on air, so framing looks right and only the decode is wrong.
+
+Rather than write a second trellis decoder in C++ on that hypothesis, the dump
+let one be prototyped in Python against real bits. It was right, and the
+payload is **not encrypted**:
+
+```
+10.51.1.10:49516 -> 172.16.94.223:4005  CHECKSUM VALID  ARS (registration)
+10.51.1.10:4001  -> 172.16.93.225:4001  CHECKSUM VALID  LRRP (location)
+```
+
+The decoder lives in `scripts/p25_packet.py`, not here. **No rate-3/4
+implementation is needed in op25 at all** — the raw dump plus Python is a
+complete solution, and it keeps the "C++ interprets nothing" split intact.
+
+Two things the real bits taught that the hypothesis did not:
+
+* Data blocks carry 2 octets of DBSN/CRC9 before 16 of user data, and the
+  reassembled payload then opens with a **2-octet SNDCP prefix** before the IP
+  header. `parse_ipv4` finds nothing at offset 0 and validates at offset 2.
+* The rate depends on the packet FORMAT. A response PDU (`fmt 0x03`) carries
+  rate-**1/2** blocks of 12 octets — op25 decoded one cleanly to
+  `fc ff ff ff ff ff ff ff bd 1d fc 83` while failing every `fmt 0x16` block.
+  Applying 3/4 to those would produce garbage and report success.
+
+The rate-3/4 constellation table was **recovered from SDRTrunk's
+`P25_3_4_Node` bytecode**, not written from memory. The same parser was pointed
+at `P25_1_2_Node` first and returned a table byte-for-byte identical to op25's
+independent copy — getting a known-correct answer out is what licenses trusting
+the unknown one. `scripts/tests/test_p25_packet.py` pins both tables and three
+real frames.
