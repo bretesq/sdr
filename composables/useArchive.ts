@@ -1,5 +1,6 @@
 import { ref, computed, watch, onUnmounted } from 'vue'
 import type { CodeMention } from '~/utils/tencodeSegments'
+import { windowSize, hasMorePages } from '~/utils/pagination'
 
 /**
  * The filed half of the bay.
@@ -47,6 +48,15 @@ interface ListResponse {
 
 const PAGE = 120
 
+/**
+ * Ceiling on how far the rail will scroll back, in pages.
+ *
+ * Not a performance guess: `listRecordings` has NO server-side limit cap
+ * (`q.limit ?? 5000`), so without a bound here a long scroll session would ask
+ * for the whole 13,000-call corpus in one response and render it all.
+ */
+const MAX_PAGES = 20
+
 export function useArchive() {
   const rows = ref<ArchiveCall[]>([])
   const total = ref(0)
@@ -62,6 +72,25 @@ export function useArchive() {
   const loading = ref(false)
   const error = ref('')
 
+  /**
+   * How many pages deep the rail is scrolled. The window GROWS -- `load()`
+   * always fetches `pages * PAGE` from the top -- rather than fetching page N
+   * at an offset.
+   *
+   * That is deliberate and it is about correctness, not simplicity. This list
+   * updates live: `watchCorpus` reloads on every new call, and a new call is
+   * inserted at the TOP. With offset paging, a row arriving between "fetch
+   * rows 0-119" and "fetch rows 120-239" pushes row 119 down into the second
+   * page, so it is returned twice and the row that should have been at 239 is
+   * never returned at all. Duplicates and silent holes, both invisible.
+   * Refetching from the top cannot drift.
+   */
+  const pages = ref(1)
+
+  /** More to show, and room to show it. */
+  const hasMore = computed(() =>
+    hasMorePages(rows.value.length, total.value, pages.value, MAX_PAGES))
+
   let debounce: ReturnType<typeof setTimeout> | null = null
   let es: EventSource | null = null
   /** Rejects a stale response that resolves after a newer query was issued. */
@@ -76,7 +105,7 @@ export function useArchive() {
           search: search.value.trim() || undefined,
           // Omitted when 'all' so the common case sends no filter at all.
           encState: encState.value === 'all' ? undefined : encState.value,
-          limit: PAGE,
+          limit: windowSize(pages.value, PAGE),
         },
       })
       if (mine !== generation) return
@@ -91,7 +120,23 @@ export function useArchive() {
     }
   }
 
+  /**
+   * Show one more page.
+   *
+   * `loading` guards re-entry: a scroll sentinel fires repeatedly while it
+   * stays on screen, and without this a single flick would queue several
+   * identical growing requests.
+   */
+  async function loadMore(): Promise<void> {
+    if (loading.value || !hasMore.value) return
+    pages.value += 1
+    await load()
+  }
+
+  // A new query is a new corpus: keep the deep window and the rail opens
+  // scrolled into results the user has not seen and cannot scroll above.
   watch(search, () => {
+    pages.value = 1
     if (debounce) clearTimeout(debounce)
     debounce = setTimeout(() => { void load() }, 220)
   })
@@ -99,7 +144,7 @@ export function useArchive() {
   // Undebounced: a filter is a discrete click, not typing, and `generation`
   // already discards a stale response that resolves after a newer one — so a
   // fast switch cannot render the previous filter's rows.
-  watch(encState, () => { void load() })
+  watch(encState, () => { pages.value = 1; void load() })
 
   function watchCorpus(): void {
     if (es) return
@@ -120,5 +165,8 @@ export function useArchive() {
     return computed(() => rows.value.filter(r => !excludeIds.has(r.id)))
   }
 
-  return { rows, total, search, encState, loading, error, load, watchCorpus, stop, filed }
+  return {
+    rows, total, search, encState, loading, error, load, loadMore,
+    hasMore, watchCorpus, stop, filed,
+  }
 }
