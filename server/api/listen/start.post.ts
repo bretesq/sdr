@@ -23,7 +23,7 @@ const LEGS = new Set(['700', '800', '700,800'])
  * Not arbitrary: each channel adds a decimating FIR running at the device's
  * full sample rate, and each needs its own udp_audio_record.py process and a
  * UDP port two above the last. 8 per band keeps the port block inside
- * 23460-23496 (widened from 23492 as SNDCP data receivers were added, one
+ * 23460-23498 (widened from 23492 as SNDCP data receivers were added, one
  * per leg, each an always-present extra channel -- see make_multirx_cfg.py's
  * PORT_BLOCK_SPAN) and stays above the 800 leg's default of 7 (itself derived from
  * concurrency measurement -- see scripts/make_multirx_cfg.py's LEG_800

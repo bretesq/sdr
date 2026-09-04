@@ -953,3 +953,47 @@ body {
 /* Until the fetch and decode land, the element is present but empty — the
    baseline still prints, so the transport never looks like nothing is playing. */
 .wave--pending { opacity: 0.7; }
+
+/* ===========================================================================
+   THE DATA RAIL
+   Packet data the system sends to radios. Folded shut by default: it is
+   background traffic, not the operator's task, and the bay's vertical space
+   already belongs to the live and filed rails.
+   =========================================================================== */
+
+/* The head doubles as the crease, so a closed rail still reports its counts.
+   Inherits .rail__head's flex row; this only adds what a button needs. */
+.data__crease {
+  border-left: 0;
+  border-right: 0;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+.data__crease:hover .fold__box { border-color: #9aa286; }
+.data__crease:focus-visible { outline: 2px solid var(--grease); outline-offset: -2px; }
+
+/* Held to the right edge, past the counts. */
+.data__crease .fold__box { margin-left: auto; }
+
+.bay__databody {
+  min-height: 0;
+  max-height: 42vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* A held-but-stale feed says so in amber — the bay's mark for "flagged for
+   the operator's eye" — rather than blanking rows that are still true. */
+.data__stale { color: var(--pencil-amber); }
+
+.data__note {
+  margin: 0;
+  padding: 12px 16px 14px;
+  font-family: var(--f-body);
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: #9aa189;
+  max-width: 68ch;
+}

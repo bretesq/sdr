@@ -7,6 +7,7 @@ import { sdrRoot, whitelistPath } from './paths'
 import {
   listRecordings, getRecording, listTalkgroups, listCategories, codeStats,
   followedTalkgroups, transcriptionHealth, whitelistTgids, talkgroupEncryptionTallies,
+  listPackets, packetSummary,
 } from './queries'
 import { dbPath, closeDb, getDb } from './db'
 import { CLEAR_ALGID } from '../../utils/callEncryption'
@@ -921,5 +922,79 @@ describe('listRecordings encState', () => {
     // meaning `algid = 128` alone would still pass every assertion above while
     // hiding most of the audible traffic.
     expect(rows.some(r => r.algid === null)).toBe(true)
+  })
+})
+
+describe('listPackets / packetSummary — SNDCP packet data', () => {
+  it('returns rows newest first, with a stable total and maxId', () => {
+    const { rows, total, maxId } = listPackets({ limit: 5 })
+    expect(total).toBeGreaterThan(0)
+    expect(rows.length).toBeLessThanOrEqual(5)
+    expect(maxId).toBeGreaterThan(0)
+    for (let i = 1; i < rows.length; i++) {
+      expect(rows[i - 1]!.id).toBeGreaterThan(rows[i]!.id)
+    }
+  })
+
+  it('caps limit rather than trusting the caller', () => {
+    // A caller asking for 10,000 rows would otherwise serialise the whole
+    // table into one response.
+    expect(listPackets({ limit: 10_000 }).rows.length).toBeLessThanOrEqual(500)
+    expect(listPackets({ limit: 0 }).rows.length).toBeGreaterThan(0)
+  })
+
+  it('clear means the IPv4 checksum VALIDATED, not that a payload existed', () => {
+    // Every clear row must carry the IP fields that proved it. A clear row
+    // with no dst_ip would mean the flag had been set from something weaker.
+    for (const r of listPackets({ clearOnly: true, limit: 50 }).rows) {
+      expect(r.clear).toBe(true)
+      expect(r.dstIp).toBeTruthy()
+      expect(r.dport).toBeGreaterThan(0)
+    }
+  })
+
+  it('filters by app without dropping the filter silently', () => {
+    const ars = listPackets({ app: 'ARS', limit: 50 })
+    for (const r of ars.rows) expect(r.app).toBe('ARS')
+    const all = listPackets({ limit: 50 })
+    expect(ars.total).toBeLessThanOrEqual(all.total)
+  })
+
+  it('filters by radio', () => {
+    const any = listPackets({ limit: 1 }).rows[0]
+    if (!any?.llid) return
+    for (const r of listPackets({ llid: any.llid, limit: 20 }).rows) {
+      expect(r.llid).toBe(any.llid)
+    }
+  })
+
+  it('reports radios and radios-also-on-voice as SEPARATE figures', () => {
+    // Deliberately not a single "data-only" number: voice-side src_addr
+    // coverage is sparse, so the gap partly measures our blind spot rather
+    // than the fleet. Both numbers must be present for that to be visible.
+    const s = packetSummary()
+    expect(s.radios).toBeGreaterThan(0)
+    expect(s.radiosAlsoOnVoice).toBeLessThanOrEqual(s.radios)
+    expect(s.clear).toBeLessThanOrEqual(s.total)
+  })
+
+  it('summarises by application message type', () => {
+    const s = packetSummary()
+    expect(s.byKind.length).toBeGreaterThan(0)
+    for (const k of s.byKind) {
+      expect(k.app).toBeTruthy()
+      expect(k.n).toBeGreaterThan(0)
+    }
+    // Busiest first, so a UI can render the head of the list meaningfully.
+    for (let i = 1; i < s.byKind.length; i++) {
+      expect(s.byKind[i - 1]!.n).toBeGreaterThanOrEqual(s.byKind[i]!.n)
+    }
+  })
+
+  it('answers the question the table exists for, in ONE query per call', () => {
+    // heardOnVoice must be a join, not a per-row lookup: the bay renders
+    // pages of these and a lookup per row would be one query per packet.
+    const { runs } = countQueries(() => listPackets({ limit: 100 }))
+    expect(runs).toBeLessThanOrEqual(2)      // the aggregate, then the page
   })
 })

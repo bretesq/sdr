@@ -156,6 +156,18 @@
           </p>
         </div>
       </section>
+
+      <!--
+        Third rail, folded shut. `auto` in the grid means a closed fold costs
+        only its own head, so the live and filed rails keep the space they had
+        before this existed.
+      -->
+      <BayDataRail
+        :rows="packets.rows.value"
+        :summary="packets.summary.value"
+        :loaded="packets.loaded.value"
+        :error="packets.error.value"
+      />
     </main>
   </div>
 </template>
@@ -163,6 +175,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { receiverStatus } from '~/utils/captureStatus'
+import { usePacketFeed } from '~/composables/usePacketFeed'
 import type { ReceiverStatus } from '~/utils/captureStatus'
 
 useHead({ title: 'Strip Bay — LWIN P25' })
@@ -216,6 +229,9 @@ const RECEIVER_SHORT: Record<ReceiverStatus, string> = {
   stalled: 'stalled',
   idle: 'idle',
 }
+
+// Read-only background feed; its poll starts and stops with the page.
+const packets = usePacketFeed()
 
 const receiverShort = computed(() => RECEIVER_SHORT[receiverStatus({
   radioBusy: feed.radioBusy.value,
@@ -340,13 +356,13 @@ onUnmounted(() => {
 .bay__rails {
   grid-column: 2;
   display: grid;
-  grid-template-rows: minmax(140px, 38%) minmax(0, 1fr);
+  grid-template-rows: minmax(140px, 38%) minmax(0, 1fr) auto;
   min-height: 0;
   transition: grid-template-rows 260ms var(--ease-file);
 }
 
 /* Nothing live: the rail keeps its head and gives the room to the archive. */
-.bay__rails--quiet { grid-template-rows: auto minmax(0, 1fr); }
+.bay__rails--quiet { grid-template-rows: auto minmax(0, 1fr) auto; }
 .bay__rails--quiet .bay__livebody { overflow: hidden; }
 /* one line does not need a 28px cushion above and below it */
 .bay__rails--quiet .idle { padding: 12px 16px 14px; }
