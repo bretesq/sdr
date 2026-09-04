@@ -53,6 +53,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+import p25_apps
+
 # ---------------------------------------------------------------------------
 # The op25 log line this module reads.
 #
@@ -620,6 +622,25 @@ def main(argv: list[str]) -> int:
                  f" [{udp.get('hint', 'udp')}] {len(udp['data'])} B"
                  if udp else f" {ip['src']} -> {ip['dst']} proto {ip['protocol']}")
         print(f"    radio {pdu.llid:06x}{where}")
+        if udp:
+            msg = p25_apps.parse(udp['sport'], udp['dport'], udp['data'])
+            if msg is not None:
+                print(f"        {msg}")
+
+    # What the system is DOING, which is the point of decoding any of this.
+    kinds = collections.Counter()
+    for pdu, verdict in clear:
+        udp = verdict.detail['ip'].get('udp')
+        if not udp:
+            continue
+        msg = p25_apps.parse(udp['sport'], udp['dport'], udp['data'])
+        if msg is not None:
+            kinds[f'{msg.protocol}: {msg.kind}'] += 1
+    if kinds:
+        print()
+        print('  application messages:')
+        for k, n in kinds.most_common():
+            print(f'    {n:5d}  {k}')
     return 0
 
 
