@@ -736,6 +736,26 @@ body {
   padding: 0;
 }
 
+/* The way back to an unfiltered bay. Deliberately quiet -- it is an escape
+   hatch, shown only while a filter is on, and must not compete with the tick
+   list beside it. */
+.standby__all {
+  display: block;
+  margin: 6px 0 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #9aa08c;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.standby__all:hover,
+.standby__all:focus-visible { color: #efe4d2; }
+
 .standby__row {
   display: grid;
   /* tick · tgid · alpha · encryption mark · recent-call count. The mark gets

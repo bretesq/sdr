@@ -181,3 +181,27 @@ describe('takeNext', () => {
     expect(q.skipped).toBe(1)
   })
 })
+
+describe('classify with no talkgroup filter', () => {
+  // The bay's DEFAULT, not an edge case: pressing Listen on a fresh page plays
+  // the system. `null` is "no filter"; an empty Set is "match nothing". They
+  // are different values with different meanings, exactly as at the API
+  // boundary, and collapsing them would make unticking your last talkgroup
+  // silently open the feed to every talkgroup on the system.
+  it('admits a call on a talkgroup nobody ticked', () => {
+    expect(classify(call({ id: 1, tgid: 17165 }), null, new Set())).toBe('playable')
+  })
+
+  it('still refuses a call with no talkgroup at all', () => {
+    expect(classify(call({ id: 1, tgid: null }), null, new Set())).toBe('rejected')
+  })
+
+  it('still locks encrypted traffic it cannot decode', () => {
+    const c = call({ id: 1, tgid: 17165, algid: 0xaa, keyid: 0x22 })
+    expect(classify(c, null, new Set())).toBe('locked')
+  })
+
+  it('an EMPTY set is not the same as null -- it matches nothing', () => {
+    expect(classify(call({ id: 1, tgid: 17165 }), new Set(), new Set())).toBe('rejected')
+  })
+})

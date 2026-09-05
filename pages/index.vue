@@ -5,13 +5,13 @@
       <button
         class="arm"
         :class="{ 'arm--on': feed.armed.value }"
-        :disabled="!feed.armed.value && feed.selected.value.length === 0"
+        :disabled="!feed.armed.value && !feed.listenAll.value && feed.selected.value.length === 0"
         @click="toggleArm"
       >
         <span class="arm__lamp" />
         {{ feed.armed.value ? 'Stop' : 'Listen' }}
       </button>
-      <span class="bay__barstate">{{ feed.selected.value.length }} selected · {{ receiverShort }}</span>
+      <span class="bay__barstate">{{ selectionLabel }} · {{ receiverShort }}</span>
       <button class="bay__sheetbtn" type="button" @click="sheet = !sheet">
         {{ sheet ? 'Close' : 'Talkgroups' }}
       </button>
@@ -22,6 +22,7 @@
       :class="{ 'bay__stack--open': sheet }"
       :followed="feed.followed.value"
       :selected="feed.selected.value"
+      :listen-all="feed.listenAll.value"
       :armed="feed.armed.value"
       :radio-busy="feed.radioBusy.value"
       :tracked="feed.tracked.value"
@@ -30,6 +31,7 @@
       :receiver-layout="feed.receiverLayout.value"
       @toggle="toggleArm"
       @toggle-tg="toggleTg"
+      @hear-everything="hearEverything"
       @refresh-capture="refreshCapture"
     />
 
@@ -295,8 +297,24 @@ async function refreshSttStatus(): Promise<void> {
   }
 }
 
+/**
+ * What the bay is listening to, in words rather than a count.
+ *
+ * "0 selected" was the old reading for the default state, which described the
+ * tick boxes accurately and the behaviour exactly backwards -- nothing ticked
+ * is when the bay plays the MOST.
+ */
+const selectionLabel = computed(() =>
+  feed.listenAll.value
+    ? 'all talkgroups'
+    : `${feed.selected.value.length} selected`)
+
 const liveHint = computed(() => {
-  if (!feed.armed.value) return 'Tick talkgroups, then press Listen live.'
+  if (!feed.armed.value) {
+    return feed.listenAll.value
+      ? 'Press Listen live to hear every call as it lands.'
+      : 'Tick talkgroups, then press Listen live.'
+  }
   if (feed.radioBusy.value) return 'Listening. Strips appear as calls end.'
   if (feed.tracked.value) return 'A session is open but nothing is receiving. Nothing new will land until it does.'
   return 'No capture is running, so nothing new will land.'
@@ -322,6 +340,20 @@ function toggleTg(tgid: number): void {
   const i = feed.selected.value.indexOf(tgid)
   if (i === -1) feed.selected.value.push(tgid)
   else feed.selected.value.splice(i, 1)
+  // Ticking a talkgroup is how the filter gets turned ON. Without this the
+  // bay stays unfiltered and the tick boxes do nothing at all.
+  //
+  // Only in this direction. Unticking back down to zero leaves the filter on
+  // and the bay silent, which is a state the operator can see and undo with
+  // "hear everything" -- whereas silently reopening to all 224 would put the
+  // whole system on the speaker because they cleared their last selection.
+  if (feed.selected.value.length > 0) feed.listenAll.value = false
+}
+
+/** Drop the talkgroup filter and go back to playing the system. */
+function hearEverything(): void {
+  feed.selected.value.splice(0, feed.selected.value.length)
+  feed.listenAll.value = true
 }
 
 /**

@@ -114,6 +114,22 @@ export function useScannerFeed() {
   const heldKeyIds = ref<number[]>([])
   const selected = ref<number[]>([])
   const armed = ref(false)
+
+  /**
+   * Play everything the capture produces, ignoring the tick boxes.
+   *
+   * ON BY DEFAULT, and that is the point: pressing Listen on a fresh page
+   * should put the system on the air. Requiring a tick first made the button
+   * dead on arrival and the bay silent for anyone who had not yet learned
+   * what to tick.
+   *
+   * Held as its own flag rather than inferred from `selected.length === 0`,
+   * because inferring it makes unticking your last talkgroup silently widen
+   * the feed from one channel to all 224. Turning the filter OFF is a thing
+   * the operator does on purpose, not a thing that happens to them.
+   */
+  const listenAll = ref(true)
+
   /**
    * How long a call may wait before it is dropped rather than played late.
    *
@@ -245,6 +261,9 @@ export function useScannerFeed() {
   let audio: HTMLAudioElement | null = null
 
   const selectedSet = computed(() => new Set(selected.value))
+
+  /** The talkgroup filter to hand the queue, or null to admit everything. */
+  const filterTgids = computed(() => listenAll.value ? null : selectedSet.value)
   const heldSet = computed(() => new Set(heldKeyIds.value))
 
   /** Mirror the plain queue object into the ref the template renders. */
@@ -270,9 +289,11 @@ export function useScannerFeed() {
   }
 
   async function pump(): Promise<void> {
-    // An armed feed with nothing selected must be silent. The query layer also
-    // refuses an empty selection; this avoids the round trip.
-    if (!armed.value || selected.value.length === 0) return
+    // An armed feed still has nothing to ask for when the operator has turned
+    // the filter on and then ticked nothing. Unfiltered is a different case
+    // and must NOT be caught here -- that is the default, and it plays.
+    if (!armed.value) return
+    if (!listenAll.value && selected.value.length === 0) return
     if (pumpInFlight) return
     pumpInFlight = true
     try {
@@ -286,11 +307,13 @@ export function useScannerFeed() {
     let res: ListResponse
     try {
       res = await $fetch<ListResponse>('/api/recordings/list', {
-        query: {
-          afterId: lastSeenId,
-          tgids: selected.value.join(','),
-          limit: PAGE,
-        },
+        // `tgids` is OMITTED, not sent empty, when unfiltered. The endpoint
+        // reads an absent parameter as "no filter" and a present-but-empty
+        // one as "match nothing" -- sending `tgids=` here would silence the
+        // feed rather than open it.
+        query: listenAll.value
+          ? { afterId: lastSeenId, limit: PAGE }
+          : { afterId: lastSeenId, tgids: selected.value.join(','), limit: PAGE },
       })
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Feed fetch failed'
@@ -310,7 +333,7 @@ export function useScannerFeed() {
     // which is what stops a long absence from replaying hours of audio.
     for (const row of res.data) {
       lastSeenId = Math.max(lastSeenId, row.id)
-      admit(queue, row, selectedSet.value, heldSet.value)
+      admit(queue, row, filterTgids.value, heldSet.value)
     }
     prune(queue, Date.now(), stalenessSec.value * 1000)
     sync()
@@ -568,7 +591,7 @@ export function useScannerFeed() {
   onUnmounted(disarm)
 
   return {
-    followed, heldKeyIds, selected, armed, stalenessSec, settingPersists,
+    followed, heldKeyIds, selected, armed, listenAll, stalenessSec, settingPersists,
     entries, skipped, failed, nowPlaying, reviewing, streamOk, radioBusy, tracked, sessionStartedAt, sessionDurationSec,
     receiverLayout, error,
     load, arm, disarm, review,

@@ -17,12 +17,12 @@
       <div class="stack__block">
         <span class="stack__label">Listen</span>
         <div class="readout" :class="{ 'readout--dim': !armed }">
-          {{ armed ? selected.length : '—' }}<span class="readout__unit"> tg playing</span>
+          {{ readout }}<span class="readout__unit"> tg playing</span>
         </div>
         <button
           class="arm"
           :class="{ 'arm--on': armed }"
-          :disabled="!armed && selected.length === 0"
+          :disabled="!armed && !listenAll && selected.length === 0"
           style="margin-top: 10px"
           @click="$emit('toggle')"
         >
@@ -52,7 +52,11 @@
           outside-session one, which is correct here — playback depends on calls
           landing in the corpus, not on who owns the session.
         -->
-        <p v-if="!armed && selected.length === 0" class="idle__sub" style="text-align: left; margin-top: 8px">
+        <p v-if="!armed && listenAll" class="idle__sub" style="text-align: left; margin-top: 8px">
+          Press Listen live to hear every call as it lands. Tick talkgroups below
+          to narrow it.
+        </p>
+        <p v-else-if="!armed && selected.length === 0" class="idle__sub" style="text-align: left; margin-top: 8px">
           Tick a talkgroup below, then press Listen live to hear it here.
         </p>
         <p v-else-if="!radioBusy" class="idle__sub capture__warn" style="text-align: left; margin-top: 8px">
@@ -344,6 +348,19 @@
     <!-- STANDBY: the talkgroups this session can actually produce -->
     <div class="stack__block" style="padding-bottom: 8px">
       <span class="stack__label">Standby — {{ followed.length }} followed, {{ activeCount }} active</span>
+      <!--
+        The way back to the default. Without it, unticking your last talkgroup
+        strands the bay filtered-and-empty: silent, with the Listen button
+        disabled and nothing on screen explaining why.
+      -->
+      <button
+        v-if="!listenAll"
+        class="standby__all"
+        type="button"
+        @click="$emit('hearEverything')"
+      >
+        hear everything
+      </button>
       <input
         v-model="query"
         class="field"
@@ -501,6 +518,12 @@ interface RosterResponse {
 const props = defineProps<{
   followed: FollowedRow[]
   selected: number[]
+  /**
+   * True when the bay ignores `selected` and plays whatever lands. The bay's
+   * default, so this component must never present an empty tick list as
+   * "nothing to play".
+   */
+  listenAll: boolean
   armed: boolean
   radioBusy: boolean
   tracked: boolean
@@ -526,9 +549,19 @@ const props = defineProps<{
   receiverLayout: ReceiverLayout | null
 }>()
 
+/**
+ * The "N tg playing" figure. Unfiltered, there is no N -- the bay is playing
+ * the system, and any number here would be a lie about a filter that is off.
+ */
+const readout = computed(() => {
+  if (!props.armed) return '\u2014'
+  return props.listenAll ? 'all' : String(props.selected.length)
+})
+
 const emit = defineEmits<{
   toggle: []
   toggleTg: [tgid: number]
+  hearEverything: []
   /**
    * Fired after a Start or Stop attempt settles, success or failure. This
    * component only owns the request/response and its own busy/error state —

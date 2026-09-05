@@ -101,10 +101,20 @@ export function endedAtMs(call: FeedCall): number {
  */
 export function classify(
   call: FeedCall,
-  selectedTgids: ReadonlySet<number>,
+  selectedTgids: ReadonlySet<number> | null,
   heldKeyIds: ReadonlySet<number>,
 ): Admission {
-  if (call.tgid === null || !selectedTgids.has(call.tgid)) return 'rejected'
+  // `null` means no talkgroup filter: admit whatever the capture produces.
+  // That is the bay's default -- pressing Listen with nothing ticked should
+  // play the system, not nothing.
+  //
+  // NULL AND EMPTY MEAN DIFFERENT THINGS, deliberately, and the same way they
+  // do at the API boundary: /api/recordings/list treats an absent `tgids` as
+  // "no filter" and a present-but-empty one as `1 = 0`. Collapsing them would
+  // make unticking your last talkgroup silently open the feed to all 224
+  // instead of leaving it where you put it.
+  if (call.tgid === null) return 'rejected'
+  if (selectedTgids !== null && !selectedTgids.has(call.tgid)) return 'rejected'
   const enc = encryptionState(call, heldKeyIds)
   // 'unknown' (no ESS captured) stays playable: 77% of the corpus has no
   // algid, and refusing to play all of it on the chance some is encrypted
@@ -121,7 +131,7 @@ export function classify(
 export function admit(
   queue: ScannerQueue,
   call: FeedCall,
-  selectedTgids: ReadonlySet<number>,
+  selectedTgids: ReadonlySet<number> | null,
   heldKeyIds: ReadonlySet<number>,
 ): Admission {
   if (queue.entries.some(e => e.call.id === call.id)) return 'rejected'
